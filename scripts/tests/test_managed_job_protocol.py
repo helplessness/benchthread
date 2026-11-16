@@ -374,6 +374,67 @@ def test_tracker_token_without_posix_fchmod(tmp_path, monkeypatch):
     assert (tmp_path / "tracker.token").read_text().strip() == token
 
 
+def test_json_only_example_via_job_protocol(tmp_path, monkeypatch):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+    from tcode_agent.plugins.async_targets import declarations, target_payload
+
+    example = Path(__file__).resolve().parents[2] / "examples/third_party_mcp/json-async"
+    monkeypatch.delenv("TMCP_TARGET_REGISTRY_TOKEN", raising=False)
+
+    async def check():
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        endpoint = f"http://127.0.0.1:{port}/mcp"
+        server = await asyncio.create_subprocess_exec(
+            sys.executable, str(example / "server.py"),
+            env={**os.environ, "JSON_ASYNC_PORT": str(port), "JSON_ASYNC_DB": str(tmp_path / "remote.sqlite")},
+        )
+        try:
+            async with asyncio.timeout(8):
+                while True:
+                    try:
+                        async with Client(endpoint, init_timeout=1) as client:
+                            assert len(await client.list_tools()) == 3
+                        break
+                    except RuntimeError:
+                        if server.returncode is not None:
+                            raise
+                        await asyncio.sleep(0.1)
+            target = declarations(example / "plugin", ["async-targets.json"])[0]
+            payload = target_payload(tmp_path, "test/alice", "json-async-sum", target, {"compute_url": endpoint})
+            with managed_job_protocol(tmp_path) as url:
+                async with httpx.AsyncClient() as http:
+                    registered = await http.put(
+                        url.removesuffix("/mcp") + "/api/v1/target-registrations/" + payload["server"],
+                        headers={"X-Target-Registry-Token": os.environ["TMCP_TARGET_REGISTRY_TOKEN"]}, json=payload,
+                    )
+                    assert registered.is_success, registered.text
+                headers = {"Authorization": "Bearer " + os.environ[LOCAL_TOKEN],
+                           WORKER_HEADER: bridge_worker_environment()[WORKER_TOKEN]}
+                async with Client(StreamableHttpTransport(url, headers=headers)) as client:
+                    submitted = await client.call_tool("submit_job", {"input": {
+                        "tenant_id": "test", "user_id": "alice", "workspace_id": "work", "run_id": "sum-demo",
+                        "target_server": payload["server"], "target_tool": "sum_numbers",
+                        "target_version": registered.json()["version"], "arguments": {"numbers": [1, 2, 3]},
+                    }})
+                    ref = {"input": submitted.structured_content}
+                    async with asyncio.timeout(8):
+                        while (await client.call_tool("get_job_status", ref)).structured_content["status"] != "completed":
+                            await asyncio.sleep(0.1)
+                    result = (await client.call_tool("collect_job_result", ref)).structured_content
+                    assert result["target_result"] == {"sum": 6}
+                    assert result["output_bundle"] is None
+        finally:
+            if server.returncode is None:
+                server.terminate()
+                await asyncio.wait_for(server.wait(), 8)
+
+    asyncio.run(check())
+
+
 def test_single_web_launcher_runs_echo_through_tracker(tmp_path):
     pytest.importorskip("fastmcp")
 

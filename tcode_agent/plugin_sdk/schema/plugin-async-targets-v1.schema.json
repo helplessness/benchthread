@@ -33,7 +33,7 @@
             "argumentStyle": {"enum": ["flat", "input_config"]}, "inputSchema": {"type": "object"},
             "files": {"type": "array", "maxItems": 100, "items": {"type": "object", "required": ["pointer", "kind", "transport"], "additionalProperties": false,
               "properties": {"pointer": {"type": "string", "pattern": "^/", "maxLength": 1024}, "kind": {"enum": ["file", "directory"]}, "transport": {"const": "artifact"}}}},
-            "output": {"type": "object", "required": ["contract"], "additionalProperties": false, "properties": {"contract": {"const": "artifact-bundle-v1"}}}
+            "output": {"type": "object", "required": ["contract"], "additionalProperties": false, "properties": {"contract": {"enum": ["artifact-bundle-v1", "json"]}}}
           }
         }}
       }

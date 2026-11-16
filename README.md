@@ -241,9 +241,10 @@ export TCODE_BRAVE_SEARCH_API_KEY='replace-with-your-key'
 
 ### 开发自己的 MCP
 
-- **普通或远程异步工具**：[第三方 MCP 接入与运行](docs/服务隔离/第三方MCP插件接入与运行.md)，包含可运行的 remote-job 示例及 BenchThread 端配置步骤。
-- **工具要收发文件**：[Artifact Python SDK](packages/artifact-sdk/README.md)，包含安装、文件与目录 API、最小回显示例和契约测试。SDK 负责文件传输，不负责执行和恢复任务。
-- **在 BenchThread 里声明异步目标或扩展插件**：[插件 SDK](docs/plugin-sdk/README.md)。这是工作台侧的 SDK，不需要装到远端计算服务上。
+- **第一次接异步 MCP**：从[纯 JSON 异步求和示例](examples/third_party_mcp/json-async/README.md)开始。它带第三方服务源码、插件配置和提交步骤，能跑通受理、查状态与取结果，不需要文件 SDK、Artifact 服务或 TMCP。
+- **第三方工具要收发文件**：看[文件传输 SDK（Artifact Python SDK）](packages/artifact-sdk/README.md)，包括安装、文件与目录 API、最小回显示例和契约测试。它只负责文件传输，不负责执行或恢复任务。
+- **要为 BenchThread 写插件**：看[插件 SDK 文档](docs/plugin-sdk/README.md)，了解如何声明异步目标、添加工具或工作流、校验和打包。远端 MCP 不需要安装插件 SDK。
+- **配置认证或部署到不同主机**：看[第三方 MCP 接入与运行指南](docs/服务隔离/第三方MCP插件接入与运行.md)。
 
 ## 进一步阅读
 

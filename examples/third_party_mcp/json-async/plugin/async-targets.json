@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "targets": [{
+    "id": "sum",
+    "connection": {"transport": "streamable-http", "urlConfig": "compute_url", "bearerTokenConfig": "compute_token_env"},
+    "execution": {"mode": "remote-job", "submitTool": "submit_sum", "statusTool": "get_sum_status", "resultTool": "get_sum_result"},
+    "tools": [{
+      "name": "sum_numbers",
+      "summary": "后台计算整数列表之和，返回 JSON",
+      "argumentStyle": "flat",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "numbers": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "integer", "minimum": -1000000, "maximum": 1000000}}
+        },
+        "required": ["numbers"],
+        "additionalProperties": false
+      },
+      "output": {"contract": "json"}
+    }]
+  }]
+}

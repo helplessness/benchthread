@@ -1,5 +1,7 @@
 # 第三方 MCP 示例
 
+- [最小异步求和](json-async/README.md)：只收发 JSON，不需要 Artifact 或文件 SDK。
+
 - `direct-plugin/`：常规 MCP 插件，通过 `mcpServers` 直接连接。
 - `async-plugin/`：声明式异步 MCP 插件，通过 `asyncTargets` 接入用户本地 Job Protocol。
 - `remote_server.py`：部署在第三方服务器的可运行示例，提供查询与 remote-job v1 工具。
