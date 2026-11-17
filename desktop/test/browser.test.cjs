@@ -3,6 +3,43 @@ const assert = require('node:assert/strict');
 const net = require('node:net');
 const { DesktopBrowser, publicAddress, allowedURL } = require('../browser.cjs');
 
+test('login prompt waits for explicit return and verifies the original URL in the same page', async () => {
+  const browser = new DesktopBrowser({});
+  const key = require('node:crypto').createHash('sha256').update('owner:login-test').digest('hex');
+  const page = { session: 'login-test', results:new Map(), tail:Promise.resolve(), window:{isDestroyed:()=>false} };
+  browser.pages.set(key, page);
+  const visits = [];
+  const url = 'https://example.com/protected';
+  browser.action = async (actualPage, args, verify) => {
+    assert.equal(actualPage, page);
+    visits.push([args.url, verify]);
+    return verify ? {url, text:'protected content'} :
+      {login_required:true, login_page:'https://example.com/login', error:'browser_login_required'};
+  };
+  try {
+    let prompted;
+    const prompt = new Promise(resolve => { prompted = resolve; });
+    const run = browser.execute({owner:'owner', call_id:'request', args:{session:page.session, action:'open', url}}, prompted);
+    assert.deepEqual(await prompt, {login_wait:true, site:'example.com'});
+    await browser.control(page.session, 'takeover');
+    await browser.control(page.session, 'release');
+    assert.equal(visits.length, 1);
+    assert.deepEqual(await browser.execute({owner:'owner', call_id:'other', args:{session:page.session, action:'observe'}}), {error:'browser_login_pending'});
+    await browser.control(page.session, 'takeover');
+    await browser.control(page.session, 'return_login');
+    assert.equal((await run).text, 'protected content');
+    assert.deepEqual(visits, [[url, undefined], [url, url]]);
+    let secondPrompt;
+    const second = new Promise(resolve => { secondPrompt = resolve; });
+    const cancelled = browser.execute({owner:'owner', call_id:'cancelled', args:{session:page.session, action:'open', url}}, secondPrompt);
+    await second;
+    await browser.control(page.session, 'cancel_login');
+    assert.deepEqual(await cancelled, {error:'browser_login_cancelled'});
+    assert.throws(() => browser.control(page.session, 'return_login'), /browser_login_not_pending/);
+    assert.equal(visits.length, 3);
+  } finally { require('node:fs').rmSync(browser.root, {recursive:true, force:true}); }
+});
+
 test('browser menu anchors to its toolbar button at renderer zoom', async () => {
   let popup;
   const browser = new DesktopBrowser({ Menu: { buildFromTemplate: () => ({ popup(options) { popup = options; options.callback(); } }) } });

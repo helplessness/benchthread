@@ -19,7 +19,7 @@ type DesktopBridge = {
   saveFile: (resource: { path: string; workspaceId?: string; jobId?: string; root?: string }) => Promise<void>;
   onDownloadResult?: (callback: (result: { url: string; state: 'completed' | 'cancelled' | 'interrupted' }) => void) => () => void;
   notify: (event: { id: string; title: string; body: string }) => Promise<boolean>;
-  browserControl?: (session: string, action: 'takeover' | 'release') => Promise<{ success: boolean; control_mode: 'agent' | 'human' }>;
+  browserControl?: (session: string, action: 'takeover' | 'release' | 'return_login' | 'cancel_login' | 'status') => Promise<{ success: boolean; control_mode: 'agent' | 'human'; waiting_login?: boolean }>;
   browserInput?: (session: string, input: { action: 'observe' | 'click' | 'scroll' | 'key' | 'text'; x?: number; y?: number; deltaX?: number; deltaY?: number; key?: string; text?: string }) => Promise<{ success: boolean; screenshot?: string }>;
   onNotification: (callback: (id: string) => void) => () => void;
   onRecovery: (callback: (event: { state: 'recovering' | 'ready'; reason: string }) => void) => () => void;

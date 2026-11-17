@@ -67,6 +67,12 @@ class BrowserParameters(ParameterSchema):
     selector: str | None = None
     ref: str | None = None
     page_revision: int | None = None
+    verify_selector: str | None = None
+    verify_text: str | None = None
+    channel: str | None = None
+    channel_action: str | None = None
+    channel_value: str | None = None
+    channel_limit: int = 5
     text: str | None = None
     key: str | None = None
     x: float | None = None
@@ -1257,6 +1263,8 @@ class BrowserTool(Tool):
         if os.environ.get("TCODE_DESKTOP_MANAGED") == "1":
             return """Control Tcode's own isolated Chromium browser window, never the user's local browser.
 Supported actions: open/navigate (url required), observe/snapshot/screenshot, fill/type (text plus selector or ref), click (selector or ref), press (key), scroll (delta_y), back/forward/reload, close.
+For login-protected reads, pass verify_selector and verify_text on open/navigate when you know a visible, target-specific content marker; never use generic headers, credentials or guessed text as evidence. After manual return, missing or mismatched evidence stops the read.
+For structured channel reads use action=open and channel/channel_action/channel_value. Read the internet_content channels catalog for available actions. Use canonical HTTPS links for detail/profile/posts/thread, a subreddit name for subreddit, and keywords for search. Use action=close with the same channel and session when finished; it does not log the user out.
 Start with open, inspect returned text/elements and screenshot, then act. Refs require the exact returned page_revision; observe again if stale. Search inputs are supported; sensitive actions require user takeover. Downloads, popups and local/private-network URLs are blocked. Inspect the actual result after every action; never describe a planned action as completed.
 This is a sandboxed Chromium renderer with an isolated temporary profile, not a Linux container. Other actions in the shared schema are unsupported on desktop."""
         return """Control a sandboxed browser using Playwright.
@@ -1540,7 +1548,29 @@ This tool is designed for Docker + gVisor browser sandboxes and does not control
             )
         if os.environ.get("TCODE_DESKTOP_MANAGED") == "1":
             from ...browser.desktop import execute_desktop_browser
-            return await execute_desktop_browser(parsed.model_dump(), context)
+            from ...runtime.async_resume import active_resume
+            restored = (active_resume.get() or {}).get("result") or {}
+            restored_read = (restored.get("result_receipt") or {}).get("browser_read")
+            if restored_read and (parsed.action != "open" or not parsed.channel or
+                                  [parsed.channel, parsed.channel_action, (parsed.channel_value or "").strip()] == restored_read):
+                return ToolResult(title="browser", output="", error="恢复任务请使用已验证的浏览器读取结果，不要重放该读取或原浏览器操作。")
+            payload = parsed.model_dump()
+            if parsed.channel:
+                from ...browser.channel_reads import channel_read
+                from ...server.agent_reach_mcp import enabled_channels
+                try:
+                    if parsed.action == "close":
+                        return await execute_desktop_browser(payload, context)
+                    if parsed.action != "open" or parsed.url:
+                        raise ValueError("BAD_INPUT: channel reads require open without a caller URL.")
+                    if parsed.channel not in enabled_channels():
+                        raise ValueError("CHANNEL_DISABLED")
+                    target, evidence = channel_read(parsed.channel, parsed.channel_action or "",
+                                                    parsed.channel_value or "", parsed.channel_limit)
+                except ValueError as error:
+                    return ToolResult(title="browser", output="", error=str(error))
+                payload.update(url=target, channel_read=evidence)
+            return await execute_desktop_browser(payload, context)
         if not sandbox_session_enabled(context):
             return ToolResult(
                 title="browser",

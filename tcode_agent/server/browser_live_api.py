@@ -9,22 +9,121 @@ import math
 import os
 import uuid
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from ..browser import (
     browser_live_paths,
     read_browser_live_state,
     safe_browser_session_id,
 )
+from ..browser import checkpoint
+from ..browser.desktop import desktop_login_is_pending, execute_desktop_browser, pending_browser_login
+from ..session.manager import SessionManager
+from ..tools.base import ToolContext
 from . import workdirs as workdir_utils
 from .workspace_scope import (
     _resolve_user_workdir_path,
+    _workspace_context_from_request,
     _workspace_context_from_websocket,
 )
-from .auth import auth_required, current_user_from_websocket
+from .auth import auth_required, current_user_from_websocket, require_current_user
 from .state import ServerState
 
 router = APIRouter()
+_resuming_reads: dict[tuple[str, ...], asyncio.Task] = {}
+
+
+def cancel_browser_read(scope: tuple[str, ...]) -> None:
+    checkpoint.finish(scope)
+    if task := _resuming_reads.get(scope):
+        task.cancel()
+
+
+def _browser_resume_scope(request: Request, workspace_id: str, session_id: str):
+    require_current_user(request)
+    owner = _workspace_context_from_request(request, workspace_id=workspace_id)
+    workdir_utils.assert_workspace_active(ServerState.get_workdir(), owner)
+    return (owner.tenant_id, owner.user_id, owner.workspace_id, session_id), owner
+
+
+@router.get("/api/browser/pending-login")
+async def get_pending_browser_login(request: Request, workspace_id: str, session_id: str):
+    scope, _ = _browser_resume_scope(request, workspace_id, session_id)
+    saved = checkpoint.get_interrupted(scope) if os.environ.get("TCODE_DESKTOP_BROWSER_READY") == "1" else {}
+    return {"pending": pending_browser_login(*scope),
+            "interrupted": {"site": str(saved.get("site") or "")} if saved else None,
+            "resuming": scope in _resuming_reads}
+
+
+@router.post("/api/browser/resume-read")
+async def resume_browser_read(request: Request, workspace_id: str, session_id: str):
+    """Retry only a saved browser GET; hand verified evidence to the existing continuation system."""
+    if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
+        raise HTTPException(415, "恢复读取要求 JSON 请求")
+    if os.environ.get("TCODE_DESKTOP_BROWSER_READY") != "1":
+        raise HTTPException(409, "内置浏览器未就绪")
+    scope, owner = _browser_resume_scope(request, workspace_id, session_id)
+    if scope in _resuming_reads or ServerState.is_running(session_id):
+        raise HTTPException(409, "原任务或恢复读取正在执行")
+    _resuming_reads[scope] = asyncio.current_task()
+    try:
+        saved = checkpoint.get_interrupted(scope)
+        if not saved:
+            raise HTTPException(404, "没有可恢复的读取")
+        session_owner = dict(zip(("tenant_id", "user_id", "workspace_id"), scope[:3]))
+        session = await SessionManager.get(session_id, **session_owner)
+        if session is None:
+            raise HTTPException(404, "原会话已不存在")
+
+        from ..browser.channel_reads import channel_read
+        from ..runtime.async_completion import record_completion_event, session_completion_events
+        from .agent_reach_mcp import enabled_channels
+
+        identifier = saved["identifier"]
+        if any(event.get("identifier") == identifier for event in session_completion_events(session)):
+            checkpoint.finish(scope, identifier)
+            return {"identifier": identifier}
+        channel, action, value, limit = (saved[key] for key in ("channel", "channel_action", "channel_value", "channel_limit"))
+        if channel not in enabled_channels():
+            raise HTTPException(409, "请先启用此渠道")
+        target, evidence = channel_read(channel, action, value, limit)
+        original = next((item for item in SessionManager.visible_messages(session)
+                         if item.id == saved.get("origin_message_id") and str(item.role) == "user"), None)
+        if original is None:
+            raise HTTPException(409, "原任务上下文已不可用，未重放任何操作")
+
+        async def emit(event):
+            await ServerState.send_session_event(session_id, event)
+
+        context = ToolContext(session_id=saved["agent_session"], message_id=original.id, agent="browser",
+                              abort=asyncio.Event(), extra={**session_owner, "parent_session_id": session_id,
+                              "control_workdir": str(_resolve_user_workdir_path(owner.workspace_id, owner)),
+                              "browser_checkpoint_id": identifier, "__agent_event_emit__": emit})
+        result = await execute_desktop_browser({"action": "open", "session": saved.get("browser_session"), "url": target,
+                                                 "channel": channel, "channel_action": action, "channel_read": evidence}, context)
+        if result.error:
+            if result.metadata.get("error_code") == "browser_login_cancelled":
+                checkpoint.finish(scope, identifier)
+            raise HTTPException(409, result.error)
+        output = json.loads(result.output)
+        if not output.get("items") or checkpoint.get_interrupted(scope).get("identifier") != identifier:
+            raise HTTPException(409, "没有可验证内容，或恢复已取消")
+        event = await record_completion_event(session_id=session_id, identifier=identifier, origin_turn_id=original.id,
+            task_context={"session_id": session_id, "message_id": original.id, "request": original.content},
+            continuation={"target_server": "tcode-desktop", "target_tool": "browser.channel.read",
+                "status": "completed", "can_continue": True, "message": "浏览器读取已恢复；可从已验证结果继续原任务。",
+                "result_summary": result.output, "result_receipt": {"status": "completed", "validated": True,
+                "rejected_artifact_count": 0, "browser_read": [channel, action, value]}})
+        if not event:
+            raise HTTPException(409, "原会话已失效，未提交结果")
+        checkpoint.finish(scope, identifier)
+        return {"identifier": identifier}
+    except asyncio.CancelledError:
+        if not checkpoint.get_interrupted(scope):
+            raise HTTPException(409, "恢复读取已取消") from None
+        raise
+    finally:
+        _resuming_reads.pop(scope, None)
 
 _CONTROL_ACTIONS = {
     "set_control", "click_at", "move", "drag", "scroll", "key_down", "key_up",
@@ -127,6 +226,8 @@ async def websocket_browser_live(websocket: WebSocket):
                 workspace,
                 browser_session_id,
             )
+            if state.get("desktop_browser") is True and state.get("status") == "waiting_login" and not desktop_login_is_pending(state):
+                state = {**state, "status": "login_interrupted", "error": "原登录请求已失效，请重新打开页面。"}
             state_payload = {
                 "type": "browser_state",
                 "browser_session_id": browser_session_id,

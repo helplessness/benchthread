@@ -286,7 +286,7 @@ function installNativeHandlers() {
   });
   ipcMain.handle('desktop:browser-control', async (event, payload) => {
     assertSender(event, window, origin);
-    if (!browser || !payload || typeof payload.session !== 'string' || !['takeover', 'release'].includes(payload.action)) throw new Error('无效的浏览器控制操作');
+    if (!browser || !payload || typeof payload.session !== 'string' || !['takeover', 'release', 'return_login', 'cancel_login', 'status'].includes(payload.action)) throw new Error('无效的浏览器控制操作');
     if (payload.action === 'takeover' && /^manual-browser-[\w-]+$/.test(payload.session) && ![...browser.pages.values()].some(page => page.session === payload.session && !page.closed)) {
       await browser.openBlank(payload.session);
     }
@@ -306,7 +306,7 @@ function installNativeHandlers() {
     if (!isMainFrame || isInPlace || !browser) return;
     for (const page of browser.pages.values()) if (page.host === window) {
       browser.detach(page);
-      void browser.control(page.session, 'release').catch(() => {});
+      if (!page.loginBlocking) void browser.control(page.session, 'release').catch(() => {});
     }
   });
   ipcMain.handle('desktop:computer-panel-request', event => {

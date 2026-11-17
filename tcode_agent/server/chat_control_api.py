@@ -115,6 +115,10 @@ async def cancel_chat(
     # order left the model free to start more tools while the HTTP request spent
     # several seconds walking the collaboration tree.
     ServerState.mark_session_cancelled(session_id)
+    from .browser_live_api import cancel_browser_read
+    cancel_browser_read((*(
+        str(session_owner.get(key) or "") for key in ("tenant_id", "user_id", "workspace_id")
+    ), session_id))
     await ServerState.cancel_session(session_id, clear_guidance=clear_guidance)
     cancelled_team_task_details: dict[str, dict[str, Any]] = {}
     cancelled_worker_task = cancel_worker_task(session_id)

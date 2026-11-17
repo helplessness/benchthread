@@ -48,6 +48,7 @@ from .research_workspace import ResearchWorkspaceTool
 from .research_action_commit import ResearchActionCommitTool
 from .protein_candidate import ProteinCandidateTool
 from .capability_catalog import CapabilityCatalogTool
+from .internet_content import InternetContentTool
 from .ontology_query import OntologyQueryTool
 from .computer import (
     ComputerTool, ComputerDiscoverTool, ComputerObserveTool,
@@ -134,6 +135,7 @@ _TOOLS = [
     ResearchActionCommitTool,
     ProteinCandidateTool,
     CapabilityCatalogTool,
+    InternetContentTool,
     OntologyQueryTool,
     ComputerTool,
     ComputerDiscoverTool,

@@ -3,6 +3,8 @@ import { browserLiveStore } from '../stores/browserLive';
 import { desktop, type BrowserCommand, type BrowserState } from '../desktop';
 import BrowserToolbar from '../desktop-app/BrowserToolbar';
 import { Portal } from 'solid-js/web';
+import { sendMessage } from '../api/chat';
+import { sessionStore } from '../stores/session';
 
 type BrowserLivePanelProps = {
   parentSessionId: string;
@@ -49,8 +51,9 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
   const [pendingConfirmation, setPendingConfirmation] = createSignal<{ action?: string; summary?: string } | null>(null);
   let liveSocket: WebSocket | null = null;
   const active = createMemo(() => {
-    const item = props.running || takenOverSession() ? browserLiveStore.activeForParent(props.parentSessionId) : null;
-    if (item && !terminalBrowserStatuses.has(String(item.status || '').trim().toLowerCase())) return item;
+    const item = browserLiveStore.activeForParent(props.parentSessionId);
+    if (item && (props.running || takenOverSession() || (desktop && ['waiting_login', 'login_interrupted'].includes(item.status)))
+        && !terminalBrowserStatuses.has(String(item.status || '').trim().toLowerCase())) return item;
     return manualOpen() ? manualItem() : null;
   });
   const displayingManual = createMemo(() => manualOpen() && (manualSessions().includes(selectedBrowser()) || !takenOverSession()));
@@ -59,6 +62,81 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
   const nativePanel = createMemo(() => !!desktop?.browserPanel && (displayingManual() || desktopBrowser()));
   const effectiveWorkspaceId = createMemo(() => active()?.workspaceId || props.workspaceId);
   const nativeSession = createMemo(() => panelItem()?.browserSessionId || '');
+  const waitingLogin = () => active()?.status === 'waiting_login';
+  const [loginBusy, setLoginBusy] = createSignal(false);
+  const [loginDeferred, setLoginDeferred] = createSignal(false);
+  const [interrupted, setInterrupted] = createSignal<{site: string}>();
+  const [restartingRead, setRestartingRead] = createSignal(false);
+  const [recoveryNotice, setRecoveryNotice] = createSignal('');
+  createEffect(() => {
+    const parent = props.parentSessionId;
+    const workspace = props.workspaceId;
+    setInterrupted(undefined);
+    setRecoveryNotice('');
+    if (!desktop || !parent || !workspace) return;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const restore = async () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      try {
+        const query = new URLSearchParams({session_id: parent, workspace_id: workspace});
+        const response = await fetch(`/api/browser/pending-login?${query}`, { signal: controller.signal, cache: 'no-store' });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (controller.signal.aborted) return;
+        if (data.pending) browserLiveStore.upsertFromAgentEvent(data.pending, parent);
+        setInterrupted(data.interrupted || undefined);
+        if ((data.resuming || restartingRead()) && !data.pending) timer = window.setTimeout(restore, 800);
+      } catch {
+        // The live socket and the next online event can restore this prompt.
+      }
+    };
+    void restore();
+    window.addEventListener('online', restore);
+    window.addEventListener('tcode:restore-browser-view', restore);
+    onCleanup(() => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener('online', restore);
+      window.removeEventListener('tcode:restore-browser-view', restore);
+    });
+  });
+  async function resumeRead() {
+    if (!interrupted() || props.running || restartingRead()) return;
+    const parent = props.parentSessionId;
+    const query = new URLSearchParams({session_id: parent, workspace_id: props.workspaceId});
+    setRestartingRead(true);
+    setRecoveryNotice('正在重新打开原读取；需要时会请你登录。');
+    window.dispatchEvent(new Event('tcode:restore-browser-view'));
+    try {
+      const response = await fetch(`/api/browser/resume-read?${query}`, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '未能恢复读取。');
+      if (parent !== props.parentSessionId || sessionStore.currentSessionId() !== parent) return;
+      setInterrupted(undefined);
+      setRecoveryNotice('原读取已验证，正在使用该结果继续任务。');
+      await sendMessage(`继续异步任务 ${data.identifier}。`, {async_continuation_id:data.identifier});
+      setRecoveryNotice('');
+    } catch (error) {
+      if (parent === props.parentSessionId) setRecoveryNotice(error instanceof Error ? error.message : '未能恢复读取。');
+    } finally {
+      setRestartingRead(false);
+      window.dispatchEvent(new Event('tcode:restore-browser-view'));
+    }
+  }
+  const loginDecision = async (decision: 'takeover' | 'cancel_login') => {
+    const item = active();
+    if (!item || !waitingLogin() || !desktop?.browserControl || loginBusy()) return;
+    setLoginBusy(true);
+    try {
+      if (decision === 'takeover') await takeControl();
+      else await desktop.browserControl(item.browserSessionId, decision);
+    } catch {
+      setConnectionError('登录请求已失效或操作未送达');
+    } finally { setLoginBusy(false); }
+  };
   createEffect(() => {
     nativeSession();
     setBrowserState({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 });
@@ -73,12 +151,19 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
       void desktop?.browserPanel?.(session, {action:'close'}).catch(() => {});
       notifyPanel(false, session);
     }
-    if (task) void desktop?.browserControl?.(task, 'release').catch(() => {});
+    const previous = untrack(() => browserLiveStore.sessions().find(item => item.browserSessionId === task));
+    if (task) {
+      if (previous?.status === 'waiting_login') void desktop?.browserPanel?.(task, {action: 'detach'}).catch(() => {});
+      else void desktop?.browserControl?.(task, 'release').catch(() => {});
+    }
     batch(() => { setManualSessions([]); setSelectedBrowser(''); setTakenOverSession(''); setControlMode('agent'); setSidePanelOpen(false); });
   });
   onCleanup(() => {
     for (const session of manualSessions()) void desktop?.browserPanel?.(session, {action:'close'}).catch(() => {});
-    if (takenOverSession()) void desktop?.browserControl?.(takenOverSession(), 'release').catch(() => {});
+    if (takenOverSession()) {
+      if (waitingLogin()) void desktop?.browserPanel?.(takenOverSession(), {action: 'detach'}).catch(() => {});
+      else void desktop?.browserControl?.(takenOverSession(), 'release').catch(() => {});
+    }
   });
   const connectionKey = createMemo(() => {
     const item = active();
@@ -137,7 +222,7 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
     if (!session && displayingManual()) { await closeManual(manualSession()); return; }
     try {
       if (nativePanel() && item && desktop?.browserControl) {
-        const result = await desktop.browserControl(item.browserSessionId, 'release');
+        const result = await desktop.browserControl(item.browserSessionId, !session && waitingLogin() ? 'return_login' : 'release');
         setControlMode(result.control_mode);
       } else {
         sendControl({ action: 'set_control', mode: 'agent' });
@@ -198,7 +283,7 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
     const closeBrowser = (event: Event) => {
       const session = (event as CustomEvent<string>).detail;
       if (session && manualSessions().includes(session)) void closeManual(session);
-      else if (!session || session === takenOverSession()) void releaseControl(session || undefined);
+      else if (!session || session === takenOverSession()) void releaseControl(session || takenOverSession() || undefined);
     };
     const selectBrowser = (event: Event) => {
       const session = (event as CustomEvent<string>).detail;
@@ -355,6 +440,9 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
             frameSeq: Number(data.frame_seq || 0),
             error: data.error,
           });
+          if (item.status === 'waiting_login' && nextStatus !== 'waiting_login') {
+            window.dispatchEvent(new Event('tcode:restore-browser-view'));
+          }
         } catch {
           // Heartbeats and malformed metadata must not interrupt the frame stream.
         }
@@ -391,16 +479,43 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
   });
 
   return (
+    <>
+    <Show when={interrupted() && !waitingLogin()}>
+      <section aria-label="恢复浏览器读取" class="rounded-lg border border-current/20 p-3">
+        <p>服务重启前暂停了 {interrupted()?.site || '网站'} 的读取。可以从该读取步骤恢复，不会重放点击或输入。</p>
+        <button type="button" disabled={props.running || restartingRead()} onClick={() => void resumeRead()}>
+          {restartingRead() ? '正在恢复…' : '恢复原读取'}
+        </button>
+      </section>
+    </Show>
+    <Show when={recoveryNotice()}><p role="status">{recoveryNotice()}</p></Show>
     <Show when={active()}>
       {(itemAccessor) => {
         const item = () => itemAccessor();
         const terminal = () => terminalBrowserStatuses.has(String(item().status || '').trim().toLowerCase());
         return (
           <>
+          <Show when={waitingLogin() && !takenOverSession()}>
+            <section aria-label="浏览器登录确认" class="rounded-lg border border-current/20 p-3">
+              <p role="status">需要登录 {item().title || '目标网站'}，当前读取已暂停。</p>
+              <Show when={!loginDeferred()} fallback={<button type="button" onClick={() => setLoginDeferred(false)}>处理登录请求</button>}>
+                <p>请在浏览器内本人登录，交还后会验证原页面能否访问。请勿在聊天中发送凭据。</p>
+                <Show when={desktop?.browserControl} fallback={<p>请前往 TCode 桌面端处理登录请求。</p>}>
+                  <button type="button" disabled={loginBusy()} onClick={() => void loginDecision('takeover')}>接管或继续登录</button>{' · '}
+                  <button type="button" disabled={loginBusy()} onClick={() => setLoginDeferred(true)}>稍后处理</button>{' · '}
+                  <button type="button" disabled={loginBusy()} onClick={() => void loginDecision('cancel_login')}>取消本次读取</button>
+                </Show>
+              </Show>
+              <Show when={connectionError()}><p role="alert">{connectionError()}</p></Show>
+            </section>
+          </Show>
+          <Show when={item().status === 'login_interrupted' && !interrupted()}>
+            <p role="status">原浏览器登录请求已结束，未继续读取。请重新发起读取，需要时会重新请你登录。</p>
+          </Show>
           <Show
-            when={!item().hidden && item().key !== 'manual'}
+            when={!waitingLogin() && item().status !== 'login_interrupted' && !item().hidden && item().key !== 'manual'}
             fallback={
-              <Show when={item().key !== 'manual'}>
+              <Show when={!waitingLogin() && item().status !== 'login_interrupted' && item().key !== 'manual'}>
               <button
                 type="button"
                 class="fixed bottom-24 right-5 z-[110] inline-flex items-center gap-2 rounded-full border border-[#38bdf8]/45 bg-[#101a20]/95 px-4 py-2 text-xs font-semibold text-[#bdeaff] shadow-[0_16px_40px_rgba(0,0,0,0.4)] backdrop-blur"
@@ -552,5 +667,6 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
         );
       }}
     </Show>
+    </>
   );
 }

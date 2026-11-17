@@ -21,8 +21,9 @@ import DesktopModelSettings from './DesktopModelSettings';
 import WebModelSettings from './WebModelSettings';
 import FeishuSettings from './FeishuSettings';
 import WebSearchSettings from './WebSearchSettings';
+import InternetContentSettings from './InternetContentSettings';
 
-export type SettingsSection = 'general' | 'notifications' | 'models' | 'collaboration' | 'structure' | 'knowledge' | 'mcp' | 'desktop' | 'feishu' | 'websearch';
+export type SettingsSection = 'general' | 'notifications' | 'models' | 'collaboration' | 'structure' | 'knowledge' | 'mcp' | 'desktop' | 'feishu' | 'websearch' | 'internet-content';
 type HeaderRow = { name: string; value: string };
 const sections: { id: SettingsSection; label: string; detail: string; group: '个人' | '集成' | '数据' }[] = [
   { id: 'general', label: '常规', detail: '界面与交互', group: '个人' },
@@ -33,6 +34,7 @@ const sections: { id: SettingsSection; label: string; detail: string; group: '�
   { id: 'knowledge', label: '本体知识', detail: '工作区知识源', group: '数据' },
   { id: 'mcp', label: 'MCP 服务', detail: '连接与远程工具', group: '集成' },
   { id: 'websearch', label: '网页搜索', detail: 'SearXNG 与 Brave Search', group: '集成' },
+  { id: 'internet-content', label: '互联网渠道', detail: '内容读取与渠道检查', group: '集成' },
   { id: 'feishu', label: '飞书接入', detail: '机器人与任务通知', group: '集成' },
   { id: 'desktop', label: '远端服务', detail: 'Artifact 文件服务与绑定', group: '集成' },
 ];
@@ -366,6 +368,7 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
       </div></Show>
       <Show when={section()==='feishu'}><FeishuSettings workspaceId={props.workspaceId}/></Show>
       <Show when={section()==='websearch'}><WebSearchSettings/></Show>
+      <Show when={section()==='internet-content'}><InternetContentSettings workspaceId={props.workspaceId}/></Show>
       <Show when={section()==='collaboration'}><div class="settings-page"><h2>协作与 Agent</h2><p>控制协作办公室的默认表现，以及多 Agent 任务的界面行为。</p>
         <div class="settings-section"><h3>协作办公室</h3><section class="settings-group">
           {toggle('默认播放办公室动画','进入协作办公室时播放人物与状态动画。',officeAnimations(),setOfficeAnimations,false,'只控制视觉动画，不会暂停 Agent 任务。')}

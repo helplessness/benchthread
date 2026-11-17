@@ -16,7 +16,7 @@ _GROUPS: dict[str, tuple[str, ...]] = {
     "group:all": ("*",),
     "group:runtime": ("bash", "exec", "process", "process_runtime", "skill_run"),
     "group:fs": ("read", "write", "edit", "glob", "grep", "import_resource"),
-    "group:web": ("webfetch", "websearch"),
+    "group:web": ("webfetch", "websearch", "internet_content"),
     "group:ui": ("browser", "canvas", "intelligent_page", "mcp_*browser*", "mcp_*playwright*", "mcp_*chrome*", "mcp_*cdp*"),
     "group:mcp": ("mcp_*",),
     "group:plugins": ("plugin_runtime", "plugin_network", "plugin:*"),

@@ -66,6 +66,7 @@ _CAPABILITY_MAP: dict[str, ToolCapability] = {
     ),
     "webfetch": ToolCapability("webfetch", side_effect_level="none", tags=("read_only", "web")),
     "websearch": ToolCapability("websearch", side_effect_level="none", tags=("read_only", "web")),
+    "internet_content": ToolCapability("internet_content", side_effect_level="none", tags=("read_only", "web")),
     "browser": ToolCapability(
         "browser",
         side_effect_level="high",
