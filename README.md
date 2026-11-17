@@ -1,24 +1,24 @@
 # BenchThread
 
-BenchThread（原 TCode）是一个可自托管的 AI 研究工作台。你可以从一个问题开始，把文献、工具调用、远程计算和分析结果留在同一个工作区，方便复查、继续或交给同事。蛋白质研究是其中一个应用场景，不是使用前提。
+BenchThread（原 TCode）是一个可自托管的 AI 研究工作台。把文献、工具调用、远程计算和分析结果留在同一个工作区，方便复查、继续或交给同事。蛋白质研究是其中一个应用场景，不是使用前提。
 
-BenchThread 目前处于开源 Alpha，面向本机和自托管研究，尚未验收生产多租户部署。仓库保留研究工具和插件代码，不附带私有配置、真实验收记录、未确认可分发的知识库或研究样本。依赖这些数据的插件需由部署方提供有权使用的数据，基础聊天不需要它们。
-
-`v0.0.2` 是固定的源码快照；下方指南对应 `main`。复现问题时请注明标签或提交，不要只看应用显示的版本号。
-
-本次只更换公开名称。当前桌面界面与截图可能仍显示 TCode；`tcode`、`tcode-server`、Python 包名 `tcode-agent` 和现有配置无需更改。
+目前处于开源 Alpha，尚未验收生产多租户部署。界面与截图可能仍显示 TCode；`tcode`、`tcode-server` 和 Python 包名 `tcode-agent` 不变。
 
 ## 快速开始
 
-**选择平台：** [Linux Web](#linux-web发出第一条消息) · [macOS 桌面（Apple Silicon）](#macos启动桌面端) · [Windows Web（实验性）](docs/Windows-Web快速启动.md) · [详细部署](#安装与部署)
+**选择入口：** [Linux Web](#linux-web发出第一条消息) · [macOS 桌面（Apple Silicon）](desktop/README.md#打开方式) · [Windows Web（实验性）](docs/Windows-Web快速启动.md#1-首次准备) · [Docker Web](docs/RUNNING.md#docker-本机体验)
 
-![BenchThread 研究工作区：用虚构的酶活性读数演示对话、结果表格与后续验证建议](docs/screenshots/research-chat.png)
+已有基础聊天？跳到[配置和启动其他服务](#安装与部署)。
 
-*真实 Web 界面，使用隔离工作区、虚构数据和本地演示模型；不代表实际科研结果。*
+![BenchThread 研究工作区：对话、结果表格与后续验证建议](docs/screenshots/research-chat.png)
+
+*真实界面，使用虚构数据和本地演示模型，不代表实际科研结果。*
 
 ### Linux Web：发出第一条消息
 
-准备 **Git、Python 3.12（含 venv/pip）、Node.js 22.12+（含 npm）**，以及一个可访问的文本模型服务。基础聊天不需要 Docker、MCP 或 GPU。
+准备 **Git、Python 3.12（含 venv/pip）、Node.js 22.12+（含 npm）**，以及一个可访问的文本模型服务。基础聊天不需要 Docker、Redis、GPU 或 MCP。
+
+**首次聊天前要配置真实模型。** 安装脚本生成的 `.tcode-local/tcode.json` 只是模板，`demo/your-model-id` 不是可用模型。新用户建议直接在网页配置；如果想用文件，先按[文件配置步骤](docs/CONFIGURATION.md#从文件配置模型)填写真实模型 ID、地址和所需密钥。
 
 ```bash
 git clone https://github.com/helplessness/benchthread.git
@@ -32,296 +32,38 @@ TCODE_MCP_CONFIG="$PWD/.tcode-local/mcp.json" \
 tcode-server --local --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local"
 ```
 
-1. 打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)，进入 **设置 → 模型与执行 → Web 模型服务 → 添加聊天服务**。填服务名称、协议、接口地址、模型 ID 和服务所需的 API Key，点击 **保存服务**。OpenAI 兼容接口填服务商提供的基础地址（通常以 `/v1` 结尾），不要附加 `/chat/completions`。
-2. 在 **实例默认对话模型** 中选刚添加的模型；可点 **文本测试** 确认连接。
-3. 关闭设置，点 **新建任务**。在 **创建会话** 窗口选择工作目录；如果列表为空，在 **新增目录名** 填 `demo-workspace`，点 **新增目录**。再点 **创建会话**，发送「你好，请用一句话介绍你能做什么」。聊天区收到回复即跑通。
+1. 打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)。已用文件配好模型的可以直接到第 3 步，不用在网页重复添加。否则打开 **设置 → 模型与执行 → Web 模型服务 → 添加聊天服务**，填协议、接口地址、模型 ID 和所需 API Key，点 **保存服务**。OpenAI 兼容接口填基础地址（通常以 `/v1` 结尾），不要附加 `/chat/completions`。
+2. 对刚添加的模型点 **文本测试**，通过后选为 **实例默认对话模型**。
+3. 回到聊天页，点 **新建任务**。在「创建会话」中选工作目录；没有目录时先输入 `demo-workspace` 并点 **新增目录**。点 **创建会话**，确认输入框选中了实际模型，发送「你好，请用一句话介绍你能做什么」。收到回复即跑通。
 
-`--local` 只用于回环地址上的个人试用，不需要登录，不要通过代理或隧道对外开放。按 `Ctrl+C` 停止；用同一运行目录重启可保留工作区和会话。要用文件配置、共享部署或启用隔离与异步服务，请看[详细部署](#安装与部署)。
-
-## 为什么用 BenchThread？
-
-**从一个问题开始，重要步骤由你把关。** 先配置一个模型就能聊天，有需要再接入已有的 MCP 工具。多步骤任务可以设定目标和预算，中途补充要求、暂停或恢复；重复的步骤可以保存为工作流。需要审核的操作，先看调用参数再决定是否执行。在桌面端，如果 Agent 使用的浏览器遇到需要你亲自处理的步骤，也可以接管，处理完再交回。
-
-**长计算不用守着电脑。** 批量数据处理、模拟或蛋白质结构预测，都可以交给支持持久任务的远程 MCP。任务受理后，可以关闭网页或退出桌面端；Web 和桌面端回来后都能按原任务 ID 查进度、取结果，无需重新提交。结果就绪后，点「继续此任务」才会在原会话接着分析，不打断当前对话。
-
-长任务恢复需要远端独立执行、保留任务和结果，并提供按任务 ID 查状态和取结果的接口；重开 BenchThread 时需沿用原数据目录和任务配置。只有阻塞接口的 MCP 也能在后台等待，但负责等待的进程必须保持运行，且它与 MCP 断连后结果可能无法找回。提交回执不明时，BenchThread 保留待核对状态，不盲目重提。接入要求和配置见[第三方 MCP 接入指南](docs/服务隔离/第三方MCP插件接入与运行.md)。
-
-**回来有东西可查，不只是一句「做完了」。** BenchThread 按任务的验收条件检查工具结果、交付文件和输出格式，指出哪些已验证、哪些未通过或缺证据。你可以补查、人工复核或接受当前交付；接受不等于验证通过，更不代表科研结论已证实。结果也可以在对话里做成交互图表或页面，保留版本供复查。比如拿到结构预测结果后，你可以授权 Agent 在同一个 Mol* 视图里按选区聚焦、着色，或测量两个原子之间的距离，直接核对测量线和数值，不修改原始结构文件。
-
-**把这次研究留给下一次，或交给下一位同事。** 输入、会话、运行记录和产物保存在工作区里；启用 Paper Wiki 后，还能整理、检索和回看文献。需要交接时，可以把选定的研究资料打包导出，接收方导入后从已有记录和证据接着做，不用从聊天截图里重建上下文。
-
-**BenchThread 负责组织和跟踪过程，不替代计算服务或科研判断。** 领域计算、异步回传和知识库按需配置；自托管工作台不等于接入的模型或工具都在本机运行。
-
-想先看有哪些功能，见[功能进度](#功能进度)。
-
-<details>
-<summary>查看研究中心：假说、依据与待验证项</summary>
-
-![BenchThread 研究中心：并排查看演示会话、研究假说、证据缺口和下一步验证计划](docs/screenshots/research-hypothesis.png)
-
-此图来自启用了研究功能的演示实例；上方 `--local` 快速开始只验证基础聊天，不启用研究整理。
-
-</details>
+`--local` 仅用于本机个人试用，不要求登录，不要通过代理或隧道对外开放。用同一个 `--workdir` 重启可保留设置和会话。需要登录时走[带登录的 Web 部署](docs/RUNNING.md#按本机配置启动-web)；找不到模型时看[模型配置排查](docs/CONFIGURATION.md#模型不显示或无法发送)。
 
 ## 安装与部署
 
-从一个刚克隆的仓库开始，进入包含 `pyproject.toml` 的 BenchThread 根目录。不需要复制别人的配置、聊天记录或工作区。
+按你要做的事选择入口。**Docker Web 和工具沙箱是两套独立的部署，不用一起启动。**
 
-### 先选择启动方式
-
-| 平台 | Alpha 支持范围 | 配置完成后的日常启动 |
+| 用途 | 配置、启动与验证 | 需要什么 |
 | --- | --- | --- |
-| [Linux Web](#linux安装并启动-web) | 主要 Web 部署入口；本机试用和按配置部署的启动方式不同。 | 本机体验用 `tcode-server`；按配置启动用 `./scripts/start_web.sh` |
-| [macOS 桌面源码版](#macos启动桌面端) | Apple Silicon（arm64）；不提供已签名安装包，不支持 Intel Mac 桌面。 | `./scripts/start_desktop.sh`，不需要另启 Web |
-| [Windows Web](docs/Windows-Web快速启动.md) | 原生 PowerShell 源码启动，实验性支持，尚待 Windows 实机验收；不提供 Windows 桌面版。 | 在 PowerShell 用 `tcode-server.exe` 启动，浏览器访问 |
-| [Docker Web](docs/RUNNING.md#docker-本机体验) | 本机基础聊天；宿主机不需要 Python 或 Node.js。 | 一次配置账号和模型后，运行 `docker compose up -d` |
+| **用 Docker 跑 Web** | [Docker Compose：首次配置与启动](docs/RUNNING.md#docker-本机体验) | 配管理员和模型，再启动基础聊天；不包含工具沙箱或远程任务服务。 |
+| **启用工具沙箱** | [Linux 工具沙箱部署](docs/RUNNING.md#linux-web-可选容器部署) · [Agent 浏览器](docs/RUNNING.md#linux-web-启用-agent-浏览器) · [通用执行器和 BLAST 镜像](docs/RUNNING.md#通用执行器和-blast-镜像) | 按需构建对应镜像、配置 Sandbox Runner；不需要另起 Docker Web。 |
+| **连接普通 MCP** | [普通 MCP：配置与验证](tcode_agent/MCP_QUICKSTART.md#配置一个服务) | 先启动实际工具服务，再在 BenchThread 配置地址和认证；不需要 Job Protocol 或 Docker。 |
+| **启用远程异步计算** | [Job Protocol 与执行端：启动和验收](docs/RUNNING.md#远程异步计算) | 配网关、后台执行和跟踪；实际执行计算的 MCP 服务需单独准备。 |
+| **让远程工具收发文件** | [Artifact 文件服务：准备、接入与验收](docs/RUNNING.md#文件服务artifact) | 只在传文件时需要。安装文件 SDK 不等于启动文件服务。 |
 
-以上命令从项目根目录执行，首次使用前都需要安装依赖和配置模型。Windows 和 Linux 的本机最小 Web 启动方式都不要求 Docker；连接普通远程 MCP 也不要求本机安装 Docker。浏览器接管、电脑控制和本机隔离等能力不承诺跨平台对等。异步任务、文件传输和需要隔离的工具按使用场景另行配置。
-
-### 依赖与必填配置
-
-**当前源码启动不能在空白环境中直接运行。** 用户需先准备下面标为“必须”的基础环境，再安装项目依赖、填写模型配置。安装脚本不会自动安装系统 Python、Node.js、Docker 或远程计算服务。首次下载项目依赖需要联网。
-
-| 依赖或配置 | 是否必须 | 用户需要准备什么 |
-| --- | --- | --- |
-| Git | 按需 | 使用 `git clone` / `git pull` 获取和更新源码时需要；下载源码压缩包不需要 Git 来解压。 |
-| Python | 源码启动必须 | Windows / Linux Web 准备 Python 3.12（Windows 指南使用 `py -3.12`）；macOS 桌面准备 Python 3.12+，确保 `python3` 指向符合要求的版本。 |
-| Python venv / pip | 源码启动必须 | 需能创建虚拟环境并安装包。Linux 发行版可能需另装与 Python 版本对应的 venv / pip 软件包。 |
-| Node.js 与 npm | 源码启动必须 | 准备 Node.js 22.12+ 和 npm，用于构建前端；桌面源码启动还用它安装和启动 Electron。 |
-| Apple Silicon 与系统工具 | macOS 桌面源码版必须 | 当前驱动使用 arm64 版本，Intel Mac 不在支持范围。需有 `curl`、`tar`、`shasum` 等系统命令；首次准备依赖需能访问 Python 包源、npm、Electron 和 GitHub 发布下载地址。即使不启用 Computer Use，启动脚本也会检查并按需准备驱动。 |
-| 项目 Python / npm 依赖 | 源码启动必须 | Windows 按 [PowerShell 指南](docs/Windows-Web快速启动.md)用 pip 和 npm 安装；Linux 运行 `./scripts/install_tcode.sh`；macOS 的 `./scripts/start_desktop.sh` 按需安装桌面依赖。 |
-| 模型接口与配置 | 实际聊天必须 | 准备可访问的模型服务，填写模型 ID、接口地址和服务所需的密钥。可使用远程 API，不要求本机部署模型或安装 GPU 驱动。 |
-| Docker 与 Sandbox Runner | 按需 | Linux 使用容器隔离插件、容器执行能力时，按部署方式准备 Docker 和对应 Runner；Runner 可部署在独立主机。下文最小 Web 聊天体验不需要 Docker。选择 Docker 部署 Web 本身时也需要 Docker，但这与工具沙箱是两回事。 |
-| macOS 原生隔离 | 桌面本地隔离功能需要 | 已接入的桌面本地执行使用 macOS 原生隔离，不要求安装 Docker；启动时进行隔离自检。电脑控制等能力还需按提示授予系统权限。 |
-| 普通 MCP 服务 | 按需 | 使用对应工具时自行部署或连接已有服务；只连接远程 MCP 不要求本机安装 Docker，也不要求部署 TMCP。 |
-| 异步任务服务与执行端 | 按需 | 桌面和单机 Web 可以托管内置 Job Protocol，或继续用已有网关。真正执行计算的 MCP 服务仍需单独提供；Windows Web 的内置网关尚待实机验证。 |
-| Artifact 文件服务 | 按需 | 使用远程文件引用传输输入或取回产物时配置服务地址和认证。文本工具不需要；安装文件 SDK 不会自动部署文件服务。 |
-| 领域工具、GPU、模型权重 | 按需 | Boltz 等计算工具按各自要求部署在实际执行主机，不是基础 Web / 桌面启动依赖。 |
-| 扩展功能依赖 | 按需 | swarm、向量检索、Redis 相关 Python 依赖可用 `./scripts/install_tcode.sh --full` 安装；Redis 服务、检索模型及插件自身依赖仍需按所用功能另外准备。 |
-
-**未配置沙箱时，需要隔离的功能不应绕过隔离在宿主执行。** 基础聊天可用不代表所有工具可用；缺少对应服务时，请配置服务或保持该功能关闭。详细服务入口见[需要哪些服务？](#需要哪些服务)和[运行指南](docs/RUNNING.md)。
-
-### Windows：在 PowerShell 启动 Web
-
-按 [Windows Web 快速启动](docs/Windows-Web快速启动.md)安装、一次补齐本机配置并启动。不要执行下面的 Linux Bash 脚本或 macOS 桌面命令。指南先跑通基础聊天，再说明如何接普通 MCP、远程异步任务和文件服务。
-
-### macOS：启动桌面端
-
-不需要先运行 Web 安装脚本，也不需要另外启动 Web 后端。首次执行：
-
-```bash
-./scripts/init_local_config.sh
-```
-
-源码桌面默认要求登录：**首次启动前**，在私有的 `.tcode-local/desktop.env` 中、继承 `local.env` 的 `source` 行之后设置 `TCODE_BOOTSTRAP_PASSWORD` 为自己的强密码。初始邮箱默认是 `admin@example.com`，可在同处通过 `TCODE_BOOTSTRAP_EMAIL` 更改。这些设置只用于空认证库的首次初始化，不会重置已有账号的密码。模型可在登录后从界面配置，不必先修改 JSON。
-
-在项目根目录执行（如用终端临时设置了模型凭据，请在同一终端执行）：
-
-```bash
-./scripts/start_desktop.sh
-```
-
-启动脚本会按需创建 `.desktop-venv`、安装桌面 Python 与 npm 依赖并构建前端。Agent 操作网页使用 Electron 随包自带的 Chromium，不需要另装 Chrome、ChromeDriver、Playwright 或 Docker。
-
-控制其他 macOS 应用是另一项功能。源码启动会尝试准备固定版本的 Cua Driver，电脑控制默认关闭；干净副本中若驱动下载失败，仍可聊天和操作网页。已有损坏驱动或显式要求电脑控制时，需先修复驱动。手动准备、系统授权和 DMG 中已打包的内容见[桌面浏览器与电脑控制](desktop/README.md#网页操作与电脑控制)。
-
-1. 用刚设定的邮箱和密码登录，打开 **设置 → 模型与执行 → 添加聊天服务**。
-2. 填服务名称、协议、接口地址和模型 ID。有鉴权再填 API Key；OpenAI 兼容接口通常填写以 `/v1` 结尾的基础地址，不填 `/chat/completions`。
-3. 点击 **测试连接 → 保存服务 → 设为默认**。系统询问钥匙串访问时，先核对请求来自你启动的应用；不要把密钥填到聊天框。
-4. 点 **新建会话**。首次使用时若列表为空，在「新增目录名」输入 `workspace-1`，点 **新增目录**；选择这个工作目录，再点 **创建会话**，发一条普通消息确认收到回复。
-
-后续仍用同一条启动命令。桌面使用独立后端与数据目录，不会自动复用 Web 的会话。这里是**源码开发版**启动方式，不是已签名安装包。可选服务、验证命令和打包说明见[桌面 README](desktop/README.md)。只使用桌面端可跳过下面 Web 专用的安装与启动步骤。
-
-### Linux：安装并启动 Web
-
-首次使用建议选方式 A：只监听 `127.0.0.1`，不要求登录，也不要求插件、远端 MCP 或容器沙箱。内置工具仍可操作本机文件；请使用专用工作区，不要把此配置用于共享部署。方式 B 会按本机配置启动所需服务。
-
-#### 1. 安装与构建
-
-```bash
-./scripts/install_tcode.sh
-source .venv/bin/activate
-```
-
-脚本使用锁定的前端依赖构建界面，再从 `pyproject.toml` 安装 Python 包。需要 swarm、向量检索和 Redis 时运行 `./scripts/install_tcode.sh --full`。Python 的跨平台解析结果保存在 `uv.lock`，可供 pip 直接安装的带哈希版本分别保存在 `requirements.lock` 和 `requirements-full.lock`；领域插件还可能有各自依赖。
-安装脚本最后会调用 `scripts/init_local_config.sh`，一次把全部公开配置模板补齐到 `.tcode-local/`，不覆盖已有配置。
-
-该脚本安装的是项目依赖，不会替你安装系统 Python、Node.js 或 npm。可先用 `python3.12 --version`、`node --version`、`npm --version` 检查；若创建虚拟环境时提示缺少 `venv` / `ensurepip`，需先安装发行版中与该 Python 版本对应的 venv 软件包。
-
-#### 2. 填写新生成的配置
-
-网页配置见[快速开始](#linux-web发出第一条消息)，不需要先修改 JSON 或设置模型环境变量。网页设置也支持测试图片理解能力和选择默认图片模型。已有部署可继续用下面的文件配置；共享部署的网页配置须由实例管理员通过 HTTPS 操作。
-
-安装结束后，`.tcode-local/` 已有全部 13 份本机配置。若已安装依赖但配置目录还不存在，可单独运行 `./scripts/init_local_config.sh`。首次聊天只需编辑 `.tcode-local/tcode.json`：把 `model` 中的 `your-model-id` 与 `provider.demo.models` 下的同名键都换成服务商实际提供的模型 ID。模型服务应支持 OpenAI-compatible Chat Completions；要使用工具时还需支持工具调用。
-
-在当前终端填写模型地址与凭据（本地服务不要求密钥时可用 `local`）：
-
-```bash
-export TCODE_DEMO_BASE_URL='https://your-provider.example/v1'
-export TCODE_DEMO_API_KEY='replace-with-your-key'
-```
-
-公开模板通过 `baseURLEnv` 和 `apiKeyEnv` 读取这两个变量。终端中的 `export` 只对当前终端及其子进程有效；从 Finder 启动桌面时不要依赖它。需要持久配置时，可将这两个变量写入私有的 `.tcode-local/desktop.env`（桌面）或 `.tcode-local/local.env`（下方方式 B）。方式 A 不加载这些环境文件，需在启动终端中设置变量。不要提交 `.tcode-local/` 或真实凭据。未配置实际视觉模型时先用纯文本聊天；要识图，再将 `vision_model` 指向实际支持图片输入的模型。其他设置见[配置指南](docs/CONFIGURATION.md)。
-
-#### 3. 启动
-
-##### 方式 A：本机最小体验（新用户推荐）
-
-使用[上方快速开始](#linux-web发出第一条消息)中的启动命令。若选择文件配置，先在同一终端设置上面的模型环境变量，再启动；方式 A 不读取 `local.env`。命令中的 `workdirs/local` 是服务的运行数据目录，不是界面中的工作区名称。[健康检查](http://127.0.0.1:8080/api/health)只检查后端，不验证模型。桌面端和 Docker 的启动方式见[运行指南](docs/RUNNING.md)。
-
-##### 方式 B：按本机配置启动服务
-
-已有部署继续使用原启动命令，不要加 `--local`。桌面和单机 Web 启用通用异步 MCP 后重启，可自动启动内置 Job Protocol；已有外部网关优先，旧任务不会自动改投。启用方式见[第三方异步 MCP 指南](docs/服务隔离/第三方MCP插件接入与运行.md#1-先确认-benchthread-侧的服务就绪)。
-
-源码启动后，只测聊天或使用本机模拟服务测试 Boltz，不需要 Docker 或 Sandbox Runner。模拟 Boltz 仍需配置异步任务、审核和产物回传。要启用 Agent 内置浏览器或容器隔离工具，只准备对应镜像和服务，不用启动整个 `deploy/`。见 [Linux Web 详细部署：Docker 与 Sandbox Runner](docs/RUNNING.md#linux-web-可选容器部署)。
-
-远程计算需要已启用的 Job Protocol 和已注册的执行端；远程文件传输还需要 Artifact 服务和工具绑定。缺少这些服务不妨碍基础聊天。
-
-依赖已安装且 `.tcode-local/local.env` 已按用途配置后，执行：
-
-```bash
-PYTHON_BIN="$PWD/.venv/bin/python" ./scripts/start_web.sh --workdir "$PWD/workdirs/local"
-```
-
-这个脚本加载本机运行配置，认证、沙箱和后台服务以实际配置为准。若启用了认证或强制 Runner，先准备登录和隔离服务。它不是方式 A 的缩写；首次只想试聊、没有配置沙箱时，继续使用方式 A。不要同时用两条命令启动同一个运行目录。
-
-前端开发时保持选定的后端运行，在另一个终端执行 `npm --prefix web run dev`，打开终端显示的 Vite 地址。默认代理目标为后端 8080 端口。
-
-#### 4. 不连接远端服务的验证
-
-暂时没有可用模型或 MCP 服务，也可以验证真实入口：
-
-```bash
-python scripts/dsh.py smoke \
-  --scenario-timeout-seconds 45 --total-timeout-seconds 120 \
-  --report build/test-reports/real-entry-smoke.json
-```
-
-该命令使用临时目录和本机 LLM/MCP 协议桩，检查 WebSocket 对话、插件、CLI 与 Worker 入口。它验证集成链路，不代表真实模型效果或远端计算服务可用。
-
-### 常见问题
-
-| 现象 | 处理 |
-| --- | --- |
-| 界面可打开，但消息失败 | 检查模型 ID、服务地址、密钥及工具调用支持；健康检查不验证模型服务 |
-| 页面提示未构建或显示旧界面 | 重新运行 `npm --prefix web run build` 并刷新 |
-| 8080 已被占用 | 更改 `--port`；开发模式同时调整 `web/vite.config.ts` 的代理目标 |
-| 找不到插件或 MCP 工具 | 本示例主动关闭它们；按插件 SDK、MCP 指南在体验目录中单独配置 |
-| 沙箱执行器不可用 | 本地体验不要求执行器；启用插件隔离时需按部署文档配置真实 runner |
-
-## 需要哪些服务？
-
-### 网页搜索（可选）
-
-保存配置后，可在 **设置 → 网页搜索** 点击「测试连接」。测试只向当前已保存的服务发送一次固定查询，不会自动切换；Brave 可能消耗一次请求额度。通过后显示状态和测试时间，修改配置后需重新验证。
-
-基础聊天不需要搜索服务。内置 `websearch` 默认使用 SearXNG：部署或连接允许 JSON 搜索的实例，按需设置 `TCODE_SEARXNG_BASE_URL`（默认 `http://127.0.0.1:8888`）。地址必须从 BenchThread 后端可达。
-
-不想部署 SearXNG，可从 [Brave Search API](https://api-dashboard.search.brave.com/documentation/guides/authentication) 获取自己的 Key，再在启动后端的环境中设置：
-
-```bash
-export TCODE_WEBSEARCH_PROVIDER=brave
-export TCODE_BRAVE_SEARCH_API_KEY='replace-with-your-key'
-```
-
-重启后端后，原来的 `websearch` 会用 Brave 搜索普通网页，每次最多请求一页。专用图片、视频、新闻等分类仍用 SearXNG。切回 SearXNG 时将后端设为 `searxng` 或取消该变量。服务失败不会自动切换；选 Brave 后，搜索关键词会发送给 Brave。
-
-也可以在 Web 或桌面打开 **设置 → 网页搜索**。实例管理员选择 SearXNG 并填写实例地址，或选择 Brave 并填写 Key。保存后立即用于后续搜索，不修改已有环境文件；未保存过的字段继续使用启动配置。Key 保存在后端运行数据目录的私有设置文件，页面只显示是否已配置，留空保留原 Key。Web 与桌面使用不同运行目录时分别配置。不要提交真实凭据或将运行数据目录公开。
-
-**装好 BenchThread 后，第一次聊天只需配置一个可用的模型接口。** 不需要单独部署数据库、Redis、TMCP 或沙箱。首次初始化生成的 MCP 服务清单是空的，不会自动连接外部工具。
-
-| 组件 | 默认 | 何时需要额外配置 |
-| --- | --- | --- |
-| BenchThread 后端与模型 API | 后端随项目提供；桌面不需要另启 Web。 | 聊天需配置本地或远端模型；图片输入另需可用的视觉模型。 |
-| SQLite | 内置，持久化会话、异步跟踪等本地状态。 | 不需要部署数据库服务；重启后应继续使用同一运行数据目录。 |
-| 证据图与本体 | 使用本地 SQLite 和图文件等存储，不依赖外部图数据库。 | 特定研究插件可能需要另配有权使用的数据；无需部署 Neo4j。 |
-| Redis | 不需要；运行指导通知和 Swarm 消息传递默认不依赖 Redis。 | 按需配置部分通知或 Swarm 消息后端。Redis 不替代 SQLite，也不等于支持高可用部署。 |
-| FAISS 与 Embedding | 基础聊天不需要。 | 启用证据语义召回时安装本地 FAISS 并配置 Embedding；没有可用语义索引时，证据搜索仍可用关键词。 |
-| 普通 MCP | 不预连任何服务。 | 工具直接返回结果时加入 [MCP 配置](tcode_agent/MCP_QUICKSTART.md)，不需要 Job Protocol。 |
-| Job Protocol 与计算执行端 | 基础聊天不启动网关或计算服务。 | 需要远程异步任务时，启用内置网关或连接外部兼容网关，并配置实际执行端。 |
-| Artifact 文件服务 | 基础聊天和纯文本工具不需要。 | 远程工具需要通过文件引用收发输入或产物时，配置 Artifact 地址和认证；安装 SDK 不会部署服务。 |
-| 领域工具与 Sandbox Runner | 基础聊天不需要。 | 领域工具（例如 Boltz）由实际执行端提供；需要隔离的工具须配置对应隔离后端，不应绕过隔离。 |
-
-`--full` 安装的是 Redis 客户端、FAISS 等可选 Python 依赖，不会部署 Redis 或下载 Embedding 模型。接入配置见 [MCP 服务示例](config/examples/README.md)和[配置指南](docs/CONFIGURATION.md)；共享部署前请先读[安全说明](SECURITY.md)。
-
-### 开发自己的 MCP
-
-- **第一次接异步 MCP**：从[纯 JSON 异步求和示例](examples/third_party_mcp/json-async/README.md)开始。它带第三方服务源码、插件配置和提交步骤，能跑通受理、查状态与取结果，不需要文件 SDK、Artifact 服务或 TMCP。
-- **第三方工具要收发文件**：看[文件传输 SDK（Artifact Python SDK）](packages/artifact-sdk/README.md)，包括安装、文件与目录 API、最小回显示例和契约测试。它只负责文件传输，不负责执行或恢复任务。
-- **要为 BenchThread 写插件**：看[插件 SDK 文档](docs/plugin-sdk/README.md)，了解如何声明异步目标、添加工具或工作流、校验和打包。远端 MCP 不需要安装插件 SDK。
-- **配置认证或部署到不同主机**：看[第三方 MCP 接入与运行指南](docs/服务隔离/第三方MCP插件接入与运行.md)。
-
-## 进一步阅读
-
-**Boltz 计算实验**：在研究课题中选定一个未冻结的实验，在聊天中上传输入并明确要求「运行 Boltz，并记录到这个实验」。提交仍走现有权限和审核。回到实验记录，展开「Boltz 计算轮次」刷新状态并读取已回传产物。要换文件，可点「对话中换文件继续」并提供新的主输入；其余参数从上一条已完成的运行继承，新运行单独记录。未指定实验的普通提交不变。结构预测不是湿实验验证。
-
-源码仓库自带的产品技能在 [`.tcode/skills/`](.tcode/skills/)，不需要安装 Claude；`.claude/skills/` 仍可被 BenchThread 识别。技能提供用法和操作指导，不等于已连接相应的模型或 MCP 服务。沙箱挂载与新增项目技能的说明见[配置指南](docs/CONFIGURATION.md#产品技能与沙箱挂载)。
-
-- [文档目录](docs/README.md)：Windows Web、Linux Web、macOS 桌面与 Docker 的运行入口。
-- [配置指南](docs/CONFIGURATION.md)：必填项、公开模板和本机私有配置。
-- [公开快照范围与验证](docs/PUBLIC-ALPHA.md)：本版包含什么、如何验证、不承诺什么。
-- [项目架构](docs/MAINTENANCE.md)：前后端职责、异步任务和数据边界。
-- [贡献指南](CONTRIBUTING.md)。
-- [安全说明与漏洞报告](SECURITY.md)。
+其他入口：[运行指南](docs/RUNNING.md) · [配置指南](docs/CONFIGURATION.md) · [网页搜索配置](docs/CONFIGURATION.md#网页搜索可选) · [启动排查](docs/RUNNING.md#启动排查)。
 
 ## 功能进度
 
-这里列的是用户可以使用的功能。部分功能需要先连接服务或开启权限，见[配置指南](docs/CONFIGURATION.md)。
+- **研究过程可以回查**：在工作区整理文献、假说、实验和证据；查看交互图表与分子结构。
+- **任务由你把关**：设置目标和预算、复用工作流，必要时审核工具参数。结果验收会标明未通过或缺证据的部分，不等于科学结论已证实。
+- **计算可以在远端继续**：接入支持可恢复任务的远端服务后，可用原任务 ID 查进度、取结果，不必重新提交。
 
-### 已完成（20 项）
+[完整功能、研究场景与 Roadmap](docs/FEATURES.md) · [Alpha 范围与边界](docs/PUBLIC-ALPHA.md)
 
-**对话与交互**
+## 文档与开发
 
-- [x] **对话与工作区**：流式对话、多会话、附件上传、文件预览和历史记录。
-- [x] **全局搜索**：在一个入口查找会话、资料和任务记录，并跳转到对应页面。
-- [x] **智能 UI（Intelligent UI）**：在对话中生成可交互页面和图解，点击部件看说明，也可继续修改图解。
-- [x] **三维结构查看与 Agent 操作**：用 Mol* 打开蛋白质或分子结构文件；授权后，Agent 可以打开工作区里的结构、操作视图和测距。
-- [x] **浏览器接管**：桌面端可以接管 Agent 正在使用的浏览器，手动操作后再交还控制权。
-- [x] **电脑控制（Computer Use）**：macOS 桌面端可在用户授权下观察和操作本机界面，用户也可暂停或接管。
-
-**任务与协作**
-
-- [x] **目标模式**：设定目标和预算，在聊天中补充指导，按需暂停和恢复。
-- [x] **任务结果验收**：按条件核对工具结果、交付文件和输出格式，指出未通过或缺少证据的地方。
-- [x] **人工审核与权限确认**：查看待审核项及操作参数，由用户决定是否放行。
-- [x] **工作流（Workflow）**：用模板复用多步骤任务，查看各步骤的进度和结果。
-- [x] **多 Agent 协作与协作办公室**：查看成员分工、运行状态和协作消息，点选成员查看任务。
-- [x] **远程计算与 Protein Run**：查询远程任务、恢复跟踪、取回产物，并查看蛋白质计算记录；需要连接相应服务。
-- [x] **定时任务**：安排一次或重复执行，支持暂停、恢复、立即执行和查看历史。
-- [x] **任务看板**：集中查看任务状态和待处理事项，并进入相应审核。
-
-**研究与扩展**
-
-- [x] **研究工作区**：记录假说、实验和证据，查看研究变化，也可分享或导入研究资料包。
-- [x] **文献资料库与 Paper Wiki**：整理、检索和查看文献资料，按需启用相关插件与索引。
-- [x] **本体查询与关系探索**：在公共或工作区私有知识中查询实体与关系，查看来源证据。
-- [x] **从文档抽取本体知识**：上传 PDF、TXT 或 Markdown 生成候选，由人审核后发布到工作区私有知识库。
-- [x] **模型、MCP、Skill 与插件**：在工作台配置模型、连接工具服务、管理 Skill 和插件，按需扩展功能。
-- [x] **飞书接入**：配置并绑定飞书后，可通过飞书与 BenchThread 交互。
-
-### 尚未支持（2 项）
-
-- [ ] **直接导入外部本体**：目前不能在工作台直接导入现成的 OWL/RDF 文件、预览与现有知识的差异，再按审核结果合并。这与上传文档抽取候选是两种功能。
-- [ ] **扫描件直接进入本体抽取**：当前文档导入不包含扫描件 OCR；图片型 PDF 需要先转成可提取文字的文档。
-
-## Roadmap
-
-- **真实长跑验收**：用实际计算服务运行超过 48 小时，验证任务期限、结果保留和按原 ID 恢复。
-- **大文件回收演练**：用真实大体积产物验证下载中断后补收、完整性校验和工作区交付。
-
-这是开发优先级，不是发布日程或已支持功能列表。
-
-## 项目结构
-
-| 路径 | 内容 |
-| --- | --- |
-| `tcode_agent/server/` | HTTP、WebSocket、身份与工作区访问 |
-| `tcode_agent/runtime/`、`harness/` | 运行状态与任务执行 |
-| `tcode_agent/context/`、`memory/` | 上下文与记忆 |
-| `tcode_agent/plugins/`、`plugins/` | 插件机制与仓库插件 |
-| `tcode_agent/research/`、`mcp/` | 研究资产与外部工具集成 |
-| `web/src/` | Web 界面、会话和输入状态 |
-| `scripts/tests/`、`scripts/dsh.py` | 公开回归测试与本地入口验证 |
+- **接入示例**：[纯 JSON 异步 MCP](examples/third_party_mcp/json-async/README.md)（不需要文件 SDK） · [文件传输 SDK](packages/artifact-sdk/README.md)（远端收发文件） · [插件 SDK](docs/plugin-sdk/README.md)（BenchThread 侧扩展）。
+- **项目维护**：[文档目录](docs/README.md) · [项目架构](docs/MAINTENANCE.md) · [贡献指南](CONTRIBUTING.md) · [安全与漏洞报告](SECURITY.md)。
 
 ## 许可证与来源
 

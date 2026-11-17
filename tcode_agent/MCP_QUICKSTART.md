@@ -4,6 +4,8 @@
 
 ## 配置一个服务
 
+这一节只配置已经启动的普通 MCP 服务。先按该服务的文档启动工具端；BenchThread 不替第三方工具部署或启动服务。普通同步工具不需要 Job Protocol、Artifact 或 Docker，可沿用[本机 Web 启动方式](../README.md#linux-web发出第一条消息)。
+
 ```json
 {
   "my-mcp": {
@@ -26,6 +28,8 @@
 
 请求头支持 `${ENV_NAME}` 占位符，并在建立连接时读取环境变量。变量不存在时连接会失败，错误只显示变量名，不显示其他请求头内容。不要把真实令牌写入公开模板或提交到 Git。
 
+保存后重启 Web，或在 **设置 → MCP 服务** 重新加载连接。先确认已连接且能列出工具，再在会话中调用一次无副作用的工具验证。只看到连接状态不能证明工具调用成功。
+
 ## 选择配置文件
 
 启动脚本会从 `.tcode-local/local.env` 读取：
@@ -37,7 +41,7 @@ TCODE_MCP_CONFIG="$TCODE_CONFIG_ROOT/mcp.json"
 
 仅在主动设置 `TCODE_MCP_PROFILE=job-protocol-only` 时，Web / Server 启动脚本才改读 `mcp_job_protocol_only.json`。后台计算目标与前台服务分开配置。
 
-直接调用安装后的命令时显式指定：
+根 README 的本机 Web 命令已指定本机配置。使用其他直接启动命令时，可显式指定：
 
 ```bash
 export TCODE_CONFIG_ROOT=/absolute/path/to/config

@@ -6,14 +6,70 @@
 
 ## Linux Web 和 CLI
 
-新用户按[快速开始](../README.md#快速开始)安装、填写模型并启动单机 Web；不需要先启动远程服务。需要按本机环境配置运行完整 Web 服务时，从仓库根目录执行：
+按你的用途选择：[只聊天](#只聊天本机-web) · [沙箱浏览器](#linux-web-启用-agent-浏览器) · [远程异步计算](#远程异步计算)。Web 自身装进容器是另一条路线，见 [Docker 本机体验](#docker-本机体验)。
+
+### Linux Web 安装与构建
+
+准备 Git（或下载源码）、Python 3.12（含 venv/pip）和 Node.js 22.12+（含 npm）。如需实际聊天，再准备一个可访问的文本模型服务。基础聊天不需要 Docker、Redis、GPU 或 MCP。
+
+从仓库根目录运行：
 
 ```bash
-./scripts/init_local_config.sh
+./scripts/install_tcode.sh
+source .venv/bin/activate
+```
+
+首次安装需要联网。脚本用锁定的 npm 依赖构建界面，从 `pyproject.toml` 安装 Python 包，并补齐 `.tcode-local/` 的公开配置模板，不覆盖已有文件。它不安装系统 Python、Node.js 或 npm；若提示缺少 `venv` / `ensurepip`，先安装发行版中与 Python 版本匹配的 venv 包。
+
+默认依赖见 `requirements.lock`，`--full` 使用 `requirements-full.lock`；跨平台依赖解析见 `uv.lock`。可选依赖和服务见[配置指南](CONFIGURATION.md#需要哪些服务)。
+
+### 只聊天：本机 Web
+
+- **安装与首条消息**：按 [README 快速开始](../README.md#linux-web发出第一条消息)安装、配置模型并发送消息。内置工具仍可操作本机文件，请使用专用工作区。
+- **启动**：使用快速开始中的 `tcode-server --local`，只启动本机 Web。它不加载 `.tcode-local/local.env`，也不启动 Job Protocol、后台执行与结果回收进程、Sandbox Runner 或 egress。**它仍会连接生效的 `mcp.json` 中启用的服务**；新初始化生成的是空清单，已有清单不会被覆盖。不需要已有 MCP 时，可通过 `TCODE_MCP_CONFIG` 指向另一份内容为 `{}` 的 JSON 文件，不用删除旧配置。
+- **验证**：打开 [Web](http://127.0.0.1:8080)，选实际模型，新建工作区和会话，发一条问候并确认收到回复。网页添加的模型也可以先做「文本测试」。[`/api/health`](http://127.0.0.1:8080/api/health) 只确认 Web 进程就绪。
+
+### 按本机配置启动 Web
+
+沙箱和异步路径会复用这条启动方式，**不要加 `--local`**。已有部署继续用原启动命令；首次部署先按下面步骤准备账号。先在原终端停止占用 8080 的试聊服务，不要让两个 Web 进程同时使用同一运行目录。
+
+#### 首次启用 Web 登录
+
+Web 默认要求登录。认证库还没有用户时，启动前必须提供 `TCODE_BOOTSTRAP_PASSWORD`（至少 12 个字符，不用常见占位密码）。`TCODE_BOOTSTRAP_EMAIL` 可选，默认是 `admin@example.com`。这是 Web 管理员账号，不是模型 API Key。已有管理员时无需再次初始化，修改这些变量也不会重置账号。
+
+#### 使用部署脚本
+
+先确认私有的 `.tcode-local/local.env` 存在（缺失时运行 `./scripts/init_local_config.sh`）。首次启用登录，在加载 `symphony_route.env` 的 `if … fi` 段后添加 `TCODE_BOOTSTRAP_PASSWORD='你的强密码'`，替换成自己的密码；需要自定义邮箱时同处设置 `TCODE_BOOTSTRAP_EMAIL`。不要将真实密码写入公开模板或提交该文件。
+
+从仓库根目录运行：
+
+```bash
+mkdir -p workdirs/local
 PYTHON_BIN="$PWD/.venv/bin/python" ./scripts/start_web.sh --workdir "$PWD/workdirs/local"
 ```
 
-先确保 `.tcode-local/local.env` 及其继承的配置已按用途设置；此启动方式可能拉起配置中启用的后台服务，不等同于 README 的最小启动方式。`/api/health` 验证 HTTP 服务启动，不验证模型、MCP 或远端计算。只使用 CLI 时，可在已安装的环境中运行 `TCODE_CONFIG_ROOT="$PWD/.tcode-local" tcode --workdir "$PWD/workdirs/local"`。
+部署脚本会加载本机环境配置，认证、沙箱和后台服务以实际配置为准；若启用了强制 Runner，先准备隔离服务。基础聊天能用不代表所有工具都可用，不要绕过需要的隔离。
+
+#### 只启动带登录的 Web
+
+如果只想在本机验证带登录的 Web，也可以在 Bash/Zsh 用下方命令直接启动。密码输入不显示，不写入命令历史；已有管理员可省略读取和导出初始化密码的四行。
+
+```bash
+mkdir -p workdirs/local
+(
+  printf '请输入 Web 管理员密码（至少 12 个字符）：' >&2
+  IFS= read -r -s TCODE_BOOTSTRAP_PASSWORD || exit 1
+  printf '\n' >&2
+  export TCODE_BOOTSTRAP_PASSWORD
+  TCODE_PROJECT_ROOT="$PWD" \
+  TCODE_CONFIG_ROOT="$PWD/.tcode-local" \
+  exec ./.venv/bin/tcode-server --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local"
+)
+```
+
+这里没有加 `--local`，所以仍显式指定 `TCODE_CONFIG_ROOT`。它不自动加载 `.tcode-local/local.env`；文件模型引用的环境变量需在启动终端设置，或改用部署脚本。看到 `Application startup complete` 后，打开 [Web 页面](http://127.0.0.1:8080) 登录，再[配置模型](CONFIGURATION.md#在-web-设置模型)。`/api/health` 只验证进程启动，不验证模型、MCP 或远端计算。
+
+只使用 CLI 时，可在已安装的环境中运行 `TCODE_CONFIG_ROOT="$PWD/.tcode-local" tcode --workdir "$PWD/workdirs/local"`。做前端开发时保持选定的后端运行，在另一个终端执行 `npm --prefix web run dev`，访问 Vite 显示的地址；默认代理目标是后端 8080 端口。
 
 ### Linux Web 可选容器部署
 
@@ -23,15 +79,17 @@ PYTHON_BIN="$PWD/.venv/bin/python" ./scripts/start_web.sh --workdir "$PWD/workdi
 | --- | --- | --- |
 | 基础聊天、本机模拟 Boltz | 无 | Web；模拟 Boltz 另启动本机模拟服务，不需要 Docker 或 Sandbox Runner |
 | Agent 内置浏览器 | `tcode-browser:playwright`（`deploy/sandbox-base/browser`） | 出口代理容器和宿主机上的 Sandbox Runner；浏览器容器由 Runner 按需创建 |
-| 通用容器隔离执行 | `tcode-executor:py312`（`deploy/sandbox-base/executor`） | 使用 Runner 部署时启动 Sandbox Runner；不手动启动执行容器 |
-| 本地沙箱 BLAST | 先构建 executor，再构建 `tcode-tools-blast:latest`（`deploy/sandbox-tools/blast`） | 沿用执行沙箱，不单独启动 BLAST 服务 |
+| 通用容器隔离执行 | [`tcode-executor:py312`](#通用执行器和-blast-镜像) | 使用 Runner 部署时启动 Sandbox Runner；不手动启动执行容器 |
+| 本地沙箱 BLAST | [先构建 executor，再构建 `tcode-tools-blast:latest`](#通用执行器和-blast-镜像) | 沿用执行沙箱，不单独启动 BLAST 服务 |
 | 容器隔离的 Python 插件 | `tcode-plugin-runtime:py312`（`deploy/plugin-runtime`） | 启动 Sandbox Runner，由它创建插件 Worker；见[插件容器部署](plugin-sdk/07-容器隔离与受控能力调用.md#8-生产部署) |
 
 如果只想把 **Web 本身**跑进容器，使用仓库根目录的 Compose，见 [Docker 本机体验](#docker-本机体验)。它与工具沙箱是两套独立的启动方式。
 
 ### Linux Web 启用 Agent 浏览器
 
-以下是 **受信任的 Linux 单机开发**流程。先完成 [Linux Web 安装与模型配置](../README.md#linux安装并启动-web)，再在运行 Sandbox Runner 的机器准备 Docker Engine、Docker Compose 插件和 `curl`。不在宿主机另装 Chrome/ChromeDriver，也不需要 Cua。共享或生产部署应另配独立的 Runner 账号、gVisor 和生产隔离策略，不要直接对外开放这个开发配置。
+以下是 **受信任的 Linux 单机开发**流程。先完成 [Linux Web 安装](#linux-web-安装与构建)与[模型配置](CONFIGURATION.md#在-web-设置模型)，再在运行 Sandbox Runner 的机器准备 Docker Engine、Docker Compose 插件和 `curl`。不在宿主机另装 Chrome/ChromeDriver，也不需要 Cua。共享或生产部署应另配独立的 Runner 账号、gVisor 和生产隔离策略，不要直接对外开放这个开发配置。
+
+这一场景要运行的是 **Web、宿主机上的 Sandbox Runner、egress 代理容器**。Playwright 浏览器镜像由 Runner 按需启动，不用手动运行浏览器容器；不需要 Job Protocol。在这条路径里，egress 代理沙箱浏览器的公网 HTTP/HTTPS 流量，不代理 Web 的模型请求或普通 MCP 连接。
 
 1. 用实际运行 Runner 的 Linux 账号执行 `docker info`，确认能访问 Docker 守护进程，再从仓库根目录构建 Playwright/Chromium 镜像并启动受控出口代理。若只有 `sudo docker info` 能成功，说明当前账号还不能直接访问 Docker；请先由管理员为 Runner 账号配置访问权限，再以该账号重新验证。不要放宽 Docker socket 的权限或给 Web 账号额外授权。
 
@@ -84,14 +142,63 @@ PYTHON_BIN="$PWD/.venv/bin/python" ./scripts/start_web.sh --workdir "$PWD/workdi
 
    停止时先用 `Ctrl+C` 退出 Web，再运行 `./scripts/start_sandbox_runner.sh stop`。确认没有其他工作区或服务依赖此代理后，才用 `docker compose -f deploy/sandbox-egress/compose.yaml down` 停止本次代理。
 
-## macOS 桌面开发版
+### 通用执行器和 BLAST 镜像
+
+准备 Docker Engine，并在实际执行任务的 Runner 主机上构建。下面在仓库根目录运行；只需要通用执行器时，可跳过 BLAST 的构建和检查。
 
 ```bash
-./scripts/init_local_config.sh
-./scripts/start_desktop.sh
+docker build -t tcode-executor:py312 deploy/sandbox-base/executor
+# 按需：BLAST 镜像以刚构建的执行器镜像为基础，顺序不能颠倒。
+docker build -t tcode-tools-blast:latest deploy/sandbox-tools/blast
 ```
 
-首次启动需要联网、Python 3.12+ 与 Node.js 22.12+。桌面使用自己的本机后端与运行数据目录，启动桌面不要求先启动 Web；首次使用按[桌面说明](../desktop/README.md)完成设置。打包见 [macOS 打包](gui/12-macos-dmg-packaging.md)。
+检查镜像能启动、工具版本能读出：
+
+```bash
+docker run --rm --network none tcode-executor:py312 python --version
+docker run --rm --network none --user 1000:1000 tcode-tools-blast:latest blastn -version
+```
+
+这些命令只验证镜像，不代表 Web 已能分配沙箱任务。实际使用时，在部署配置启用沙箱（`TCODE_SANDBOX_ENABLED=true`）；若通过 Runner 执行，设置 `TCODE_SANDBOX_REQUIRE_RUNNER=true`，并按上节核对 Runner 地址、认证、工作区根和工具策略。让 Web 与 Runner 读取同一份环境文件，从仓库根目录启动 Runner 并检查健康状态（端口有改动时替换 `19092`）：
+
+```bash
+TCODE_ENV_FILE="$PWD/.tcode-local/local.env" PYTHON_BIN="$PWD/.venv/bin/python" \
+  ./scripts/start_sandbox_runner.sh start -d
+curl -fsS http://127.0.0.1:19092/health
+```
+
+再[按本机配置方式](#按本机配置启动-web)启动 Web。执行容器由后端按任务创建，BLAST 不单独起服务。只有任务需要受控出网时才另启 egress；本地 BLAST 搜索如需数据库，还要单独准备并授权读取，构建镜像不会下载数据库。
+
+### 远程异步计算
+
+远程计算需要 **Web、Job Protocol 网关、实际执行任务的 MCP 服务**，并启用后台执行和结果跟踪。Job Protocol 只接受、转发和追踪任务，不替远端计算。在 Web 主机上，基本的纯 JSON 异步验证不需要 Sandbox Runner、egress、Docker 或 GPU；计算主机按各自工具准备依赖。涉及文件引用时，再配置双方可达的 Artifact 服务和认证。
+
+1. **安装与启动执行端**：先用[纯 JSON 异步求和示例](../examples/third_party_mcp/json-async/README.md#1-启动第三方服务)验证。它用独立 Python 环境安装 FastMCP，在回环地址启动一个可恢复的示例服务，不需要私有 TMCP 或文件 SDK。
+2. **选择网关，再启动 Web**：
+   - **已有外部网关**：保留原网关、任务库和配置，先确保网关及它对应的后台执行与结果跟踪进程已运行。按[异步 MCP 接入指南](服务隔离/第三方MCP插件接入与运行.md#1-先确认-benchthread-侧的服务就绪)核对地址、认证和后台配置，再按本机配置方式启动 Web。即使网关配置的是 `127.0.0.1`，只要已指定地址，Web 也会复用它，不会自动拉起一个替代服务。
+   - **新建单机内置网关**：在 Web 的 Python 环境补装 `.[desktop]` 可选依赖（提供 FastMCP，不安装 Electron）。只用于回环地址、不开 reload 的单进程 Web；若任一生效配置已指定外部网关，仍会优先用外部。完成[首次启用 Web 登录](#首次启用-web-登录)和本机配置后，从仓库根目录运行：
+
+     ```bash
+     ./.venv/bin/python -m pip install -e '.[desktop]'
+     mkdir -p workdirs/local
+     TCODE_MANAGED_JOB_PROTOCOL=1 PYTHON_BIN="$PWD/.venv/bin/python" \
+       ./scripts/start_web.sh --workdir "$PWD/workdirs/local"
+     ```
+
+     内置模式由 Web 拉起网关和后台执行进程，无需手动再起一份，也不用给新网关在 `mcp.json` 预填地址。
+3. **验证完整链路**：按[示例接入步骤](../examples/third_party_mcp/json-async/README.md#2-接入-benchthread)登记并启用目标；发起一次 `[1,2,3]` 求和，按界面要求审核。收到 `LOCAL-*` 只说明已受理，等完成通知后在原会话看到 `{"sum":6}` 才算跑通。要验证恢复，重开 Web 后用同一个运行目录和原任务去查结果，不重新提交。仅 Web 健康检查通过或 MCP 显示已连接，都不代表异步链路已验证。
+
+### 文件服务（Artifact）
+
+只有远程工具需要通过文件引用收取输入或回传产物时才配置。普通文本工具、纯 JSON 异步任务不用启用文件服务。
+
+1. **准备服务**：复用已有的兼容 Artifact HTTP 服务，或在服务主机上按其部署说明启动。BenchThread 的基础 Compose 和文件 SDK 都不启动 Artifact 服务。已有独立 TMCP 部署时，才可用 [TMCP 兼容启动脚本](../scripts/start_artifact_server.sh)：在配置好 `.tcode-local/mcp_host.env`、且 Python 能导入 `tmcp.artifact_server` 的服务主机执行 `./scripts/start_artifact_server.sh start`。独立的 BenchThread 源码不包含这个模块。
+2. **配置两端**：Web 部署在 `.tcode-local/local.env` 配置 `TMCP_ARTIFACT_SERVICE_URL`，桌面则用 `.tcode-local/desktop.env` 的 `TCODE_DESKTOP_ARTIFACT_SERVICE_URL`；在实际进程中注入服务要求的 `TMCP_ARTIFACT_API_TOKEN`。第三方工具端也需要可达的同一服务地址和相应授权，见 [SDK 连接配置](../packages/artifact-sdk/README.md#服务配置)。Artifact Token 与 MCP 连接或网关注册令牌不能混用。
+3. **验收文件往返**：按[第三方异步 MCP 文件示例](服务隔离/第三方MCP插件接入与运行.md#2-在计算主机安装-sdk-并启动示例)启动示例并[登记和验证](服务隔离/第三方MCP插件接入与运行.md#3-在-benchthread-中登记并验证)。用一份无敏感内容的小文件做输入，核对回传产物；仅能连接服务不等于上传、下载和结果回收都正常。
+
+## macOS 桌面开发版
+
+Apple Silicon 用户按[桌面首次启动](../desktop/README.md#打开方式)准备依赖、初始化管理员、配置模型并发送第一条消息。桌面使用自己的本机后端与运行数据目录，不用先启动 Web。打包见 [macOS 打包](gui/12-macos-dmg-packaging.md)。
 
 ## Docker 本机体验
 
@@ -121,3 +228,26 @@ docker compose up -d
 - 宿主机的配置目录只读挂载；账号、工作区和会话存入 Compose 的 `workspace` 命名卷。`docker compose down` 后再次执行启动命令仍会保留数据；不要用 `down -v` 停机，它会删除数据卷。改动环境文件后重新执行 `up -d`；改动账号引导密码不会重置已创建的账号。更新源码后用 `docker compose up -d --build`。
 - 若本机端口已被占用，可用 `TCODE_DOCKER_PORT=18080 docker compose up -d`。Windows PowerShell 的环境变量语法不同；首次配置也可用文件管理器复制模板。
 - 这是本机聊天配置，不包含飞书 CLI、桌面应用、Agent 浏览器沙箱、Job Protocol、远端 MCP 或文件服务，不要直接对外开放。
+
+## 不连接远端服务的验证
+
+暂时没有可用模型或 MCP 服务，也可在已安装依赖的仓库根目录运行真实入口验收：
+
+```bash
+python scripts/dsh.py smoke \
+  --scenario-timeout-seconds 45 --total-timeout-seconds 120 \
+  --report build/test-reports/real-entry-smoke.json
+```
+
+该命令用临时目录和本机 LLM/MCP 协议桩检查 WebSocket 对话、插件、CLI 与 Worker 入口。它验证集成链路，不代表真实模型效果或远端计算可用。
+
+## 启动排查
+
+| 现象 | 检查 |
+| --- | --- |
+| 启动时报 `TCODE_BOOTSTRAP_PASSWORD` | 首次开启登录时，确认启动进程拿到了自定义的强密码；见[首次启用 Web 登录](#首次启用-web-登录)。 |
+| 页面提示未构建或显示旧界面 | 从源码构建时重新运行 `npm --prefix web run build` 并刷新；用安装包启动时更新包内前端后再启动。 |
+| 8080 已被占用 | 更改 `--port`；Docker Web 改 `TCODE_DOCKER_PORT`，Vite 开发模式同时调整代理目标。 |
+| 找不到 MCP 或插件工具 | 新生成的 MCP 清单为空。按[普通 MCP 配置](../tcode_agent/MCP_QUICKSTART.md#配置一个服务)、[异步计算](#远程异步计算)或[插件 SDK](plugin-sdk/README.md)启用所需工具。 |
+| 沙箱执行器不可用 | 基础聊天可不配置执行器；需要隔离的工具按[工具沙箱部署](#linux-web-可选容器部署)配置，不能退回宿主绕过隔离。 |
+| 模型列表为空或发送失败 | 按[模型配置排查](CONFIGURATION.md#模型不显示或无法发送)核对。 |

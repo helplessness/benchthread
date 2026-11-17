@@ -12,16 +12,27 @@ macOS arm64 独立 Python 后端和未签名 DMG 已经可以构建，不依赖�
 
 ## 打开方式
 
-从干净副本首次登录、添加并测试模型、发送第一条消息，请按[根 README 的 macOS 快速开始](../README.md#macos启动桌面端)操作。设置好首次登录密码后，从项目根目录运行：
+这是 **Apple Silicon（arm64）源码开发版**，不支持 Intel Mac，不用先安装 Web 或启动 Web 后端。首次准备需要联网、本机已有 Python 3.12+（`python3`）、Node.js 22.12+/npm 和 `curl`、`tar`、`shasum`。从项目根目录先运行：
 
 ```bash
-./scripts/init_local_config.sh  # 首次运行：一次补齐配置；已安装 Web 可跳过
+./scripts/init_local_config.sh
+```
+
+源码版首次启动需要初始化管理员。已有配置不会被覆盖；在私有的 `.tcode-local/desktop.env` 中，继承 `local.env` 的 `source` 行之后填写 `TCODE_BOOTSTRAP_PASSWORD`（至少 12 个字符的独立强密码），可选填 `TCODE_BOOTSTRAP_EMAIL`，默认是 `admin@example.com`。这些设置仅用于空认证库，不会重置已有用户。凭据不要提交到 Git。
+
+```bash
 ./scripts/start_desktop.sh
 ```
 
 也可以在 Finder 中双击本目录下的 **启动 TCode.command**。这是开发启动器，会打开终端并启动独立桌面窗口，目前不是已签名的安装包。
 
-首次启动需要联网，安装桌面依赖、创建 `.desktop-venv`、构建现有前端。需要本机已有 Node.js 22.12+/npm 和 Python 3.12+。后续前端源码未变化时复用构建。已有可用环境也可以显式指定：
+登录后发送第一条消息：
+
+1. 打开 **设置 → 模型与执行 → 添加聊天服务**。用 OpenAI 兼容接口时选 **OpenAI 兼容**，填写接口基础地址（通常以 `/v1` 结尾，不附加 `/chat/completions`）、真实模型 ID 和服务所需的 API Key，不用执行 Web 文件配置里的 `TCODE_DEMO_*` 命令。
+2. 依次点 **测试连接 → 保存服务 → 设为默认**。如询问钥匙串访问，先确认请求来自刚启动的应用；不要把密钥发到聊天里。
+3. 点 **新建会话**，选择工作目录；如果列表为空，可在「新增目录名」填 `workspace-1` 并点「新增目录」。点「创建会话」，发送一条问候并确认收到回复。
+
+启动脚本会按需创建 `.desktop-venv`、下载桌面依赖并构建界面。电脑控制默认关闭；干净副本若无法下载驱动，仍可聊天和使用 Agent 浏览器。已有驱动损坏或显式开启电脑控制时，按[网页操作与电脑控制](#网页操作与电脑控制)修复。后续前端源码未变化时复用构建；已有可用 Python 环境也可显式指定：
 
 ```bash
 TCODE_DESKTOP_PYTHON=/absolute/path/to/python ./scripts/start_desktop.sh

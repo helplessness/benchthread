@@ -16,7 +16,7 @@
 - Web 内置模式适用于绑定回环地址、不启用 reload/多进程的单机实例；已使用 Symphony 的部署不切换执行通道。源码 Web 需要在运行环境安装已有的可选依赖 `pip install -e '.[desktop]'`（不安装 Electron）。`tcode-server --local` 是纯聊天模式，不启动网关。
 - 外部部署仍可使用兼容 Job Protocol；原 `start_job_protocol.sh` 和 `start_artifact_server.sh` 是 TMCP 兼容脚本。不要把旧任务数据库复制给内置网关，也不要同时运行多个进程占用同一任务目录。内置网关不执行宿主命令，不接管原 Protein Run 专用目标。文件示例仍需要可达的 Artifact 服务。
 - 仅使用外部网关时，才需要将 [代理示例](../../config/examples/mcp-async-broker.example.json)中的条目合并到前台 `.tcode-local/mcp.json`，填写实际 `/mcp` 地址和认证。若使用 `job-protocol-only` 档案则配置对应清单。注册 API 基址可通过 `TCODE_PLUGIN_JOB_PROTOCOL_URL` 指定，**不带** `/mcp`；外部网关和 BenchThread 使用同一注册令牌 `TMCP_TARGET_REGISTRY_TOKEN`。内置网关由 BenchThread 自动注入运行时地址和凭据，不写回用户配置。
-- 使用启用后台执行和状态跟踪的运行配置，不要沿用根 README 中显式设置 `TCODE_ASYNC_WATCHER_ENABLED=0` 的纯聊天命令。涉及文件时，BenchThread 和远端都要能访问对应的 Artifact 服务。远端 MCP Bearer Token、Artifact Token 和 Job Protocol 注册令牌各管一层，不能混用。
+- 按[远程异步计算启动指南](../RUNNING.md#远程异步计算)启用后台执行和状态跟踪，不要沿用根 README 的 `--local` 纯聊天命令。涉及文件时，先按[文件服务指南](../RUNNING.md#文件服务artifact)准备双方都能访问的 Artifact 服务。远端 MCP Bearer Token、Artifact Token 和 Job Protocol 注册令牌各管一层，不能混用。
 - 内置网关只接受 BenchThread 后台队列提交。已排队任务绑定提交时的目标版本；目标已变更或旧记录没有版本时，未发送的任务会被拦截，不会改投。已受理的任务保留原引用；远端回执缺失时显示「提交状态待核对」，不会自动重新提交。
 
 ## 2. 在计算主机安装 SDK 并启动示例
