@@ -11,7 +11,7 @@ import GoalModePanel from './GoalModePanel';
 import HarnessSwitchNotice from './HarnessSwitchNotice';
 import { createComposerLayout } from './composer/createComposerLayout';
 import InteractionPanel from './composer/InteractionPanel';
-import { resolveActiveModel } from './composer/modelSelection';
+import { nativeModelTurnBlock, resolveActiveModel } from './composer/modelSelection';
 import { navigateInputHistory, type InputHistoryState } from './composer/inputHistory';
 import SlashCommandMenu from './composer/SlashCommandMenu';
 import { builtinCommands, filterCommands, findCommandTrigger, parseBuiltinCommand, skillCommandItems, type CommandItem } from './composer/slashCommands';
@@ -54,9 +54,10 @@ type WikiChatPage = {
   access?: 'owner' | 'shared_read_only' | string;
 };
 
-export default function MessageInput(props: { onOpenSkills?: () => void } = {}) {
+export default function MessageInput(props: { onOpenSkills?: () => void; onOpenModelSettings?: () => void } = {}) {
   const [goalRunning, setGoalRunning] = createSignal(false);
   const [goalMode, setGoalMode] = createSignal(false);
+  const [guidingExistingGoal, setGuidingExistingGoal] = createSignal(false);
   let submitGoalMessage: ((text: string) => Promise<boolean>) | undefined;
   const [goalControlMount, setGoalControlMount] = createSignal<HTMLDivElement>();
   const [desktopPermissionMode, setDesktopPermissionMode] = createSignal<'ask' | 'auto'>(
@@ -134,6 +135,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
   >([]);
   const [modelLoadError, setModelLoadError] = createSignal('');
   const [modelsLoading, setModelsLoading] = createSignal(false);
+  const [nativeModelCatalogSession, setNativeModelCatalogSession] = createSignal<string>();
   const [modelChangePending, setModelChangePending] = createSignal(false);
   const [runtimeOptions, setRuntimeOptions] = createSignal<ChatRuntimeOption[]>([
     {
@@ -214,7 +216,10 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
       && state.pending_handoff_id !== dismissedHandoffNoticeId()
     );
   });
+  const nativeModelCatalog = () => nativeModelCatalogSession() === (sessionStore.currentSessionId() || '')
+    ? models() : undefined;
   const activeModel = createMemo(() => {
+    if (selectedRuntimeId() === 'tcode-native' && nativeModelCatalog()?.length === 0) return '';
     const harnessModel = String(currentHarnessState().model_id || '').trim();
     const sessionModel = String(sessionStore.currentSession()?.model || '').trim();
     // selectedModel is updated only after the switch endpoint confirms.  A
@@ -222,6 +227,9 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
     // so that stale projection must not roll the confirmed selection back.
     return resolveActiveModel(selectedModel(), harnessModel, sessionModel);
   });
+  const modelTurnBlock = () => selectedRuntimeId() === 'tcode-native'
+    ? nativeModelTurnBlock(guidingExistingGoal(), nativeModelCatalog(), activeModel())
+    : '';
   createEffect(() => {
     const session = sessionStore.currentSession();
     const raw = session?.metadata?.research_context?.assets;
@@ -681,6 +689,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
       setPreferredHarnessModel(runtimeData.preferred_model_id || 'deepseek/deepseek-v4-flash');
       setRuntimeLoadError('');
       if (selectedRuntimeId() !== 'tcode-native') {
+        setNativeModelCatalogSession(undefined);
         const runtime = availableRuntimes.find(
           item => item.runtime_id === selectedRuntimeId(),
         );
@@ -718,8 +727,13 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
       setModelLoadError('');
       const availableModels = modelData.models || [];
       setModels(availableModels);
-      // Refresh the catalogue without racing a model selection made while it loads.
-      if (refreshOnly) return;
+      setNativeModelCatalogSession(sessionId || '');
+      if (!availableModels.length) {
+        setSelectedModel('');
+        return;
+      }
+      // A refresh keeps the active selection only if it is still available.
+      if (refreshOnly && availableModels.some(item => item.id === activeModel())) return;
       const storedModel = String(
         untrack(() => sessionStore.sessions().find(
           (item) => item.session_id === sessionId,
@@ -817,12 +831,20 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
         access: String(detail.access || 'owner'),
       });
     };
+    const reloadAfterModelSetup = () => {
+      if (selectedRuntimeId() === 'tcode-native'
+        && !nativeModelCatalog()?.some(item => item.id === activeModel())) {
+        void loadAvailableModels(sessionStore.currentSessionId(), true);
+      }
+    };
+    window.addEventListener('tcode:settings-changed', reloadAfterModelSetup);
     window.addEventListener('tcode-focus-composer', focusComposer as EventListener);
     document.addEventListener('pointerdown', dismissCommands);
     window.addEventListener('tcode-prefill-composer', prefillComposer as EventListener);
     window.addEventListener('tcode-set-research-context', setResearchContext as EventListener);
     window.addEventListener('tcode-set-wiki-context', setWikiContext as EventListener);
     onCleanup(() => {
+      window.removeEventListener('tcode:settings-changed', reloadAfterModelSetup);
       window.removeEventListener('tcode-focus-composer', focusComposer as EventListener);
       document.removeEventListener('pointerdown', dismissCommands);
       window.removeEventListener('tcode-prefill-composer', prefillComposer as EventListener);
@@ -835,6 +857,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
   createEffect(on(
     () => sessionStore.currentSessionId(),
     (activeSessionId) => {
+      setNativeModelCatalogSession(undefined);
       inputHistoryState = { index: -1, draft: '' };
       setShowUpload(false);
       setLastSideQuestionResult(null);
@@ -1192,12 +1215,13 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
     e.preventDefault();
     const finalMessage = buildFinalMessage();
     if (!finalMessage) return;
+    if (!sessionStore.isRunning() && modelTurnBlock()) return;
     const modelNoticeSession = sessionStore.currentSessionId();
     const modelNoticeIdentity = composerIdentity();
     const requestedModel = activeModel();
-    if (modelNoticeSession && !sessionStore.isRunning()) {
+    if (modelNoticeSession && !sessionStore.isRunning() && !guidingExistingGoal()) {
       if (!await confirmModelSwitch(modelNoticeSession, requestedModel)) return;
-      if (composerIdentity() !== modelNoticeIdentity || activeModel() !== requestedModel || sessionStore.isRunning()) return;
+      if (composerIdentity() !== modelNoticeIdentity || activeModel() !== requestedModel || sessionStore.isRunning() || modelTurnBlock()) return;
     }
     if (goalMode()) {
       if (selectedSkills().length) { setCommandFeedback('目标模式暂不支持指定 Skill，请让 Agent 按需加载技能。'); return; }
@@ -1417,7 +1441,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
 
   return (
     <div data-composer class="shrink-0 border-t px-3 pb-2 pt-0 backdrop-blur-xl md:px-4" style={{ background: 'color-mix(in srgb, var(--tcode-bg) 72%, transparent)', 'border-color': 'var(--tcode-border)' }}>
-      <GoalModePanel desktopPermissionMode={desktop ? desktopPermissionMode() : undefined} controlMount={goalControlMount()} sessionId={sessionStore.currentSessionId() || undefined} workspaceId={currentWorkspaceId()} identityKey={composerIdentity()} native={currentHarnessState().runtime_id === 'tcode-native'} onRunning={setGoalRunning} onMode={setGoalMode} onSubmitReady={handler => {submitGoalMessage = handler;}} />
+      <GoalModePanel desktopPermissionMode={desktop ? desktopPermissionMode() : undefined} controlMount={goalControlMount()} sessionId={sessionStore.currentSessionId() || undefined} workspaceId={currentWorkspaceId()} identityKey={composerIdentity()} native={currentHarnessState().runtime_id === 'tcode-native'} onRunning={setGoalRunning} onMode={(enabled, guiding) => { setGoalMode(enabled); setGuidingExistingGoal(guiding); }} onSubmitReady={handler => {submitGoalMessage = handler;}} />
       <div class="composer-resize-row mx-auto flex max-w-6xl items-center gap-2">
         <div role="separator" tabindex="0" aria-label="调整输入区高度" aria-orientation="horizontal"
           aria-valuemin={getTextareaMinHeight()} aria-valuemax={getTextareaMaxHeight()}
@@ -1436,6 +1460,22 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
         <Show when={manualTextareaHeight() !== null}><button type="button" class="text-[10px]" onClick={resetManualTextareaHeight}>恢复默认高度</button></Show>
       </div>
       <form onSubmit={handleSubmit} class="mx-auto max-w-6xl">
+        <Show when={!sessionStore.isRunning() && modelTurnBlock()}>
+          <div class="mb-2 flex flex-wrap items-center justify-between gap-x-3 rounded-lg border px-3 text-sm"
+            style={{ color: 'var(--tcode-text)', 'border-color': 'var(--tcode-border)', background: 'var(--tcode-surface)' }}>
+            <span role="status" class="py-2">{modelsLoading() ? '正在确认可用模型…'
+              : modelLoadError() ? '暂时无法加载模型列表。消息草稿已保留，请重试。'
+              : modelTurnBlock() === 'empty' ? '没有可用的对话模型。请在设置中添加模型，或在 tcode.json 中填写实际模型 ID。'
+              : '尚未确认可用模型，请重新加载模型列表。'}</span>
+            <Show when={!modelsLoading() && !modelLoadError() && modelTurnBlock() === 'empty'} fallback={
+              <button type="button" class="min-h-11 shrink-0 font-medium underline underline-offset-4 disabled:opacity-50" disabled={modelsLoading()} onClick={() => void loadAvailableModels(sessionStore.currentSessionId(), true)}>重新加载模型</button>
+            }>
+              <Show when={props.onOpenModelSettings}>
+                <button type="button" class="min-h-11 shrink-0 font-medium underline underline-offset-4" onClick={() => props.onOpenModelSettings?.()}>去设置添加模型</button>
+              </Show>
+            </Show>
+          </div>
+        </Show>
         <Show when={commandFeedback()}><div role="status" class="mb-2 flex items-center justify-between gap-2 text-xs text-[#aab6bf]">
           <span>{commandFeedback()}</span><button type="button" aria-label="关闭命令提示" onClick={() => setCommandFeedback('')}>×</button>
         </div></Show>
@@ -1884,7 +1924,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
                   <option value="auto">自动批准</option>
                 </select>
               </Show>
-              <span class="composer-key-hint">{goalMode() ? (goalRunning() ? '回车补充指导' : '回车发送目标或回答') : sessionStore.isRunning() ? '回车暂存' : '回车发送'}</span>
+              <span class="composer-key-hint">{goalMode() ? (guidingExistingGoal() ? '回车补充指导' : '回车发送目标') : sessionStore.isRunning() ? '回车暂存' : '回车发送'}</span>
               <Show when={!composerCollapsed()}>
                 <span>Shift+回车换行</span>
               </Show>
@@ -1902,7 +1942,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void } = {}) 
                 <button
                   type="submit"
                   disabled={
-                    runtimeChangePending()
+                    Boolean(modelTurnBlock())
+                    || runtimeChangePending()
                     || modelChangePending()
                     || (!input().trim() && attachedFiles().length === 0)
                   }

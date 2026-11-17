@@ -128,7 +128,7 @@ Examples:
   TCODE_WORKDIR=/path/to/project %(prog)s
         """,
     )
-    parser.add_argument("--local", action="store_true", help="Loopback-only setup without deployment environment files")
+    parser.add_argument("--local", action="store_true", help="Loopback-only setup; discovers .tcode-local/tcode.json in the current directory without loading deployment environment files")
     parser.add_argument(
         "--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)"
     )
@@ -169,6 +169,10 @@ Examples:
 
     # Set workdir in environment for app to use
     os.environ["TCODE_WORKDIR"] = workdir
+    if args.local and not os.environ.get("TCODE_CONFIG_ROOT", "").strip():
+        local_config_root = Path.cwd() / ".tcode-local"
+        if (local_config_root / "tcode.json").is_file():
+            os.environ["TCODE_CONFIG_ROOT"] = str(local_config_root)
     default_config_root = source_root if (source_root / "tcode.json").is_file() else Path(workdir)
     os.environ.setdefault("TCODE_CONFIG_ROOT", str(default_config_root))
 

@@ -16,3 +16,12 @@ export function shouldAcceptResponseModel(
   const requested = String(requestModel || '').trim();
   return !current || current === requested;
 }
+
+export function nativeModelTurnBlock(
+  guidingExistingGoal: boolean,
+  catalog: readonly { id: string }[] | undefined,
+  model: string,
+): '' | 'empty' | 'unverified' {
+  if (guidingExistingGoal || catalog?.some(item => item.id === model)) return '';
+  return catalog?.length === 0 ? 'empty' : 'unverified';
+}

@@ -15,6 +15,7 @@ from ._shared import _is_chat_session_busy
 
 from ..agent.agents import BuiltinAgents
 from ..config.manager import ConfigManager
+from ..config.options import TEMPLATE_MODEL_REFS
 from ..mcp.manager_auto import MCPManager
 from ..mcp.executor_config import resolve_executor_mcp_config, executor_config_candidates, broker_servers
 from ..plugins.manager import PluginManager
@@ -299,13 +300,16 @@ async def list_models(request: Request, session_id: str = Query("")):
             continue
 
         for model_id, model_cfg in model_map.items():
+            model_ref = f"{provider_id}/{model_id}"
+            if model_ref in TEMPLATE_MODEL_REFS:
+                continue
             model_name = model_id
             if isinstance(model_cfg, dict):
                 model_name = str(model_cfg.get("name") or model_id)
             supports_images = _model_config_supports_images(model_cfg)
             models.append(
                 {
-                    "id": f"{provider_id}/{model_id}",
+                    "id": model_ref,
                     "provider_id": provider_id,
                     "model_id": model_id,
                     "name": model_name,
@@ -313,7 +317,6 @@ async def list_models(request: Request, session_id: str = Query("")):
                 }
             )
 
-    selected = ConfigManager.resolve_model_selection(target_workdir)
     session_model = ""
     runtime_session = ServerState.sessions.get(str(session_id or "").strip(), {}) if str(session_id or "").strip() else {}
     if isinstance(runtime_session, dict) and _runtime_session_matches_context(
@@ -323,18 +326,13 @@ async def list_models(request: Request, session_id: str = Query("")):
     ):
         session_model = str(runtime_session.get("model") or "").strip()
     model_ids = {str(item.get("id") or "").strip() for item in models if isinstance(item, dict)}
-    first_model = str(models[0].get("id") or "").strip() if models else ""
-    if session_model and session_model not in model_ids:
-        session_model = ""
-    current_model = str(
-        session_model
-        or config.get("model")
-        or f"{selected.get('provider_id', '')}/{selected.get('model_id', '')}"
-    ).strip()
-    if current_model and model_ids and current_model not in model_ids:
-        current_model = f"{selected.get('provider_id', '')}/{selected.get('model_id', '')}".strip("/")
-    if current_model and model_ids and current_model not in model_ids:
-        current_model = first_model
+    configured_model = ConfigManager.parse_model_ref(config.get("model"))
+    # The chat picker can only send registered model IDs. The shared provider
+    # resolver's implicit Ollama fallback is not an entry in this catalog.
+    current_model = next(
+        (ref for ref in (session_model, "/".join(configured_model or ())) if ref in model_ids),
+        models[0]["id"] if models else "",
+    )
 
     return {
         "config_scope": "session" if str(session_id or "").strip() else "workspace",

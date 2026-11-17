@@ -18,7 +18,7 @@ from starlette.responses import JSONResponse
 
 from .. import web_model_settings as store
 from ..config.manager import ConfigManager
-from ..config.options import resolve_option_value
+from ..config.options import TEMPLATE_MODEL_REFS, TEMPLATE_MODEL_SETUP_HINT, resolve_option_value
 from ..providers.base import ChatMessage
 from ..providers.web_model_transport import allow_local_models, guarded_client, local_web_binding, loopback_host, validate_base_url
 from ..vision import model_config_supports_images
@@ -86,8 +86,11 @@ def _view(settings: dict) -> dict:
         if not isinstance(provider, dict) or not isinstance(provider.get("models"), dict):
             continue
         for model, info in provider["models"].items():
+            ref = f"{provider_id}/{model}"
+            if ref in TEMPLATE_MODEL_REFS:
+                continue
             rows.append({
-                "ref": f"{provider_id}/{model}",
+                "ref": ref,
                 "label": f"{provider.get('name') or provider_id} / {model}",
                 "supports_images": model_config_supports_images(info) is True,
             })
@@ -122,6 +125,8 @@ def _change(callback) -> dict:
 
 
 def _find(config: dict, ref: str):
+    if ref in TEMPLATE_MODEL_REFS:
+        raise HTTPException(400, TEMPLATE_MODEL_SETUP_HINT)
     provider_id, _, model = ref.partition("/")
     providers = config.get("provider")
     provider = providers.get(provider_id) if isinstance(providers, dict) else None

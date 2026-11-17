@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..config.manager import ConfigManager
-from ..config.options import resolve_option_value
+from ..config.options import TEMPLATE_MODEL_REFS, TEMPLATE_MODEL_SETUP_HINT, resolve_option_value
 from .base import LLMProvider
 
 
@@ -87,6 +87,8 @@ def create_provider(
 
     provider_id = str(selection.get("provider_id") or "").strip()
     model_id = str(selection.get("model_id") or "qwen3-coder-next:latest").strip()
+    if f"{provider_id}/{model_id}" in TEMPLATE_MODEL_REFS:
+        raise ValueError(TEMPLATE_MODEL_SETUP_HINT)
     provider_cfg = selection.get("provider") if isinstance(selection.get("provider"), dict) else {}
 
     npm = str(provider_cfg.get("npm") or "").lower()

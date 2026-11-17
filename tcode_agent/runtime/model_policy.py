@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..config.manager import ConfigManager
+from ..config.options import TEMPLATE_MODEL_REFS, TEMPLATE_MODEL_SETUP_HINT
 
 
 PREFERRED_MODEL = "deepseek/deepseek-v4-flash"
@@ -43,12 +44,13 @@ def native_model_ids(workdir: str) -> list[str]:
             result.extend(
                 f"{provider_id}/{model_id}" for model_id in models if model_id
             )
-    return sorted(set(result))
+    return sorted(set(result) - TEMPLATE_MODEL_REFS)
 
 
 def configured_native_model(workdir: str) -> str:
     config = ConfigManager.load(workdir)
-    return str(config.get("model") or "").strip() if isinstance(config, dict) else ""
+    model = str(config.get("model") or "").strip() if isinstance(config, dict) else ""
+    return "" if model in TEMPLATE_MODEL_REFS else model
 
 
 def _allowlist(runtime_id: str) -> set[str] | None:
@@ -107,6 +109,8 @@ async def resolve_runtime_model(
     backend_registry: Any | None = None,
 ) -> RuntimeModelSelection:
     if runtime_id == "tcode-native":
+        if normalize_model_alias(requested_model) in TEMPLATE_MODEL_REFS:
+            raise ModelPolicyError(TEMPLATE_MODEL_SETUP_HINT)
         models = native_model_ids(workdir)
         return select_runtime_model(
             runtime_id,

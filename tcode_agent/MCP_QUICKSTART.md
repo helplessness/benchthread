@@ -41,7 +41,7 @@ TCODE_MCP_CONFIG="$TCODE_CONFIG_ROOT/mcp.json"
 
 仅在主动设置 `TCODE_MCP_PROFILE=job-protocol-only` 时，Web / Server 启动脚本才改读 `mcp_job_protocol_only.json`。后台计算目标与前台服务分开配置。
 
-根 README 的本机 Web 命令已指定本机配置。使用其他直接启动命令时，可显式指定：
+从仓库根目录用 `--local` 启动时，默认读取已初始化的本机配置；非 `--local` 的直接部署命令可显式指定：
 
 ```bash
 export TCODE_CONFIG_ROOT=/absolute/path/to/config

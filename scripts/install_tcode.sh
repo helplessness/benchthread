@@ -48,7 +48,10 @@ PY
 
 cat <<EOF
 TCode ${TCODE_VERSION:-$(cat VERSION)} 已安装到 $VENV_DIR
-请先编辑 $PROJECT_ROOT/.tcode-local/tcode.json 并设置对应环境变量。
-启动 Web：PYTHON_BIN="$VENV_DIR/bin/python" $PROJECT_ROOT/scripts/start_web.sh --workdir "$PROJECT_ROOT"
+本机 Web（在仓库根目录执行）：
+  mkdir -p workdirs/local
+  TCODE_PROJECT_ROOT="$PROJECT_ROOT" "$VENV_DIR/bin/tcode-server" --local --workdir "$PROJECT_ROOT/workdirs/local"
+打开 http://127.0.0.1:8080 在设置中添加模型；已在 .tcode-local/tcode.json 配好模型和凭据的可直接聊天。
+已有部署（加载本机环境文件）：PYTHON_BIN="$VENV_DIR/bin/python" "$PROJECT_ROOT/scripts/start_web.sh" --workdir "$PROJECT_ROOT"
 启动 CLI：TCODE_CONFIG_ROOT="$PROJECT_ROOT/.tcode-local" $VENV_DIR/bin/tcode --workdir "$PROJECT_ROOT"
 EOF

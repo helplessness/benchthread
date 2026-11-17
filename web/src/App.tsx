@@ -1440,7 +1440,7 @@ export default function App(props: AppProps) {
                           onResearchTabChange={setResearchSessionTab}
                           searchFocus={searchMessageFocus()}
                         />
-                        <MessageInput onOpenSkills={openSkillCenter} />
+                        <MessageInput onOpenSkills={openSkillCenter} onOpenModelSettings={() => { setSettingsSection('models'); navigate('settings'); }} />
                       </Suspense>
                     </div>
                   </section>

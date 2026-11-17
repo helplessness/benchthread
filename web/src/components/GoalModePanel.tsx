@@ -12,7 +12,7 @@ import './GoalModePanel.css';
 const labels: Record<string, string> = {ready:'准备推进', running:'正在推进', waiting_external:'等待已有计算', recovering:'检查恢复状态',
   needs_input:'需要你处理', paused:'本地已暂停', stopped:'目标已停止', completed:'已完成验收', budget_exhausted:'预算耗尽／禁止新提交'};
 
-export default function GoalModePanel(props: {sessionId?: string; workspaceId: string; native: boolean; desktopPermissionMode?: 'ask' | 'auto'; identityKey?: string; controlMount?: HTMLElement; onRunning?: (value: boolean) => void; onMode?: (value: boolean) => void; onSubmitReady?: (handler: ((text: string) => Promise<boolean>) | undefined) => void}) {
+export default function GoalModePanel(props: {sessionId?: string; workspaceId: string; native: boolean; desktopPermissionMode?: 'ask' | 'auto'; identityKey?: string; controlMount?: HTMLElement; onRunning?: (value: boolean) => void; onMode?: (enabled: boolean, guidingExistingGoal: boolean) => void; onSubmitReady?: (handler: ((text: string) => Promise<boolean>) | undefined) => void}) {
   const [goal, setGoal] = createSignal<GoalState | null>(null);
   const [editing, setEditing] = createSignal(false);
   const [details, setDetails] = createSignal(false);
@@ -133,7 +133,7 @@ export default function GoalModePanel(props: {sessionId?: string; workspaceId: s
   const active = () => goal() && !['completed', 'stopped'].includes(goal()!.status);
   const enabled = () => Boolean(active() || armed());
   createEffect(() => {
-    props.onMode?.(enabled());
+    props.onMode?.(enabled(), Boolean(active()));
     props.onSubmitReady?.(enabled() && loaded() && props.native ? async text => {
       const limit = active() ? 2000 : 4000;
       if (text.length > limit) {

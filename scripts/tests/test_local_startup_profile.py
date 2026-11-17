@@ -38,6 +38,35 @@ def test_local_profile_is_explicit_and_loopback_only(monkeypatch, tmp_path):
         launcher.main()
 
 
+@pytest.mark.parametrize(("local", "has_local_config", "explicit", "expected"), [
+    (True, True, False, ".tcode-local"),
+    (True, True, True, "explicit"),
+    (True, False, False, "runtime"),
+    (False, True, False, "runtime"),
+])
+def test_local_config_root_discovery(monkeypatch, tmp_path, local, has_local_config, explicit, expected):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(launcher, "source_root", tmp_path / "installed-package")
+    monkeypatch.setattr(launcher, "_configure_job_protocol", Mock(return_value=False))
+    monkeypatch.setattr(launcher, "_configure_local_web", Mock())
+    monkeypatch.setattr(launcher, "_load_env_file", Mock())
+    monkeypatch.setattr(launcher, "_run", Mock())
+    for name in (".tcode-local", "runtime", "explicit"):
+        (tmp_path / name).mkdir()
+    if has_local_config:
+        (tmp_path / ".tcode-local/tcode.json").write_text("{}")
+    monkeypatch.setenv("TCODE_WORKDIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("TCODE_CONFIG_ROOT", str(tmp_path / "explicit"))
+    if not explicit:
+        monkeypatch.delenv("TCODE_CONFIG_ROOT")
+    monkeypatch.setattr(sys, "argv", ["tcode-server"] + (["--local"] if local else []))
+
+    launcher.main()
+
+    assert os.environ["TCODE_CONFIG_ROOT"] == str(tmp_path / expected)
+    assert os.environ["TCODE_WORKDIR"] == str(tmp_path / "runtime")
+
+
 def test_web_reuses_legacy_bridge_gateway(monkeypatch, tmp_path):
     from tcode_agent.runtime.bridge_worker import _resolve_bridge_mcp_config
     from tcode_agent.server import managed_job_protocol as managed

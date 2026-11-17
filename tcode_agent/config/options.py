@@ -1,4 +1,4 @@
-"""Helpers for resolving config option values."""
+"""Config option helpers and reserved template values."""
 
 from __future__ import annotations
 
@@ -8,6 +8,10 @@ from typing import Any
 
 
 _ENV_VALUE_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+# Exact references shipped in the public templates, not provider or model-name patterns.
+TEMPLATE_MODEL_REFS = frozenset({"demo/your-model-id", "demo/your-vision-model-id"})
+TEMPLATE_MODEL_SETUP_HINT = "这是示例模型，请在设置中添加模型，或在 tcode.json 中填写实际模型 ID。"
 
 
 def resolve_option_value(options: dict[str, Any], *names: str, default: str = "") -> str:

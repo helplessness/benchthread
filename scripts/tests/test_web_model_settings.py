@@ -7,18 +7,21 @@ import struct
 import threading
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from tcode_agent.config.manager import ConfigManager
 from tcode_agent.providers.base import ChatMessage
 from tcode_agent.providers.factory import clone_provider, create_provider
 from tcode_agent.providers.web_model_transport import guarded_client, validate_base_url
-from tcode_agent.server import web_model_api
+from tcode_agent.runtime.model_policy import configured_native_model, native_model_ids
+from tcode_agent.server import catalog_api, web_model_api
+from tcode_agent.server.chat_setup import _persist_model_selection_for_workdir
 from tcode_agent.vision import select_vision_model_ref
 from tcode_agent.web_model_settings import settings_path
 
@@ -36,6 +39,7 @@ def instance(tmp_path, monkeypatch):
     monkeypatch.setattr(web_model_api.ServerState, "_workdir", str(tmp_path))
     app = FastAPI()
     app.include_router(web_model_api.router)
+    app.include_router(catalog_api.router)
     with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 41001)) as client:
         yield client, tmp_path
     ConfigManager.reload(str(tmp_path), emit=False)
@@ -96,6 +100,77 @@ def add(client, base, **extra):
         "name": "Fixture", "protocol": "openai_compatible", "base_url": base,
         "models": ["text", "vision", "error", "redirect", "empty"], "api_key": SECRET, **extra,
     })
+
+
+def test_chat_catalog_does_not_advertise_unconfigured_model(instance, monkeypatch):
+    client, root = instance
+    monkeypatch.setenv("TCODE_DEMO_BASE_URL", "https://provider.example/v1")
+    monkeypatch.setenv("TCODE_DEMO_API_KEY", SECRET)
+    monkeypatch.setattr(catalog_api.ServerState, "sessions", {
+        "old-chat": {"model": "ollama/legacy", "workdir": str(root)},
+    })
+
+    for query in ("", "?session_id=old-chat"):
+        response = client.get("/api/models" + query)
+        assert response.status_code == 200, response.text
+        assert response.json()["models"] == []
+        assert response.json()["current_model"] == ""
+
+    (root / "tcode.json").write_text(json.dumps({
+        "model": "demo/text",
+        "provider": {"demo": {"models": {"text": {}}}, "ollama": {"models": {"legacy": {}}}},
+    }))
+    assert client.get("/api/models").json()["current_model"] == "demo/text"
+    assert client.get("/api/models?session_id=old-chat").json()["current_model"] == "ollama/legacy"
+
+
+def test_chat_catalog_preserves_normalized_default_model(instance):
+    client, root = instance
+    (root / "tcode.json").write_text(json.dumps({
+        "model": "private / lab-model",
+        "provider": {
+            "public": {"models": {"public-model": {}}},
+            "private": {"models": {"lab-model": {}}},
+        },
+    }))
+    assert client.get("/api/models").json()["current_model"] == "private/lab-model"
+
+
+def test_public_template_models_are_not_available_until_configured(instance, gateway, monkeypatch):
+    client, root = instance
+    base, calls = gateway
+    template = Path(__file__).resolve().parents[2] / "config/templates/tcode.example.json"
+    config = json.loads(template.read_text())
+    file_config = root / "tcode.json"
+    file_config.write_text(json.dumps(config))
+    monkeypatch.setenv("TCODE_DEMO_BASE_URL", base)
+    monkeypatch.setenv("TCODE_DEMO_API_KEY", SECRET)
+    placeholder = config["model"]
+    monkeypatch.setattr(catalog_api.ServerState, "sessions", {
+        "old-chat": {"model": placeholder, "workdir": str(root)},
+    })
+
+    catalog = client.get("/api/models?session_id=old-chat").json()
+    assert catalog["models"] == [] and catalog["current_model"] == ""
+    assert client.get(API).json()["models"] == []
+    assert native_model_ids(str(root)) == [] and configured_native_model(str(root)) == ""
+    assert select_vision_model_ref(config) is None
+    for field, purpose in (("model", "text"), ("vision_model", "image")):
+        response = client.post(API + "/test", json={"ref": config[field], "purpose": purpose})
+        assert response.status_code == 400 and "实际模型 ID" in response.json()["detail"]
+    with pytest.raises(HTTPException, match="实际模型 ID"):
+        _persist_model_selection_for_workdir(placeholder, workdir=str(root), prefer_local=True)
+    with pytest.raises(ValueError, match="实际模型 ID"):
+        create_provider(str(root))
+    assert calls == []
+
+    config["provider"]["demo"]["models"]["text"] = {}
+    config["provider"]["other"] = {"models": {"your-model-id": {"supports_images": True}}}
+    file_config.write_text(json.dumps(config))
+    catalog = client.get("/api/models?session_id=old-chat").json()
+    assert [row["id"] for row in catalog["models"]] == ["demo/text", "other/your-model-id"]
+    assert catalog["current_model"] == "demo/text"
+    assert select_vision_model_ref(config) == "other/your-model-id"
 
 
 def test_model_capabilities_defaults_and_private_storage(instance, gateway, monkeypatch):

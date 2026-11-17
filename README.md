@@ -27,8 +27,6 @@ cd benchthread
 source .venv/bin/activate
 mkdir -p workdirs/local
 TCODE_PROJECT_ROOT="$PWD" \
-TCODE_CONFIG_ROOT="$PWD/.tcode-local" \
-TCODE_MCP_CONFIG="$PWD/.tcode-local/mcp.json" \
 tcode-server --local --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local"
 ```
 

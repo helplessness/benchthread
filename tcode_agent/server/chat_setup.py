@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from ..agent.agents import BuiltinAgents
 from ..config.manager import ConfigManager
+from ..config.options import TEMPLATE_MODEL_REFS, TEMPLATE_MODEL_SETUP_HINT
 from ..mcp.manager_auto import MCPManager
 from ..session.manager import SessionManager
 from ..skill.manager import SkillManager
@@ -34,6 +35,8 @@ def _persist_model_selection_for_workdir(
         raise HTTPException(400, "Invalid model format, expected provider/model")
 
     provider_id, model_id = parsed
+    if f"{provider_id}/{model_id}" in TEMPLATE_MODEL_REFS:
+        raise HTTPException(400, TEMPLATE_MODEL_SETUP_HINT)
     target_workdir = str(workdir or ServerState.get_workdir()).strip() or ServerState.get_workdir()
     config = _load_tcode_config(target_workdir)
     providers = config.get("provider", {})

@@ -36,13 +36,13 @@ export TCODE_DEMO_BASE_URL='https://your-provider.example/v1'
 export TCODE_DEMO_API_KEY='replace-with-your-key'
 ```
 
-从项目根目录按[快速开始](../README.md#linux-web发出第一条消息)启动时，命令用 `TCODE_CONFIG_ROOT` 指定 `.tcode-local` 作为配置目录。该变量不改变 `--workdir` 指定的会话数据目录。`--local` 不会加载 `.tcode-local/local.env`；使用[部署脚本](RUNNING.md#使用部署脚本)时，可以把这两个变量写进私有的 `local.env`。
+从项目根目录用 `--local` 启动时，会自动读取已有的 `.tcode-local/tcode.json`。显式设置 `TCODE_CONFIG_ROOT` 时以指定目录为准；该变量不改变 `--workdir` 指定的会话数据目录。`--local` 不会加载 `.tcode-local/local.env`；使用[部署脚本](RUNNING.md#使用部署脚本)时，可以把这两个变量写进私有的 `local.env`。
 
 配置完成后启动 Web（已运行则重启），在会话输入框确认选中了实际模型。地址和密钥变量不会替旧会话切换模型；需要时手工重新选择。
 
 ### 模型不显示或无法发送
 
-- **没有可用的对话模型，或选中了模板占位项**：`demo/your-model-id` 不是可调用的模型，使用占位项发送可能返回 404。先在网页添加模型，或[填写文件配置](#从文件配置模型)，再选择实际模型。不需要为此删除会话。
+- **没有可用的对话模型**：公开模板的 `demo/your-model-id` 和图片占位模型不进入可用列表。先在网页添加，或[填写文件配置](#从文件配置模型)。旧版本可能显示占位项并在发送时报 404，不需要为此删除会话。
 - **确认后端读到了哪组模型**：访问当前 Web 地址的 [`/api/models`](http://127.0.0.1:8080/api/models)（端口以实际部署为准）。`models` 为空时，核对启动目录、`TCODE_CONFIG_ROOT` 和对应 `tcode.json` 的条目；有模型时，在聊天下拉框确认选择，或在设置里展开「测试文件中配置的模型」。这些模型不会出现在网页添加的服务主列表中。
 - **`Provider not found: ollama`**：请求引用了未配置的 `ollama/…`。若本来要用 OpenAI 兼容接口，选择已配置的真实模型即可，不需要安装 Ollama。
 - **有模型但测试或聊天失败**：核对接口路径、模型 ID、权限、密钥和网络。文本测试不验证模型的工具调用能力；`/api/health` 也不测试模型连接。

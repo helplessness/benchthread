@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from .config.options import TEMPLATE_MODEL_REFS
+
 
 def model_config_supports_images(model_cfg: Any) -> Optional[bool]:
     """Return an explicit image capability, or ``None`` when unspecified."""
@@ -61,7 +63,7 @@ def select_vision_model_ref(
         or runtime.get("visionModel")
         or ""
     ).strip()
-    if preferred and preferred != excluded and "/" in preferred:
+    if preferred and preferred != excluded and preferred not in TEMPLATE_MODEL_REFS and "/" in preferred:
         provider_id, _model_id = preferred.split("/", 1)
         providers = config.get("provider")
         provider_cfg = (
@@ -84,7 +86,7 @@ def select_vision_model_ref(
             continue
         for model_id, model_cfg in models.items():
             model_ref = f"{provider_id}/{model_id}"
-            if model_ref == excluded:
+            if model_ref == excluded or model_ref in TEMPLATE_MODEL_REFS:
                 continue
             if model_config_supports_images(model_cfg) is True:
                 return model_ref
