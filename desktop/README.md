@@ -29,7 +29,12 @@ TCODE_DESKTOP_PYTHON=/absolute/path/to/python ./scripts/start_desktop.sh
 
 启动优先使用 `.tcode-local/desktop.env`；可用 `TCODE_DESKTOP_ENV_FILE` 指定其他文件。保留对 `TCODE_ENV_FILE` 的显式开发配置兼容。没有桌面环境文件时复用现有模型/登录配置，但 MCP 路由始终使用独立桌面文件，不继承 Web 的本机 MCP 或 Runner。缺基础配置时按[配置指南](../docs/CONFIGURATION.md)初始化。
 
-### 电脑控制与隐私
+### 网页操作与电脑控制
+
+- **Agent 浏览器**使用 Electron 内置 Chromium。源码启动下载 Electron，DMG 自带 Electron；两者都不需要另装浏览器、ChromeDriver、Docker 或 Cua，也不要求给浏览器授予 macOS 辅助功能或屏幕录制权限。配置支持工具调用的模型后，可在新会话说「用内置浏览器打开 https://example.com，读取页面主标题」，同时检查浏览器侧栏是否出现页面。
+- **Computer Use** 用于控制其他 macOS 应用。源码启动会准备锁定版本的 Cua CLI；桌面 npm 依赖包含对应的 Node SDK。需要手动准备或重试时，在仓库根目录运行 `npm --prefix desktop run prepare:computer`，成功后重启桌面。如果提示缓存校验失败，只移走报错指出的驱动归档，再运行同一命令；如需离线准备，可用 `TCODE_COMPUTER_DRIVER_ARCHIVE=/绝对路径/归档.tar.gz` 指定同一版本、已下载的归档，仍会校验。DMG 已内置驱动和 SDK，不需要收件人在终端安装。
+
+打开「允许 Computer Use」后，按应用提示在 macOS「系统设置 → 隐私与安全性」中授予辅助功能，以及截屏需要的屏幕录制权限。如果系统提示重启应用，按提示退出后重开；开发版和打包版是不同的应用身份，授权不一定互通。
 
 电脑控制每次启动默认关闭。关闭时，查看状态、重新检查权限或清理任务都不会启动 Cua 驱动，因此不会从该实例发送驱动遥测。只有显式打开窗口内的「允许 Computer Use」才会启动驱动；关掉会撤销授权并停止驱动。启用时 Cua 默认可能发送产品遥测，可按 [Cua 驱动版本说明](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.35.2)确认版本，并用驱动自身的 `telemetry status` / `telemetry disable` 查询或关闭。启用开关不替代 macOS 系统权限或任务授权。
 

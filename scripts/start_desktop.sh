@@ -54,7 +54,13 @@ fi
 EXPECTED_DRIVER_SHA256="512f488f631469decfebecc6e5f54e74a6f10e78f9644f89f1eb43ce7e8426ba"
 DRIVER_PATH="$PROJECT_DIR/desktop/vendor/cua-driver"
 if [ ! -x "$DRIVER_PATH" ] || [ "$(shasum -a 256 "$DRIVER_PATH" 2>/dev/null | awk '{print $1}')" != "$EXPECTED_DRIVER_SHA256" ]; then
-    npm --prefix desktop run prepare:computer
+    if ! npm --prefix desktop run prepare:computer; then
+        if [ "$COMPUTER_USE_ENABLED" = 1 ] || [ -e "$DRIVER_PATH" ] || [ -L "$DRIVER_PATH" ]; then
+            echo "Cua Driver 未能安全准备，请按桌面 README 排查后重试。" >&2
+            exit 1
+        fi
+        echo "Cua Driver 未下载成功，本次仍可使用聊天和网页浏览器。要使用电脑控制，请运行 npm --prefix desktop run prepare:computer 后重启。" >&2
+    fi
 fi
 if [ ! -d "$PROJECT_DIR/web/node_modules" ]; then
     npm --prefix web ci

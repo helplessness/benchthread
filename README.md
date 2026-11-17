@@ -121,7 +121,9 @@ tcode-server --local --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local
 ./scripts/start_desktop.sh
 ```
 
-启动脚本会按需创建 `.desktop-venv`、安装桌面 Python 与 npm 依赖并构建前端；首次还需下载 Electron 和固定版本的驱动。准备驱动文件不等于运行它：电脑控制默认关闭，普通聊天不会启动驱动或发送其遥测。
+启动脚本会按需创建 `.desktop-venv`、安装桌面 Python 与 npm 依赖并构建前端。Agent 操作网页使用 Electron 随包自带的 Chromium，不需要另装 Chrome、ChromeDriver、Playwright 或 Docker。
+
+控制其他 macOS 应用是另一项功能。源码启动会尝试准备固定版本的 Cua Driver，电脑控制默认关闭；干净副本中若驱动下载失败，仍可聊天和操作网页。已有损坏驱动或显式要求电脑控制时，需先修复驱动。手动准备、系统授权和 DMG 中已打包的内容见[桌面浏览器与电脑控制](desktop/README.md#网页操作与电脑控制)。
 
 1. 用刚设定的邮箱和密码登录，打开 **设置 → 模型与执行 → 添加聊天服务**。
 2. 填服务名称、协议、接口地址和模型 ID。有鉴权再填 API Key；OpenAI 兼容接口通常填写以 `/v1` 结尾的基础地址，不填 `/chat/completions`。
