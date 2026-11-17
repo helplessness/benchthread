@@ -27,6 +27,7 @@ PYTHON_BIN="$PWD/.venv/bin/python" ./scripts/start_web.sh --workdir "$PWD/workdi
 | 本地沙箱 BLAST | 先构建 executor，再构建 `tcode-tools-blast:latest`（`deploy/sandbox-tools/blast`） | 沿用执行沙箱，不单独启动 BLAST 服务 |
 | 容器隔离的 Python 插件 | `tcode-plugin-runtime:py312`（`deploy/plugin-runtime`） | 启动 Sandbox Runner，由它创建插件 Worker；见[插件容器部署](plugin-sdk/07-容器隔离与受控能力调用.md#8-生产部署) |
 
+如果只想把 **Web 本身**跑进容器，使用仓库根目录的 Compose，见 [Docker 本机体验](#docker-本机体验)。它与工具沙箱是两套独立的启动方式。
 
 ### Linux Web 启用 Agent 浏览器
 
@@ -94,14 +95,29 @@ PYTHON_BIN="$PWD/.venv/bin/python" ./scripts/start_web.sh --workdir "$PWD/workdi
 
 ## Docker 本机体验
 
+这套 Compose 只启动 BenchThread Web，默认只发布到本机 `127.0.0.1:8080`。宿主机只需 Docker Engine 和 Docker Compose 插件（或 Docker Desktop），不用另外安装 Python、Node.js、TMCP、Redis 或沙箱。第一回构建需要联网下载基础镜像和依赖；使用 Docker Desktop 时建议给构建环境预留约 8 GB 内存。
+
+**首次配置**（在 BenchThread 仓库根目录执行；已有配置时直接编辑，不要重复复制）：
+
 ```bash
-mkdir -p workdirs/container
-docker build -t tcode:local .
-docker run --rm -p 127.0.0.1:8080:8080 \
-  -e TCODE_BOOTSTRAP_PASSWORD \
-  -e TCODE_DEMO_BASE_URL -e TCODE_DEMO_API_KEY \
-  -v "$PWD/workdirs/container:/workspace" \
-  tcode:local
+(umask 077; mkdir -p .tcode-local/docker-chat/config &&
+  cp -n config/examples/local-demo/*.json .tcode-local/docker-chat/config/ &&
+  cp -n config/examples/docker-chat.env.example .tcode-local/docker-chat/settings.env &&
+  chmod 755 .tcode-local/docker-chat/config &&
+  chmod 644 .tcode-local/docker-chat/config/*.json)
 ```
 
-先在终端设置这些环境变量，给 `TCODE_BOOTSTRAP_PASSWORD` 填写自己的强密码。镜像默认开启登录，初始账号为 `admin@example.com`。实际聊天还需用可用的模型 ID：准备一份 `config/examples/local-demo/` 的配置副本、填写 `tcode.json`，再通过 `-v /absolute/config:/config:ro` 挂载。不要把本机体验命令当作生产部署；公开服务需单独设置认证、隔离和持久存储。
+1. 在 `.tcode-local/docker-chat/settings.env` 设置至少 12 字符的独立管理员密码，以及实际模型的 `TCODE_DEMO_BASE_URL` 和 `TCODE_DEMO_API_KEY`。默认管理员邮箱为 `admin@example.com`，可在首次启动前修改。模型地址从**容器**访问；例如 Docker Desktop 下连接宿主机模型可用 `host.docker.internal`，不要填容器里的 `localhost`。不把密码或密钥写入 JSON 或提交到 Git。
+2. 在 `.tcode-local/docker-chat/config/tcode.json` 把两处 `your-model-id` 都替换为服务商实际提供的模型 ID。容器的本机 HTTP 页面可以聊天，但网页模型管理需要 HTTPS；本机体验使用这份文件配置，不降低网页安全限制。
+
+**配置好后，一条命令启动**：
+
+```bash
+docker compose up -d
+```
+
+打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)，用管理员邮箱和密码登录。点「新建任务」，按提示新增或选择一个工作目录，创建会话并发送第一条文本消息。`docker compose logs -f web` 可查看启动情况；`/api/health` 只说明 Web 已启动，不验证模型。
+
+- 宿主机的配置目录只读挂载；账号、工作区和会话存入 Compose 的 `workspace` 命名卷。`docker compose down` 后再次执行启动命令仍会保留数据；不要用 `down -v` 停机，它会删除数据卷。改动环境文件后重新执行 `up -d`；改动账号引导密码不会重置已创建的账号。更新源码后用 `docker compose up -d --build`。
+- 若本机端口已被占用，可用 `TCODE_DOCKER_PORT=18080 docker compose up -d`。Windows PowerShell 的环境变量语法不同；首次配置也可用文件管理器复制模板。
+- 这是本机聊天配置，不包含飞书 CLI、桌面应用、Agent 浏览器沙箱、Job Protocol、远端 MCP 或文件服务，不要直接对外开放。

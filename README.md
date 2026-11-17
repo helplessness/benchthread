@@ -74,6 +74,7 @@ tcode-server --local --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local
 | [Linux Web](#linux安装并启动-web) | 主要 Web 部署入口；本机试用和按配置部署的启动方式不同。 | 本机体验用 `tcode-server`；按配置启动用 `./scripts/start_web.sh` |
 | [macOS 桌面源码版](#macos启动桌面端) | Apple Silicon（arm64）；不提供已签名安装包，不支持 Intel Mac 桌面。 | `./scripts/start_desktop.sh`，不需要另启 Web |
 | [Windows Web](docs/Windows-Web快速启动.md) | 原生 PowerShell 源码启动，实验性支持，尚待 Windows 实机验收；不提供 Windows 桌面版。 | 在 PowerShell 用 `tcode-server.exe` 启动，浏览器访问 |
+| [Docker Web](docs/RUNNING.md#docker-本机体验) | 本机基础聊天；宿主机不需要 Python 或 Node.js。 | 一次配置账号和模型后，运行 `docker compose up -d` |
 
 以上命令从项目根目录执行，首次使用前都需要安装依赖和配置模型。Windows 和 Linux 的本机最小 Web 启动方式都不要求 Docker；连接普通远程 MCP 也不要求本机安装 Docker。浏览器接管、电脑控制和本机隔离等能力不承诺跨平台对等。异步任务、文件传输和需要隔离的工具按使用场景另行配置。
 

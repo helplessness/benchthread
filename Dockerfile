@@ -3,9 +3,20 @@ FROM node:22-bookworm-slim AS web-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --registry=https://registry.npmjs.org
-RUN npm install -g @larksuite/cli@1.0.98 --registry=https://registry.npmjs.org
+ARG TCODE_INSTALL_LARK_CLI=1
+RUN mkdir -p /opt/lark-cli \
+    && if [ "$TCODE_INSTALL_LARK_CLI" = 1 ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends ca-certificates curl \
+        && rm -rf /var/lib/apt/lists/* \
+        && npm install -g @larksuite/cli@1.0.98 --registry=https://registry.npmjs.org \
+        && install -m 0755 /usr/local/lib/node_modules/@larksuite/cli/bin/lark-cli /opt/lark-cli/lark-cli; \
+    fi
 COPY web/ ./
-RUN npm run build
+# The Web type check also covers tests that import this checked-in scene fixture.
+COPY docs/IntelligentUI/examples/guided-bearing.json /src/docs/IntelligentUI/examples/
+# Rollup's production graph exceeds Node's default container heap.
+RUN NODE_OPTIONS=--max-old-space-size=4096 npm run build
 
 FROM python:3.12-slim AS runtime
 
@@ -25,7 +36,7 @@ RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY pyproject.toml MANIFEST.in README.md LICENSE VERSION ./
 COPY tcode_agent/ ./tcode_agent/
 COPY --from=web-builder /src/web/dist/ ./tcode_agent/server/static/
-COPY --from=web-builder /usr/local/lib/node_modules/@larksuite/cli/bin/lark-cli /usr/local/bin/lark-cli
+COPY --from=web-builder /opt/lark-cli/ /usr/local/bin/
 RUN python -m pip install --no-cache-dir --no-deps .
 
 RUN useradd --create-home --uid 10001 tcode && mkdir -p /config /workspace

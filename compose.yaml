@@ -1,0 +1,34 @@
+name: benchthread-chat
+
+services:
+  web:
+    build:
+      context: .
+      args:
+        TCODE_INSTALL_LARK_CLI: "0"
+    init: true
+    ports:
+      - "127.0.0.1:${TCODE_DOCKER_PORT:-8080}:8080"
+    env_file:
+      - "${TCODE_DOCKER_SETUP_DIR:-./.tcode-local/docker-chat}/settings.env"
+    environment:
+      TCODE_CONFIG_ROOT: /config
+      TCODE_WORKDIR: /workspace
+      TCODE_ENV_FILE: /dev/null
+      TCODE_MCP_CONFIG: /config/mcp.json
+      TCODE_ENTERPRISE_MODE: "1"
+      TCODE_SANDBOX_ENABLED: "false"
+      TCODE_MANAGED_JOB_PROTOCOL: "0"
+      TCODE_ASYNC_WATCHER_ENABLED: "0"
+      TCODE_RESEARCH_ENABLED: "false"
+    volumes:
+      - type: bind
+        source: "${TCODE_DOCKER_SETUP_DIR:-./.tcode-local/docker-chat}/config"
+        target: /config
+        read_only: true
+        bind:
+          create_host_path: false
+      - workspace:/workspace
+
+volumes:
+  workspace:
