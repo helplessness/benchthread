@@ -170,7 +170,9 @@ export TCODE_DEMO_API_KEY='replace-with-your-key'
 
 已有部署继续使用原启动命令，不要加 `--local`。桌面和单机 Web 启用通用异步 MCP 后重启，可自动启动内置 Job Protocol；已有外部网关优先，旧任务不会自动改投。启用方式见[第三方异步 MCP 指南](docs/服务隔离/第三方MCP插件接入与运行.md#1-先确认-benchthread-侧的服务就绪)。
 
-使用高级功能前先准备对应服务：Web 浏览器需要 Sandbox Runner 和 Playwright 镜像；隔离执行需要支持的桌面隔离后端或 Linux 沙箱；远程计算需要已启用的 Job Protocol 和已注册的执行端；远程文件传输还需要 Artifact 服务和工具绑定。缺少这些服务不妨碍基础聊天。
+源码启动后，只测聊天或使用本机模拟服务测试 Boltz，不需要 Docker 或 Sandbox Runner。模拟 Boltz 仍需配置异步任务、审核和产物回传。要启用 Agent 内置浏览器或容器隔离工具，只准备对应镜像和服务，不用启动整个 `deploy/`。见 [Linux Web 详细部署：Docker 与 Sandbox Runner](docs/RUNNING.md#linux-web-可选容器部署)。
+
+远程计算需要已启用的 Job Protocol 和已注册的执行端；远程文件传输还需要 Artifact 服务和工具绑定。缺少这些服务不妨碍基础聊天。
 
 依赖已安装且 `.tcode-local/local.env` 已按用途配置后，执行：
 
