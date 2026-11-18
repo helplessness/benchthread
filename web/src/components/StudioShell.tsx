@@ -16,7 +16,9 @@ export type StudioShellProps = {
   onOpenSkillCenter: () => void; skillCount: number;
   onOpenServiceSettings: (section: 'mcp' | 'desktop') => void;
   browserActive?: boolean;
-  inspectorTabLabels?: string[];
+  inspectorTabs?: ReadonlyArray<{ id: string; label: string }>;
+  activeInspectorTab?: string;
+  onInspectorTabSelect?: (id: string) => void;
   inspectorRequest?: number; inspectorCloseRequest?: number; inspectorTitle?: string; onInspectorVisibility?: (visible: boolean) => void;
   notices: RuntimeNotice[]; onNoticeSelect: (notice: RuntimeNotice) => void;
   noticeCounts: Record<'jobs' | 'review' | 'workflow', number>;
@@ -197,12 +199,30 @@ export default function StudioShell(props: StudioShellProps) {
         event.preventDefault();if(id==='inspector'){const points=anchors(),current=drawerWidth(),max=points[points.length-1];settleDrawer(event.key==='Home'?points[0]:event.key==='End'?max:current>max*.75&&delta[event.key]<0?Math.max(points[0],max*.75):snapInspector(current+delta[event.key],0,points));return;}resize(id,event.key==='Home'?bounds(id)[0]:event.key==='End'?bounds(id)[1]:dimensions()[id]+delta[event.key]);save();
       }} />
   );
+  let inspectorPicker: HTMLDivElement | undefined;
+  let inspectorPickerTrigger: HTMLButtonElement | undefined;
+  let inspectorPickerLeaveTimer: number | undefined;
+  const [inspectorPickerOpen, setInspectorPickerOpen] = createSignal(false);
+  const [inspectorPickerPinned, setInspectorPickerPinned] = createSignal(false);
+  const cancelInspectorPickerLeave = () => window.clearTimeout(inspectorPickerLeaveTimer);
+  onCleanup(cancelInspectorPickerLeave);
+  function closeInspectorPicker(returnFocus = false) {
+    cancelInspectorPickerLeave();
+    setInspectorPickerOpen(false);
+    setInspectorPickerPinned(false);
+    if (returnFocus) inspectorPickerTrigger?.focus();
+  }
   onMount(()=>{
     const observer=new ResizeObserver(()=>{finishDrag(true);stopSpring();setDrawerLiveWidth(null);setViewport({width:root.clientWidth,height:root.clientHeight});});observer.observe(root);
     const blur=()=>finishDrag(true);
     const release=()=>finishDrag();
-    const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){finishDrag(true);if(menu.open){menu.open=false;menu.querySelector('summary')?.focus();}if(actionsMenu?.open){actionsMenu.open=false;actionsMenu.querySelector('summary')?.focus();}if(noticeMenu?.open){noticeMenu.open=false;noticeMenu.querySelector('summary')?.focus();}}};
+    const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){closeInspectorPicker();finishDrag(true);if(menu.open){menu.open=false;menu.querySelector('summary')?.focus();}if(actionsMenu?.open){actionsMenu.open=false;actionsMenu.querySelector('summary')?.focus();}if(noticeMenu?.open){noticeMenu.open=false;noticeMenu.querySelector('summary')?.focus();}}};
     const click=(event:MouseEvent)=>{if(!menu.contains(event.target as Node))menu.open=false;if(actionsMenu && !actionsMenu.contains(event.target as Node))actionsMenu.open=false;if(noticeMenu && !noticeMenu.contains(event.target as Node))noticeMenu.open=false;};
+    const dismissPicker = (event: PointerEvent) => {
+      if (inspectorPickerOpen() && !inspectorPicker?.contains(event.target as Node)) closeInspectorPicker();
+    };
+    document.addEventListener('pointerdown', dismissPicker);
+    onCleanup(() => document.removeEventListener('pointerdown', dismissPicker));
     window.addEventListener('pointerup',release,true);window.addEventListener('mouseup',release,true);
     window.addEventListener('blur',blur);window.addEventListener('keydown',key);document.addEventListener('click',click);
     onCleanup(()=>{observer.disconnect();finishDrag(true);stopSpring();window.removeEventListener('pointerup',release,true);window.removeEventListener('mouseup',release,true);window.removeEventListener('blur',blur);window.removeEventListener('keydown',key);document.removeEventListener('click',click);});
@@ -234,9 +254,44 @@ export default function StudioShell(props: StudioShellProps) {
         <Show when={isDesktop()}><button class="studio-command-trigger" onClick={props.onCommandPalette} title="打开全局命令面板">搜索 <kbd>⌘K</kbd></button></Show>
         <Show when={isDesktop()}><ComputerUsePanel/></Show><DesktopServices onOpenSettings={props.onOpenServiceSettings} />
         <button aria-pressed={focused()} onClick={()=>setFocused(!focused())}>{focused()?'退出专注':'专注模式'}</button>
-        <div class="studio-inspector-toggle-wrap">
-          <button class="studio-inspector-toggle" aria-label={`${hidden('inspector') ? '打开' : '隐藏'}右侧面板，${props.inspectorTabLabels?.length || 0} 个标签`} aria-expanded={!hidden('inspector')} aria-describedby="studio-open-tabs-hint" onClick={()=>toggle('inspector')}><span>{props.inspectorTabLabels?.length || 0}</span></button>
-          <div id="studio-open-tabs-hint" class="studio-open-tabs-hint" role="tooltip"><b>已打开的标签页</b><For each={props.inspectorTabLabels || []}>{label=><div>{label}</div>}</For><Show when={!props.inspectorTabLabels?.length}><div>暂无打开的标签页</div></Show></div>
+        <div ref={inspectorPicker} class="studio-inspector-toggle-wrap"
+          onPointerEnter={event=>{
+            if (event.pointerType !== 'mouse') return;
+            cancelInspectorPickerLeave();
+            setInspectorPickerOpen(true);
+          }}
+          onPointerLeave={()=>{
+            cancelInspectorPickerLeave();
+            if (inspectorPickerPinned() || document.activeElement?.closest('.studio-open-tabs-picker')) return;
+            inspectorPickerLeaveTimer = window.setTimeout(() => closeInspectorPicker(), 240);
+          }}
+          onKeyDown={event=>{if (event.key === 'Escape' && inspectorPickerOpen()) { event.stopPropagation(); closeInspectorPicker(true); }}}
+          onFocusOut={event=>{if (!event.currentTarget.contains(event.relatedTarget as Node | null)) closeInspectorPicker();}}>
+          <button ref={inspectorPickerTrigger} type="button" class="studio-inspector-toggle"
+            aria-label={`已打开的标签页，${props.inspectorTabs?.length || 0} 个`}
+            aria-expanded={inspectorPickerOpen()} aria-controls={inspectorPickerOpen() ? 'studio-open-tabs-picker' : undefined}
+            onClick={()=>{
+              cancelInspectorPickerLeave();
+              if (inspectorPickerPinned()) closeInspectorPicker();
+              else { setInspectorPickerPinned(true); setInspectorPickerOpen(true); }
+            }}><span>{props.inspectorTabs?.length || 0}</span></button>
+          <Show when={inspectorPickerOpen()}>
+            <div class="studio-open-tabs-anchor">
+              <div id="studio-open-tabs-picker" class="studio-open-tabs-picker" role="group" aria-label="已打开的标签页">
+                <b>已打开的标签页</b>
+                <For each={props.inspectorTabs}>{tab=>{
+                  const active = () => !hidden('inspector') && tab.id === props.activeInspectorTab;
+                  return <button type="button" title={tab.label} aria-current={active() ? 'true' : undefined}
+                    onClick={()=>{props.onInspectorTabSelect?.(tab.id);closeInspectorPicker(true);}}>
+                    <span>{tab.label}</span><Show when={active()}><small aria-hidden="true">当前</small></Show>
+                  </button>;
+                }}</For>
+                <Show when={!props.inspectorTabs?.length}><p>暂无打开的标签页</p></Show>
+                <Show when={!hidden('inspector')}><button type="button" class="studio-open-tabs-hide"
+                  onClick={()=>{toggle('inspector');closeInspectorPicker(true);}}>隐藏右侧面板</button></Show>
+              </div>
+            </div>
+          </Show>
         </div>
         <details ref={menu} class="studio-layout-menu"><summary>布局与面板</summary><div>
           <b>显示区域</b><For each={Object.keys(studioPanels) as StudioPanel[]}>{id=><label><input type="checkbox" checked={!hidden(id)} onChange={()=>toggle(id)}/>{studioPanels[id]}</label>}</For>

@@ -129,6 +129,7 @@ export default function App(props: AppProps) {
   const [sideChatError, setSideChatError] = createSignal('');
   const [showCompanionMenu, setShowCompanionMenu] = createSignal(false);
   let companionMenuElement: HTMLDivElement | undefined;
+  let companionTabList: HTMLElement | undefined;
   let sideChatSyncGeneration = 0;
   const [activeDiscussionSessionId, setActiveDiscussionSessionId] = createSignal('');
   const [collaborationTab, setCollaborationTab] = createSignal<CollaborationTab>('tasks');
@@ -259,7 +260,13 @@ export default function App(props: AppProps) {
     const dismiss = (event: PointerEvent) => {
       if (!companionMenuElement?.contains(event.target as Node)) setShowCompanionMenu(false);
     };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setShowCompanionMenu(false); };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !showCompanionMenu()) return;
+      if (companionMenuElement?.contains(document.activeElement)) {
+        companionMenuElement.querySelector('button')?.focus();
+      }
+      setShowCompanionMenu(false);
+    };
     document.addEventListener('pointerdown',dismiss); document.addEventListener('keydown',escape);
     onCleanup(()=>{document.removeEventListener('pointerdown',dismiss);document.removeEventListener('keydown',escape);});
   });
@@ -308,9 +315,12 @@ export default function App(props: AppProps) {
     window.addEventListener('keydown', key);
     onCleanup(() => { window.removeEventListener(CITATION_OPEN_EVENT, open); window.removeEventListener('keydown', key); });
   });
-  const reopenCompanion = () => {
+  const lastClosedCompanion = () => {
     const closed = closedCompanionTabs();
-    const view = closed[closed.length - 1];
+    return closed[closed.length - 1];
+  };
+  const reopenCompanion = () => {
+    const view = lastClosedCompanion();
     if (view?.startsWith('browser:')) window.dispatchEvent(new CustomEvent('tcode:open-browser'));
     else if (view) openCompanion(view);
   };
@@ -1303,7 +1313,16 @@ export default function App(props: AppProps) {
           onOpenSkillCenter={openSkillCenter}
           onOpenServiceSettings={openServiceSettings}
           skillCount={skills().length}
-          browserActive={isDesktop && companionView().startsWith('browser:') && !(workspaceMerged()&&mergedMainActive())} inspectorTabLabels={companionTabs().map(companionLabel)} inspectorTitle="伴随查看" inspectorRequest={inspectorRequest()} inspectorCloseRequest={inspectorCloseRequest()} onInspectorVisibility={setInspectorVisible}
+          browserActive={isDesktop && companionView().startsWith('browser:') && !(workspaceMerged()&&mergedMainActive())}
+          inspectorTabs={companionTabs().map(id=>({ id, label: companionLabel(id) }))}
+          activeInspectorTab={workspaceMerged() && mergedMainActive() ? undefined : companionView()}
+          onInspectorTabSelect={id=>{
+            const tab = companionTabs().find(view=>view === id);
+            if (!tab) return;
+            openCompanion(tab);
+            requestAnimationFrame(()=>companionTabList?.querySelector('.companion-tab[data-active=true]')?.scrollIntoView({block:'nearest', inline:'nearest'}));
+          }}
+          inspectorTitle="伴随查看" inspectorRequest={inspectorRequest()} inspectorCloseRequest={inspectorCloseRequest()} onInspectorVisibility={setInspectorVisible}
           actions={<>
             <Show when={!isDesktop}><button onClick={() => { openCompanion('assets'); navigate('console'); }}>文件改动</button></Show>
             <Show when={!isDesktop}><button onClick={() => navigate('subagents')}>协作{sessionStore.subagentStates().length ? ` · ${sessionStore.subagentStates().length}` : ''}</button></Show>
@@ -1316,23 +1335,35 @@ export default function App(props: AppProps) {
               onOpenHome={openConsole} onOpenHistory={openHistoryModal} />
           </Suspense>}
           inspector={<Show when={`${identity()}:${currentWorkspaceId()}:${sessionStore.currentSessionId() || ''}`} keyed>{_scope => <>
-            <nav class="companion-tabs elastic-tabs" aria-label="伴随查看切换">
-              <TabIndicator active={workspaceMerged()&&mergedMainActive()?'main':companionView()} selector=".companion-tab[data-active=true]" top />
-              <Show when={workspaceMerged()}><div class="companion-tab" data-active={mergedMainActive()}><button aria-pressed={mergedMainActive()} onClick={()=>setMergedMainActive(true)}>主界面</button></div></Show>
-              <For each={companionTabs()}>{tab => <div class="companion-tab" data-active={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())}>
-                <button title={isPreviewView(tab) ? `/workspace/${previewPath(tab)}` : companionLabel(tab)} aria-pressed={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())} onClick={()=>{setMergedMainActive(false);setCompanionView(tab);}}>{companionLabel(tab)}</button>
-                <button class="companion-tab-close" aria-label={`关闭${companionLabel(tab)}标签`} title={isSideChatView(tab) ? '关闭并删除这段侧聊' : '关闭标签'} disabled={isSideChatView(tab) && closingSideChats().includes(tab.slice(9))} onClick={()=>tab==='evidence'?closeCitation():void closeCompanion(tab)}>×</button>
-              </div>}</For>
-              <div ref={companionMenuElement} class="companion-new">
-                <button class="companion-tab-restore" aria-label="新建侧边标签" title="新建侧边标签" aria-expanded={showCompanionMenu()} aria-controls="companion-new-menu" onClick={()=>setShowCompanionMenu(value=>!value)}>＋</button>
-                <Show when={showCompanionMenu()}><div class="companion-new-menu" id="companion-new-menu" role="group" aria-label="选择标签类型">
-                  <Show when={isDesktop}><button onClick={()=>{setShowCompanionMenu(false);window.dispatchEvent(new CustomEvent('tcode:open-browser'));}}>浏览器</button></Show>
-                  <button disabled={!sessionStore.currentSessionId() || creatingSideChat()} onClick={()=>void createSideChat()}>{creatingSideChat() ? '创建中…' : '侧边聊天'}</button>
-                </div></Show>
+            <div class="companion-tabs">
+              <nav ref={companionTabList} class="companion-tab-list elastic-tabs" aria-label="侧边标签">
+                <TabIndicator active={workspaceMerged()&&mergedMainActive()?'main':companionView()} selector=".companion-tab[data-active=true]" top />
+                <Show when={workspaceMerged()}><div class="companion-tab" data-active={mergedMainActive()}><button aria-pressed={mergedMainActive()} onClick={()=>setMergedMainActive(true)}>主界面</button></div></Show>
+                <For each={companionTabs()}>{tab => <div class="companion-tab" data-active={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())}>
+                  <button title={isPreviewView(tab) ? `/workspace/${previewPath(tab)}` : companionLabel(tab)} aria-pressed={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())} onClick={()=>{setMergedMainActive(false);setCompanionView(tab);}}>{companionLabel(tab)}</button>
+                  <button class="companion-tab-close" aria-label={`关闭${companionLabel(tab)}标签`} title={isSideChatView(tab) ? '关闭并删除这段侧聊' : '关闭标签'} disabled={isSideChatView(tab) && closingSideChats().includes(tab.slice(9))} onClick={()=>tab==='evidence'?closeCitation():void closeCompanion(tab)}>×</button>
+                </div>}</For>
+              </nav>
+              <div class="companion-actions" role="group" aria-label="侧边面板操作">
+                <Show when={lastClosedCompanion()}>{tab => (
+                  <button type="button" class="companion-action" aria-label={`重开标签：${companionLabel(tab())}`} title={`重开标签：${companionLabel(tab())}`} onClick={reopenCompanion}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5v5h5M4 10a8 8 0 1 1 1.2 7.6"/></svg>
+                    <span>重开标签</span>
+                  </button>
+                )}</Show>
+                <div ref={companionMenuElement} class="companion-new">
+                  <button type="button" class="companion-action companion-action--add" aria-label="打开新标签" title="打开新标签" aria-expanded={showCompanionMenu()} aria-controls={showCompanionMenu() ? "companion-new-menu" : undefined} onClick={()=>setShowCompanionMenu(value=>!value)}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                    <span>打开标签</span>
+                  </button>
+                  <Show when={showCompanionMenu()}><div class="companion-new-menu" id="companion-new-menu" role="group" aria-label="选择标签类型">
+                    <Show when={isDesktop}><button type="button" onClick={()=>{setShowCompanionMenu(false);window.dispatchEvent(new CustomEvent('tcode:open-browser'));}}>打开浏览器</button></Show>
+                    <button type="button" disabled={!sessionStore.currentSessionId() || creatingSideChat()} onClick={()=>void createSideChat()}>{creatingSideChat() ? '创建中…' : '新建侧边聊天'}</button>
+                  </div></Show>
+                </div>
+                <Show when={workspaceMerged()}><button type="button" class="companion-action" aria-label="恢复独立分栏" title="恢复独立分栏" onClick={()=>setSplitRequest(value=>value+1)}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M14 4v16"/></svg></button></Show>
               </div>
-              <Show when={closedCompanionTabs().length}><button class="companion-tab-restore" title={`恢复关闭的标签：${companionLabel(closedCompanionTabs()[closedCompanionTabs().length - 1])}`} onClick={reopenCompanion}>↶ 恢复</button></Show>
-              <Show when={workspaceMerged()}><button class="companion-split-restore" aria-label="恢复独立分栏" title="恢复主界面与右侧面板独立分栏" onClick={()=>setSplitRequest(value=>value+1)}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M14 4v16"/></svg></button></Show>
-            </nav>
+            </div>
             <Show when={sideChatError()}><div class="side-chat-error" role="alert">{sideChatError()}<button onClick={()=>{setSideChatError('');const id=sessionStore.currentSessionId();if(id)void syncSideChats(id);}}>重试</button></div></Show>
             <Show when={isDesktop}><div id="studio-browser-host" hidden={!companionView().startsWith('browser:')} /></Show>
             <div class="studio-page" hidden={companionView()!=='structure'}><Suspense fallback={<LazyPanelFallback/>}><StructureWorkspace

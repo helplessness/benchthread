@@ -642,7 +642,7 @@ export default function BrowserLivePanel(props: BrowserLivePanelProps) {
                     onKeyDown={(event) => sendHumanInput({ action: 'key', key: event.key })}
                   />
                 </Show>
-                }><div ref={setNativeHost} class="h-full w-full" aria-label="内置浏览器页面" /></Show>
+                }><div ref={setNativeHost} class="desktop-browser-native-host h-full w-full" aria-label="内置浏览器页面" /></Show>
               </div>
               <Show when={!nativePanel()}>
               <form class="border-t border-[#26313a] bg-[#10171c] p-3" onSubmit={(event) => {

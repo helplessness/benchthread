@@ -3,6 +3,8 @@
 .studio-context[data-browser=true]>div{display:flex;flex-direction:column;padding:0;overflow:hidden;min-height:0;flex:1}
 #studio-browser-host{padding:0;overflow:hidden;min-height:0;flex:1}
 #studio-browser-host>div{height:100%;min-height:0}
+/* Electron's native page view sits above the renderer, including its menus. */
+.studio-shell:has(.studio-open-tabs-picker,.companion-new-menu) .desktop-browser-native-host{display:none}
 .desktop-browser-panel{height:100%;min-height:0;display:flex;flex-direction:column;background:#fff;color:#26352b;min-width:0}
 .desktop-browser-panel>header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:1px solid #e3e8e0;font-size:12px}
 .desktop-browser-panel button{color:#344238;background:#f6f8f4;border:1px solid #dce3d8;border-radius:8px;padding:5px 9px;white-space:nowrap;cursor:pointer}
