@@ -85,13 +85,21 @@ mkdir -p workdirs/local
 
 如果只想把 **Web 本身**跑进容器，使用仓库根目录的 Compose，见 [Docker 本机体验](#docker-本机体验)。它与工具沙箱是两套独立的启动方式。
 
+#### 沙箱账号与共享配置
+
+- **Runner 账号**可以访问 Docker，用它构建镜像、启动出网代理和 Runner，并运行沙箱检查。这个账号不必是 root。
+- **Web 账号**不应能访问 Docker（不加入 `docker` 组，也不传 `DOCKER_HOST`）。切换到此账号再启动 `start_web.sh`；启用 `TCODE_SANDBOX_REQUIRE_RUNNER=true` 时，脚本会拒绝有 Docker 权限的 Web 账号。
+- **启动前**，让两个账号都能读取 `.tcode-local/local.env`，并按需访问同一个工作区根目录。为两边设置相同的 `TCODE_SANDBOX_RUNNER_TOKEN`，例如将自设的随机令牌写入只对这两个账号开放的 `local.env`。不要提交令牌或关闭认证。默认自动生成的令牌文件只对 Runner 账号可读，不能直接用于这套双账号部署。
+
+如果 Runner 已经在运行，改配置后用 `./scripts/start_sandbox_runner.sh restart -d` 代替 `start -d`，然后重启 Web。
+
 ### Linux Web 启用 Agent 浏览器
 
 以下是 **受信任的 Linux 单机开发**流程。先完成 [Linux Web 安装](#linux-web-安装与构建)与[模型配置](CONFIGURATION.md#在-web-设置模型)，再在运行 Sandbox Runner 的机器准备 Docker Engine、Docker Compose 插件和 `curl`。不在宿主机另装 Chrome/ChromeDriver，也不需要 Cua。共享或生产部署应另配独立的 Runner 账号、gVisor 和生产隔离策略，不要直接对外开放这个开发配置。
 
 这一场景要运行的是 **Web、宿主机上的 Sandbox Runner、egress 代理容器**。Playwright 浏览器镜像由 Runner 按需启动，不用手动运行浏览器容器；不需要 Job Protocol。在这条路径里，egress 代理沙箱浏览器的公网 HTTP/HTTPS 流量，不代理 Web 的模型请求或普通 MCP 连接。
 
-1. 用实际运行 Runner 的 Linux 账号执行 `docker info`，确认能访问 Docker 守护进程，再从仓库根目录构建 Playwright/Chromium 镜像并启动受控出口代理。若只有 `sudo docker info` 能成功，说明当前账号还不能直接访问 Docker；请先由管理员为 Runner 账号配置访问权限，再以该账号重新验证。不要放宽 Docker socket 的权限或给 Web 账号额外授权。
+1. 按[沙箱账号与共享配置](#沙箱账号与共享配置)准备账号和令牌。用 **Runner 账号**执行 `docker info`，确认能访问 Docker，再从仓库根目录构建浏览器镜像并启动出网代理。如果只有 `sudo docker info` 能成功，请先让管理员配置 Runner 账号的 Docker 访问权限，不要放宽 Docker socket 的权限。
 
    ```bash
    docker info
@@ -107,25 +115,25 @@ mkdir -p workdirs/local
    TCODE_SANDBOX_DOCKER_RUNTIME=
    TCODE_SANDBOX_RUNNER_REQUIRED_RUNTIME=
    TCODE_BROWSER_REQUIRE_RUNNER=true
+   TCODE_SANDBOX_EGRESS_PROXY=http://egress-proxy:3128
+   TCODE_SANDBOX_EGRESS_PROXY_CONTAINER=tcode-egress-proxy
    TCODE_USER_WORKDIRS_ROOT="$TCODE_PROJECT_ROOT/workdirs"
    TCODE_SANDBOX_WORKSPACE_ROOT="$TCODE_USER_WORKDIRS_ROOT"
    TCODE_SANDBOX_RUNNER_WORKSPACE_ROOT="$TCODE_USER_WORKDIRS_ROOT"
    ```
 
-   新安装生成的配置已包含以下值，核对即可，不用重复写入。Web、Runner 和冒烟脚本都应使用同一份 `TCODE_ENV_FILE`，以及它加载的同一份配置模板。
+   新安装的 `local.env` 默认没有上面两项出网配置，请明确填入；代理地址是 Docker 网络内的地址，不是宿主机的 `localhost`。其余设置按下表核对。Web、Runner 和检查脚本都使用同一份 `TCODE_ENV_FILE`。
 
    | 核对项 | 单机模板值 |
    | --- | --- |
    | Runner 地址 | `TCODE_SANDBOX_RUNNER_HOST=127.0.0.1`、`TCODE_SANDBOX_RUNNER_PORT=19092`、`TCODE_SANDBOX_RUNNER_URL=http://127.0.0.1:19092`；若改端口，URL 也要改 |
-   | Runner 认证 | `TCODE_SANDBOX_RUNNER_REQUIRE_TOKEN=true`、`TCODE_SANDBOX_AUTO_CREATE_TOKEN=true`；首次启动会在模板指定的 `tmp/sandbox-runner/runner.token` 创建令牌，无需手填 |
-   | 浏览器镜像与出网 | `TCODE_BROWSER_SANDBOX_IMAGE=tcode-browser:playwright`、`TCODE_SANDBOX_EGRESS_PROXY=http://egress-proxy:3128`、`TCODE_SANDBOX_EGRESS_PROXY_CONTAINER=tcode-egress-proxy`；代理地址是容器网络内的地址，不是宿主机的 localhost |
+   | Runner 认证 | 保留 `TCODE_SANDBOX_RUNNER_REQUIRE_TOKEN=true`，按[共享配置](#沙箱账号与共享配置)为两个账号设置同一个令牌 |
+   | 浏览器镜像 | 默认 `tcode-browser:playwright`；使用上面的镜像名无需另填 |
    | 工具策略 | `TCODE_SANDBOX_RUNNER_TOOL_POLICY_FILE` 指向初始化生成的 `.tcode-local/sandbox_runner_tool_policy.json`；Runner 允许工具包含 `browser`，允许网络包含 `egress` |
 
    如果工作区权限不是 UID/GID `1000:1000`，同步调整 `TCODE_SANDBOX_USER` 与 `TCODE_SANDBOX_RUNNER_ALLOWED_USERS`，并确保配置中的浏览器档案没有覆盖为其他用户。
 
-3. 启动 Runner、运行一次无需模型的浏览器冒烟，再启动 Web：
-
-   如果之前按 README **方式 A** 用 `tcode-server --local` 试聊，先在原终端用 `Ctrl+C` 停止该次试聊，释放默认的 8080 端口。下面用 **方式 B** 启动，**不要加 `--local`**，否则不会加载这份部署配置。若之前只通过网页保存了模型，继续使用相同的运行数据目录；若通过终端变量配置模型，则在启动 Web 的终端重新设置所需变量。
+3. 用 **Runner 账号**启动 Runner，并运行一次无需模型的浏览器检查：
 
    ```bash
    mkdir -p workdirs/browser-smoke/local/browser
@@ -133,12 +141,13 @@ mkdir -p workdirs/local
    export PYTHON_BIN="$PWD/.venv/bin/python"
    ./scripts/start_sandbox_runner.sh start -d
    ./scripts/check_browser_sandbox.sh "$PWD/workdirs/browser-smoke/local/browser" https://example.com
-   ./scripts/start_web.sh --workdir "$PWD/workdirs/local"
    ```
 
    冒烟命令应退出成功，并输出 `Browser sandbox smoke test passed.` 和 `network: egress`；如果失败，先排查再启动 Web。冒烟会检查真实容器、页面观察和点击，但不验证 Web 聊天链路。
 
-   Web 启动后，打开 `http://127.0.0.1:8080`，按页面提示登录（如启用了认证），新建工作区和会话，选择支持工具调用的模型，发送「用内置浏览器打开 https://example.com，读出页面主标题」。确认聊天中出现实际的浏览器工具调用，且浏览器面板显示页面画面。只收到网页标题或只看到 `/api/health` 成功，都不算 Web 浏览器验收。
+4. 如果之前启动过试聊，先停止旧 Web。换到 **Web 账号**，按[带登录的方式](#按本机配置启动-web)启动 Web，读取同一份配置，**不加 `--local`**。若通过网页保存过模型，继续使用同一个 `--workdir`。
+
+   登录后选支持工具调用的模型，发「用内置浏览器打开 `https://example.com`」。看到浏览器工具调用和页面画面才算跑通；只收到文字回答不算。
 
    停止时先用 `Ctrl+C` 退出 Web，再运行 `./scripts/start_sandbox_runner.sh stop`。确认没有其他工作区或服务依赖此代理后，才用 `docker compose -f deploy/sandbox-egress/compose.yaml down` 停止本次代理。
 
@@ -159,7 +168,7 @@ docker run --rm --network none tcode-executor:py312 python --version
 docker run --rm --network none --user 1000:1000 tcode-tools-blast:latest blastn -version
 ```
 
-这些命令只验证镜像，不代表 Web 已能分配沙箱任务。实际使用时，在部署配置启用沙箱（`TCODE_SANDBOX_ENABLED=true`）；若通过 Runner 执行，设置 `TCODE_SANDBOX_REQUIRE_RUNNER=true`，并按上节核对 Runner 地址、认证、工作区根和工具策略。让 Web 与 Runner 读取同一份环境文件，从仓库根目录启动 Runner 并检查健康状态（端口有改动时替换 `19092`）：
+这些命令只验证镜像，不代表 Web 已能分配沙箱任务。在共用配置中设置 `TCODE_SANDBOX_ENABLED=true` 和 `TCODE_SANDBOX_REQUIRE_RUNNER=true`，按[沙箱账号与共享配置](#沙箱账号与共享配置)准备账号和令牌。核对 Runner 地址、工作区根和工具策略后，用 **Runner 账号**从仓库根目录启动 Runner（端口有改动时替换 `19092`）：
 
 ```bash
 TCODE_ENV_FILE="$PWD/.tcode-local/local.env" PYTHON_BIN="$PWD/.venv/bin/python" \
@@ -167,7 +176,9 @@ TCODE_ENV_FILE="$PWD/.tcode-local/local.env" PYTHON_BIN="$PWD/.venv/bin/python" 
 curl -fsS http://127.0.0.1:19092/health
 ```
 
-再[按本机配置方式](#按本机配置启动-web)启动 Web。执行容器由后端按任务创建，BLAST 不单独起服务。只有任务需要受控出网时才另启 egress；本地 BLAST 搜索如需数据库，还要单独准备并授权读取，构建镜像不会下载数据库。
+换到 **Web 账号**，[按本机配置方式](#按本机配置启动-web)启动 Web。登录后选支持工具调用的模型，发「用 Bash 执行 `pwd`」，确认收到实际 Bash 工具输出。`/health` 成功只说明 Runner 已启动。
+
+执行容器由 Runner 按任务创建，BLAST 不单独起服务。只有任务需要受控出网时才另启代理；本地 BLAST 如需数据库，要单独准备并授权读取，构建镜像不会下载数据库。
 
 ### 远程异步计算
 

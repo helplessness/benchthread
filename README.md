@@ -92,12 +92,64 @@ ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 user@server
 | 用途 | 配置、启动与验证 | 需要什么 |
 | --- | --- | --- |
 | **用 Docker 跑 Web** | [Docker Compose：首次配置与启动](docs/RUNNING.md#docker-本机体验) | 配管理员和模型，再启动基础聊天；不包含工具沙箱或远程任务服务。 |
-| **启用工具沙箱** | [Linux 工具沙箱部署](docs/RUNNING.md#linux-web-可选容器部署) · [Agent 浏览器](docs/RUNNING.md#linux-web-启用-agent-浏览器) · [通用执行器和 BLAST 镜像](docs/RUNNING.md#通用执行器和-blast-镜像) | 按需构建对应镜像、配置 Sandbox Runner；不需要另起 Docker Web。 |
+| **启用工具沙箱** | [组件分工与启动顺序](#linux-web沙箱组件与启动顺序) · [隔离执行 Bash 或 Python](#linux-web隔离执行-bash-或-python) · [Agent 浏览器](docs/RUNNING.md#linux-web-启用-agent-浏览器) · [通用执行器和 BLAST 镜像](docs/RUNNING.md#通用执行器和-blast-镜像) | 按需构建对应镜像、配置 Sandbox Runner；不需要另起 Docker Web。 |
 | **连接普通 MCP** | [普通 MCP：配置与验证](tcode_agent/MCP_QUICKSTART.md#配置一个服务) | 先启动实际工具服务，再在 BenchThread 配置地址和认证；不需要 Job Protocol 或 Docker。 |
 | **启用远程异步计算** | [Job Protocol 与执行端：启动和验收](docs/RUNNING.md#远程异步计算) | 配网关、后台执行和跟踪；实际执行计算的 MCP 服务需单独准备。 |
 | **让远程工具收发文件** | [Artifact 文件服务：准备、接入与验收](docs/RUNNING.md#文件服务artifact) | 只在传文件时需要。安装文件 SDK 不等于启动文件服务。 |
 
 其他入口：[运行指南](docs/RUNNING.md) · [配置指南](docs/CONFIGURATION.md) · [网页搜索配置](docs/CONFIGURATION.md#网页搜索可选) · [启动排查](docs/RUNNING.md#启动排查)。
+
+### Linux Web：沙箱组件与启动顺序
+
+**只聊天不用启用这套沙箱。** 如果你希望 Agent 既能隔离执行 Bash/Python，又能用内置浏览器访问公网，就需要下面两种任务镜像、一个出网代理容器，以及一个宿主机上的 Runner 服务。
+
+| 组件 | 负责什么 | 怎么启动 |
+| --- | --- | --- |
+| 通用执行器 `tcode-executor:py312` | 提供运行 Bash 命令和 Python 脚本的隔离环境。 | 先构建镜像；Runner 收到任务后按需创建容器，不用手动 `docker run`。 |
+| 浏览器 `tcode-browser:playwright` | 在沙箱里运行 Chromium，供 Agent 打开和操作网页。 | 先构建镜像；Runner 按需启动浏览器容器。 |
+| 出网代理 `tcode-egress-proxy` | 代理沙箱的公网 HTTP/HTTPS 请求，按规则拦截内网等目标；不代理 Web 自己的模型请求。 | 需要受控出网时，用 `docker compose -f deploy/sandbox-egress/compose.yaml up -d` 后台启动。 |
+| Sandbox Runner | 接收 Web 的执行请求，通过 Docker 创建和管理任务容器。 | 用 `./scripts/start_sandbox_runner.sh start -d` 启动宿主机上的 Python 服务；Runner 自己不是容器。 |
+
+**启动顺序：** 用有 Docker 权限的 Linux 账号构建镜像、启动所需的出网代理和 Runner，再换到**没有 Docker 权限**的账号按[方式 B](#方式-b带登录启动)启动 Web。两个账号都要能读取同一份私有配置，并能按需访问同一工作区。
+
+只跑离线 Bash/Python 不需要出网代理或浏览器镜像。要用内置浏览器访问公网，启动代理后还要在共用的 `.tcode-local/local.env` 里填下面两项。`egress-proxy` 是 Docker 网络内的服务名，不要换成 `localhost`。[浏览器配置与启动步骤](docs/RUNNING.md#linux-web-启用-agent-浏览器)
+
+```bash
+TCODE_SANDBOX_EGRESS_PROXY=http://egress-proxy:3128
+TCODE_SANDBOX_EGRESS_PROXY_CONTAINER=tcode-egress-proxy
+```
+
+**在 Web 验证：** 新建工作区，选支持工具调用的模型。先发「用 Bash 执行 `pwd`」，确认看到实际工具输出；如果启用了浏览器，再发「用内置浏览器打开 `https://example.com`」，确认看到浏览器工具调用和页面画面。
+
+### Linux Web：隔离执行 Bash 或 Python
+
+**只聊天可以跳过这一节。** 如果要让 Web 里的 Agent 在容器里跑 Bash 命令或 Python 脚本，请配置 Sandbox Runner。通用执行器是镜像，不是常驻服务；Runner 会按需创建容器，不用手动 `docker run`。单纯离线执行不需要浏览器镜像或出口代理。
+
+1. 在运行 Runner 的 Linux 主机上准备 Docker Engine。用有 Docker 权限的 Runner 账号，从仓库根目录构建镜像；不要给 Web 账号 Docker 权限。
+
+   ```bash
+   docker build -t tcode-executor:py312 deploy/sandbox-base/executor
+   ```
+
+2. 在 Web 与 Runner 共同使用的 `.tcode-local/local.env` 里启用沙箱。下面的地址使用同机模板的 `127.0.0.1:19092`；如果改过 Runner 的监听地址或端口，URL 也要对应修改。按详细指南核对 Runner 令牌、工作区根目录和工具策略，确保 `bash`、`exec` 按策略走沙箱。
+
+   ```bash
+   TCODE_SANDBOX_ENABLED=true
+   TCODE_SANDBOX_REQUIRE_RUNNER=true
+   TCODE_SANDBOX_IMAGE=tcode-executor:py312
+   TCODE_SANDBOX_RUNNER_URL=http://127.0.0.1:19092
+   ```
+
+3. 用 **Runner 账号**执行以下命令。两账号的共享令牌和目录权限见[运行指南](docs/RUNNING.md#沙箱账号与共享配置)。
+
+   ```bash
+   mkdir -p workdirs
+   TCODE_ENV_FILE="$PWD/.tcode-local/local.env" PYTHON_BIN="$PWD/.venv/bin/python" \
+     ./scripts/start_sandbox_runner.sh start -d
+   curl -fsS http://127.0.0.1:19092/health
+   ```
+
+4. 换到 **Web 账号**，按[方式 B](#方式-b带登录启动)启动或重启 Web，读取同一份配置，不加 `--local`。`/health` 只确认 Runner 就绪，能否执行请按上面的 Web 步骤验证。
 
 ## 功能进度
 
