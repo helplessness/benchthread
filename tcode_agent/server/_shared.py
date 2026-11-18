@@ -7430,7 +7430,27 @@ class TrackerClaimAccessFilter(logging.Filter):
         )
 
 
-def uvicorn_log_config() -> dict[str, Any]:
+class DesktopPollAccessFilter(logging.Filter):
+    """Suppress routine successful reads from the desktop polling loops."""
+
+    _poll_paths = {
+        "/api/notifications",
+        "/api/async-completions",
+        "/api/browser/pending-login",
+        "/api/symphony/local-issues",
+    }
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            _, method, target, _, status = record.args
+            path = target.partition("?")[0]
+            status = int(status)
+        except (AttributeError, TypeError, ValueError):
+            return True
+        return not (method == "GET" and path in self._poll_paths and 200 <= status < 300)
+
+
+def uvicorn_log_config(*, desktop: bool = False) -> dict[str, Any]:
     config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     filter_name = "hide_successful_tracker_claim_polling"
     config.setdefault("filters", {})[filter_name] = {"()": TrackerClaimAccessFilter}
@@ -7439,6 +7459,10 @@ def uvicorn_log_config() -> dict[str, Any]:
         handler_filters = list(access_handler.get("filters") or [])
         if filter_name not in handler_filters:
             handler_filters.append(filter_name)
+        if desktop:
+            desktop_filter = "hide_successful_desktop_polling"
+            config["filters"][desktop_filter] = {"()": DesktopPollAccessFilter}
+            handler_filters.append(desktop_filter)
         access_handler["filters"] = handler_filters
     return config
 

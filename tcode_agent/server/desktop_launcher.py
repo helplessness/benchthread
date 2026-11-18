@@ -262,7 +262,7 @@ async def _serve(token, project, runtime, computer, browser, stack):
 
     gate = DesktopGate(app, token=token, port=port, tracker_token=tracker_token)
     server = uvicorn.Server(uvicorn.Config(
-        gate, host="127.0.0.1", port=port, log_config=uvicorn_log_config(),
+        gate, host="127.0.0.1", port=port, log_config=uvicorn_log_config(desktop=True),
         timeout_graceful_shutdown=5,
     ))
     workers: list[subprocess.Popen] = [job_worker] if job_worker is not None else []
