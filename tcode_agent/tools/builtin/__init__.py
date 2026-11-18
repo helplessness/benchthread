@@ -7,6 +7,7 @@ from .plan import PlanEnterTool, PlanExitTool, PlanValidateTool, PlanReviewTool
 from .read import ReadTool
 from .inspect_file import InspectFileTool
 from .artifact_query import ArtifactQueryTool
+from .artifact_import import ArtifactBrowseTool, ArtifactImportTool, ArtifactUploadTool
 from .write import WriteTool
 from .edit import EditTool
 from .glob import GlobTool
@@ -93,6 +94,9 @@ _TOOLS = [
     ReadTool,
     InspectFileTool,
     ArtifactQueryTool,
+    ArtifactImportTool,
+    ArtifactBrowseTool,
+    ArtifactUploadTool,
     WriteTool,
     EditTool,
     GlobTool,

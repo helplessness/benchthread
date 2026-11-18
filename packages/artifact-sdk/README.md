@@ -1,8 +1,8 @@
 # BenchThread Artifact Python SDK
 
-同仓库维护、可独立安装的文件客户端。发行包名 `tcode-artifact-sdk`，导入名 `tcode_artifacts`。当前版本 0.1.0，仅提供源码／wheel 安装，**尚未发布到 PyPI**。
+同仓库维护、可独立安装的文件客户端，可选安装 Artifact 服务端。发行包名 `tcode-artifact-sdk`，导入名 `tcode_artifacts`。当前版本 0.1.0，仅提供源码／wheel 安装，**尚未发布到 PyPI**。
 
-只依赖 `httpx`，不导入 `tcode_agent` 或 `tmcp`，不启动服务，不实现计算、队列、审核或轮询。沿用已有 Artifact HTTP v1 接口和 `ArtifactRef`／`BundleRef`，Python 3.10+。Linux／macOS 保留安全目录描述符实现；新增 **Windows 10+ 本地 NTFS 实验性实现（原生验收尚未完成）**，使用系统句柄，不提供关闭路径保护的降级方式。
+基础客户端只依赖 `httpx`；安装基础包或导入 `ArtifactIO` 不会启动服务，也不导入 `tcode_agent` 或 `tmcp`。客户端和可选服务端沿用 Artifact HTTP v1 接口和 `ArtifactRef`／`BundleRef`，不实现计算、队列、审核或轮询。Python 3.10+。客户端在 Linux／macOS 保留安全目录描述符实现；**Windows 10+ 本地 NTFS 客户端为实验性支持（原生验收尚未完成）**，使用系统句柄，不提供关闭路径保护的降级方式。
 
 ## Windows：手动安装与验证，不依赖 CI
 
@@ -55,6 +55,57 @@ python -m pip install /path/to/tcode_artifact_sdk-0.1.0-py3-none-any.whl
 
 SDK 的最小依赖只有 httpx；运行 MCP 示例还需安装 `fastmcp>=3.2,<4`。无需安装整个 BenchThread。复制示例到远端时一并交付 wheel；SDK 不要求远端访问 BenchThread 的源码路径。
 
+## 启动 Artifact 服务端
+
+已有兼容服务时不用安装或启动新的服务端。没有服务时，在 **MCP 所在的机器**或双方都能访问的独立主机上安装额外依赖。下面的命令从仓库根目录运行；用 wheel 部署时，给 wheel 安装路径加上相同的 extras。
+
+### 和 MCP 同端口启动
+
+```sh
+python -m pip install './packages/artifact-sdk[server,example]'
+# 先为进程注入 TMCP_ARTIFACT_API_TOKEN（至少 24 个可打印非空格 ASCII 字符的随机密钥）
+python packages/artifact-sdk/examples/mcp_server.py --with-artifact --port 18080 \
+  --data-dir ./artifact-data --service-id echo-files
+```
+
+同机时，MCP 地址是 `http://127.0.0.1:18080/mcp`，Artifact 基础地址是 `http://127.0.0.1:18080/artifact`。两者共用一个进程和端口，文件请求仍需要自己的 `X-Artifact-Token`，MCP 的认证设置保持独立。开发自己的 FastMCP 服务时，可以保留工具函数，只替换启动入口：
+
+```python
+from tcode_artifacts.server import run_with_artifact
+
+run_with_artifact(mcp, port=18080, data_dir="./artifact-data", service_id="echo-files")
+```
+
+入口默认只监听环回地址。若已设置非空 `TMCP_ARTIFACT_SERVICE_URL`，或配置了 `TMCP_ARTIFACT_SERVICES` 和默认服务 ID，只启动 MCP，沿用 SDK 的外部配置；不会创建本地存储或在连接失败后切换。`run_with_artifact(..., token=...)` 只接受内置服务的令牌；复用外部服务时传这个参数会明确报错。外部凭据通过 `TMCP_ARTIFACT_API_TOKEN` 或服务映射的 `token_env` 设置。
+
+### 仅启动 Artifact
+
+不需要安装 FastMCP，也不需要写 Python 启动脚本：
+
+```sh
+python -m pip install './packages/artifact-sdk[server]'
+# 同样先注入 TMCP_ARTIFACT_API_TOKEN
+tcode-artifact serve --port 18081 --data-dir ./artifact-data --service-id shared-files
+```
+
+基础地址为 `http://127.0.0.1:18081/artifact`。MCP 进程设置该地址、相同的 `TMCP_ARTIFACT_SERVICE_ID` 和文件服务令牌，仍按原方式启动。也可在自己的 Python 入口调用 `run_artifact(data_dir=..., service_id=..., port=...)`。两种方式复用同一份服务端和存储格式，但**不要用两个进程同时对外提供同一个数据目录**。
+
+### 配置 BenchThread 和验证
+
+若只在 BenchThread 聊天中浏览、上传和下载，可将「MCP 绑定」留空。完整的独立启动、后端授权和聊天示例见 [不绑定 MCP 使用 Artifact](../../docs/RUNNING.md#不绑定-mcp-使用-artifact)。
+
+在 BenchThread「设置 → 远端服务 → Artifact 文件服务」填基础地址和相同的服务 ID，凭据字段填已注入到 BenchThread 后端的**环境变量名**。可把它设为默认，或绑定到已添加的 MCP。Web 保存后重启生效。用环境变量代替页面配置时，BenchThread 后端和 MCP 都要配 `TMCP_ARTIFACT_SERVICE_ID`，值须与服务端的 ID 一致，不能只填 URL 和令牌。跨主机使用两端都可达的 HTTPS 地址，不用 `127.0.0.1`；通过反向代理部署时保留 `/mcp` 和 `/artifact` 路径，另外配置 MCP 认证，不要直接暴露不带 MCP 认证的本地回显示例。
+
+首次启动可请求 `/artifact/health`（也需要文件令牌）确认服务 ID。两种启动方式都提供单文件和目录包上传；单文件可直接用 `ArtifactIO().upload_file("./sample.txt")`，也可向 Artifact 基础地址下的 `POST /api/v1/artifacts` 提交带令牌的 multipart `file` 字段，得到 `ArtifactRef`。完整验证要把一个无敏感内容的小文件交给 `echo_file`，取回 `echo.dat` 并核对内容。重启时保留同一数据目录、服务 ID 和访问配置，再用原引用下载，无需重跑工具。
+
+内置服务面向**同一信任域**：共享令牌不是多租户隔离。使用服务账号专用的私有数据目录（POSIX 权限 `0700`），备份整个目录。默认单文件 64 MiB，存储内容总量 1 GiB，可用 `--max-file-bytes`／`--max-store-bytes` 调整独立服务；SDK 客户端和部署代理仍有各自的限额。首版不开放宿主路径注册和压缩包自动解包，也不自动删除旧产物；草稿包也占空间，需按使用量规划存储。
+
+### 可信文件包写入
+
+BenchThread Web 代已登录用户上传目录时，现有接口会发送实际工作区和所有者。给 Artifact 服务端设置独立的 `TMCP_ARTIFACT_PROXY_TOKEN`，值必须与普通 `TMCP_ARTIFACT_API_TOKEN` 不同。只在受信任的 BenchThread 后端注入这份代理令牌，并在 Artifact 配置中把该服务的「凭据环境变量名」指向它；若 Web 使用单地址环境变量配置，则把代理令牌注入 **Web 进程自己的** `TMCP_ARTIFACT_API_TOKEN`，不要改 Artifact 服务端或 MCP 的普通令牌。
+
+仅可信代理可以声明所有者；创建时绑定的工作区、所有者必须在追加成员或完成文件包时完全一致。未配置代理令牌时，带所有者的请求会被拒绝，而不是降级成无归属写入。MCP 的普通 SDK 上传和已有引用下载不变。旧文件包不会被自动认领；若旧的 Web 目录上传还没完成，请在配置代理后重新发起那次**文件上传**。此机制只保护文件包写入，不提供文件读取、目录浏览或全套多租户隔离。若 MCP 代码不在同一信任域，应独立部署 Artifact，不把代理令牌放进 MCP 进程。
+
 ## 服务配置
 
 ```sh
@@ -63,7 +114,7 @@ export TMCP_ARTIFACT_SERVICE_URL='https://artifact.example.org'
 export TMCP_ARTIFACT_API_TOKEN='your-artifact-access-token'
 ```
 
-双方必须能访问同一个 Artifact 服务。远端的 `127.0.0.1` 不是用户电脑；SDK 不自动部署服务、转发端口或把客户端路径当作远端路径。公网部署需要 HTTPS、鉴权和服务端配额。Artifact 凭据与 MCP 连接 Token 是两种不同凭据。
+双方必须能访问同一个 Artifact 服务。远端的 `127.0.0.1` 不是用户电脑；客户端不会自动启动服务、转发端口或把客户端路径当作远端路径。公网部署需要 HTTPS、鉴权和服务端配额。Artifact 凭据与 MCP 连接 Token 是两种不同凭据。
 
 多服务配置与现有 TMCP 命名一致：
 
@@ -122,6 +173,8 @@ python packages/artifact-sdk/examples/mcp_server.py
 python -m pytest -c packages/artifact-sdk/pyproject.toml packages/artifact-sdk/tests -q
 # 安装 example 依赖后：真实 FastMCP in-process 工具发现及回显
 python -m pytest -c packages/artifact-sdk/pyproject.toml packages/artifact-sdk/examples/test_mcp_server.py -q
+# 安装 [server,example,test] 后：真实 HTTP、双启动模式、文件往返及重启恢复
+python -m pytest -c packages/artifact-sdk/pyproject.toml packages/artifact-sdk/examples/test_artifact_service.py -q
 ```
 
 测试使用合成数据、MockTransport 和临时回环 HTTP 服务，不连接正式服务，不提交专业计算。包内测试不依赖 BenchThread／TMCP，验证现有 API 路径、multipart、文件／目录往返、服务凭据隔离、无自动重试／重定向及文件安全边界。宿主既有文件传输、审批和异步恢复测试仍单独运行；契约测试不等价于任意真实服务器的鉴权和业务验收。

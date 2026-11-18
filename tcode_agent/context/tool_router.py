@@ -329,7 +329,10 @@ _MCP_DOMAIN_TERMS = (
 
 _CATEGORY_TOOL_PATTERNS: dict[str, tuple[str, ...]] = {
     "text": (),
+    "artifact": ("artifact_import", "artifact_upload", "artifact_browse"),
     "code": (
+        "artifact_import",
+        "artifact_upload",
         "inspect_file",
         "read",
         "grep",
@@ -347,6 +350,9 @@ _CATEGORY_TOOL_PATTERNS: dict[str, tuple[str, ...]] = {
         "present_image",
     ),
     "web": (
+        "artifact_browse",
+        "artifact_import",
+        "artifact_upload",
         "web",
         "browser",
         "fetch",
@@ -359,6 +365,9 @@ _CATEGORY_TOOL_PATTERNS: dict[str, tuple[str, ...]] = {
         "skill",
     ),
     "research": (
+        "artifact_browse",
+        "artifact_import",
+        "artifact_upload",
         "research_compare",
         "result_item_read",
         "artifact_query",
@@ -462,6 +471,7 @@ class ToolDefinitionRouter:
         categories: list[str] = []
         has_code = _contains_any(goal, _CODE_TERMS)
         has_web = _contains_any(goal, _WEB_TERMS) or bool(_URL_RE.search(goal))
+        has_artifact = _contains_any(goal, ("文件服务", "artifact"))
         has_research = _contains_any(goal, _RESEARCH_TERMS)
         has_visual = _contains_any(goal, _VISUAL_TERMS) or bool(intelligent_ui_intent(goal))
         has_desktop = _contains_any(goal, _DESKTOP_TERMS)
@@ -475,6 +485,8 @@ class ToolDefinitionRouter:
             categories.append("code")
         if has_web:
             categories.append("web")
+        if has_artifact:
+            categories.append("artifact")
         if has_research:
             categories.append("research")
         if has_visual:
@@ -510,7 +522,7 @@ class ToolDefinitionRouter:
         if (
             has_text
             and not any(
-                (has_code, has_web, has_research, has_visual, has_desktop, has_orchestration)
+                (has_code, has_web, has_artifact, has_research, has_visual, has_desktop, has_orchestration)
             )
             and (explicitly_tool_free or not requests_named_capability)
         ):

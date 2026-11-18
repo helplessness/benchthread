@@ -225,6 +225,9 @@ _CAPABILITY_MAP: dict[str, ToolCapability] = {
     "process_runtime": ToolCapability("process_runtime", side_effect_level="high", artifact_contract="process", concurrency_safe=False, interrupt_behavior="cancel_process", result_budget_tokens=8_000, tags=("shell",)),
     "result_item_read": ToolCapability("result_item_read", side_effect_level="none", tags=("artifact", "read_only")),
     "artifact_query": ToolCapability("artifact_query", side_effect_level="low", concurrency_safe=False, tags=("artifact", "local_fs")),
+    "artifact_import": ToolCapability("artifact_import", side_effect_level="high", artifact_contract="file", concurrency_safe=False, tags=("artifact", "local_fs", "write")),
+    "artifact_upload": ToolCapability("artifact_upload", side_effect_level="high", concurrency_safe=False, tags=("artifact", "local_fs", "write")),
+    "artifact_browse": ToolCapability("artifact_browse", side_effect_level="none", tags=("artifact", "read_only")),
     "session_search": ToolCapability("session_search", side_effect_level="none", tags=("history", "read_only")),
     "ontology_query": ToolCapability("ontology_query", side_effect_level="none", tags=("knowledge", "read_only")),
     "computer": ToolCapability(

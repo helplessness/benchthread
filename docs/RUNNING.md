@@ -190,11 +190,56 @@ curl -fsS http://127.0.0.1:19092/health
 
 ### 文件服务（Artifact）
 
-只有远程工具需要通过文件引用收取输入或回传产物时才配置。普通文本工具、纯 JSON 异步任务不用启用文件服务。
+远程工具收发文件以及从文件服务直接导入工作区时，需要配置 Artifact 服务。普通文本工具和纯 JSON 异步任务可以跳过这一步。
 
-1. **准备服务**：复用已有的兼容 Artifact HTTP 服务，或在服务主机上按其部署说明启动。BenchThread 的基础 Compose 和文件 SDK 都不启动 Artifact 服务。已有独立 TMCP 部署时，才可用 [TMCP 兼容启动脚本](../scripts/start_artifact_server.sh)：在配置好 `.tcode-local/mcp_host.env`、且 Python 能导入 `tmcp.artifact_server` 的服务主机执行 `./scripts/start_artifact_server.sh start`。独立的 BenchThread 源码不包含这个模块。
-2. **配置两端**：Web 部署在 `.tcode-local/local.env` 配置 `TMCP_ARTIFACT_SERVICE_URL`，桌面则用 `.tcode-local/desktop.env` 的 `TCODE_DESKTOP_ARTIFACT_SERVICE_URL`；在实际进程中注入服务要求的 `TMCP_ARTIFACT_API_TOKEN`。第三方工具端也需要可达的同一服务地址和相应授权，见 [SDK 连接配置](../packages/artifact-sdk/README.md#服务配置)。Artifact Token 与 MCP 连接或网关注册令牌不能混用。
+1. **准备服务**：已有兼容 Artifact HTTP 服务就直接复用；没有的话，安装 [SDK 的可选服务端](../packages/artifact-sdk/README.md#启动-artifact-服务端)，在第三方 MCP 主机上同端口启动，或在两端都能访问的主机上独立运行 `tcode-artifact serve`。BenchThread 和基础 Compose 不会自动启动它，普通 SDK 客户端也不会占用端口。已有独立 TMCP 部署仍可沿用 [TMCP 兼容启动脚本](../scripts/start_artifact_server.sh)，该脚本需要 `tmcp.artifact_server`。
+2. **配置两端**：在 Web「设置 → 远端服务」添加 Artifact 基础地址、服务 ID 和凭据环境变量名，设为默认或绑定对应 MCP，保存后重启 Web。若改用 `.tcode-local/local.env` 配置单个服务，同时设置 `TMCP_ARTIFACT_SERVICE_URL`、`TMCP_ARTIFACT_SERVICE_ID` 和服务要求的 `TMCP_ARTIFACT_API_TOKEN`。对 SDK 服务端，ID 必须与启动时的 `--service-id`（或 `/health` 返回值）一致，否则带 ID 的结果引用可能无法取回。第三方 MCP 也要使用相同 ID，见 [SDK 连接配置](../packages/artifact-sdk/README.md#服务配置)。已有桌面配置不变；文件服务令牌与 MCP 连接令牌分开设置。Web 向 SDK 服务端上传目录时，配置[可信文件包写入](../packages/artifact-sdk/README.md#可信文件包写入)。
 3. **验收文件往返**：按[第三方异步 MCP 文件示例](服务隔离/第三方MCP插件接入与运行.md#2-在计算主机安装-sdk-并启动示例)启动示例并[登记和验证](服务隔离/第三方MCP插件接入与运行.md#3-在-benchthread-中登记并验证)。用一份无敏感内容的小文件做输入，核对回传产物；仅能连接服务不等于上传、下载和结果回收都正常。
+
+#### 不绑定 MCP 使用 Artifact
+
+在与 BenchThread Web 同机的终端启动独立服务。先通过部署环境为服务进程注入 `TMCP_ARTIFACT_API_TOKEN`，使用至少 24 位的随机密钥。
+
+```sh
+python -m pip install './packages/artifact-sdk[server]'
+tcode-artifact serve --port 18081 --data-dir ./artifact-data --service-id lab-store
+```
+
+1. 在 Web「设置 → 远端服务 → Artifact 文件服务」新增服务。显示名称填「实验室文件服务」，服务 ID 填 `lab-store`，地址填 `http://127.0.0.1:18081/artifact`，凭据环境变量名填 `LAB_ARTIFACT_TOKEN`。MCP 绑定留空。若想省略聊天里的服务名，把它设为默认服务。
+2. 在 **BenchThread 后端进程**注入 `LAB_ARTIFACT_TOKEN`，值与文件服务的令牌一致。按实际的租户和用户 ID 配置权限，保存设置后重启 Web。下面的示例分别授予 Alice 读取和上传权限。只浏览或下载时，仅授予读取权限即可。
+
+   ```sh
+   export TCODE_ARTIFACT_IMPORT_ACCESS='{"lab-store":{"my-tenant":["alice"]}}'
+   export TCODE_ARTIFACT_UPLOAD_ACCESS='{"lab-store":{"my-tenant":["alice"]}}'
+   ```
+
+3. 打开当前工作区，放入一份测试文件 `sample.csv`。依次在聊天中发送以下指令，最后在工作区的 `imports/` 预览下载文件并核对内容。
+
+   - 「把当前工作区的 `sample.csv` 上传到实验室文件服务的 `results/sample.csv`。」
+   - 「列出实验室文件服务的 `results/` 目录。」目录有多页时，可以继续说「下一页」。
+   - 「下载刚才列表里的 `results/sample.csv` 到当前工作区。」
+
+读取授权覆盖整套服务上可浏览和下载的文件。共享目录与含私有任务产物的存储应使用不同的 Artifact 实例、数据目录和令牌。文件包的所有者限制保护写入，持有服务令牌的调用方仍可读取包内容。若 Web 与文件服务分开部署，使用 Web 后端可访问的 HTTPS 地址，并保留末尾的 `/artifact`。
+
+已有任务继续使用它原来的服务 ID 和存储。添加新服务时使用新的 ID，并保留旧服务的配置与地址。改变默认服务前，先确认是否仍有只靠默认服务定位的旧引用。独立服务重启时继续使用原数据目录和服务 ID。
+
+#### 从 Artifact 直接导入工作区
+
+在聊天中说「列出实验室文件服务的 `results/` 目录」，可以分批查看直属文件、大小和子目录。选中文件后，Agent 按该条目下载到当前工作区。省略目录时，从根目录开始。目录浏览使用与导入相同的服务读取授权，兼容服务需提供 `GET /api/v1/files`。
+
+在聊天中说「从实验室文件服务下载 `results/report.csv` 到当前工作区」。服务名称来自「设置 → 远端服务」，省略时使用默认服务。服务名称匹配到多项时，界面会请你选择。服务可独立使用。单文件使用上传时的文件名，已完成文件包中的内容使用包内相对路径。同一个服务出现同路径文件时，可用 `bundle-…/results/report.csv` 指定原文件包。
+
+在 BenchThread 后端环境设置 `TCODE_ARTIFACT_IMPORT_ACCESS`，按服务 ID、租户 ID、用户 ID 明确授予该服务的文件读取范围。例如 `{"lab-store":{"my-tenant":["alice"]}}`。首版适用于整套文件服务授权给这些用户的情况。不同用户的私有文件应使用独立的服务或各自隔离的存储实例。服务还需配置访问令牌，并支持 `GET /api/v1/files/by-path?path=…`，仓库的 SDK 可选服务端已提供该接口。
+
+导入支持 Linux 和 macOS 后端。通过读取和工作区写入授权后，文件保存到当前工作区的 `imports/`，单文件最大 64 MiB，并保留已有同名文件。
+
+#### 上传到 Artifact 指定路径
+
+在聊天中说「把当前工作区的 `reports/report.csv` 上传到实验室文件服务的 `2026/results/report.csv`」。服务选择沿用导入规则，省略名称时使用默认服务，有多个候选时由用户选择。独立文件服务和绑定 MCP 的文件服务都可以用。
+
+在 BenchThread 后端环境为获准上传的用户设置 `TCODE_ARTIFACT_UPLOAD_ACCESS`，格式与导入授权一致。上传时分别检查工作区文件读取权限与远端路径写入权限。Linux 和 macOS 后端支持上传工作区内的普通文件，单文件最大 64 MiB。工作区之外的文件可以先通过现有的文件导入流程加入工作区。
+
+服务端需支持 `PUT /api/v1/files/by-path?path=…`。仓库的 SDK 可选服务端已提供此接口，目标完整路径已存在时返回冲突并保留原文件。上传后可用原路径下载，也可沿用 Artifact 引用交给 `echo_file` 等支持该引用的工具。
 
 ## macOS 桌面开发版
 

@@ -1,4 +1,5 @@
 """Local blocking file echo; use the existing remote-job example for durable jobs."""
+import argparse
 import os
 import shutil
 import tempfile
@@ -29,5 +30,19 @@ def echo_file(input_file: dict) -> dict:
 
 
 if __name__ == '__main__':
-    # Development only. Configure authentication/TLS before exposing any service.
-    mcp.run(transport='streamable-http', host='127.0.0.1', port=int(os.environ.get('EXAMPLE_PORT', '10240')))
+    parser = argparse.ArgumentParser(description='Local file echo MCP')
+    parser.add_argument('--port', type=int, default=int(os.environ.get('EXAMPLE_PORT', '10240')))
+    parser.add_argument('--with-artifact', action='store_true', help='Also serve files unless an external Artifact is configured')
+    parser.add_argument('--data-dir', type=Path, default=Path('./artifact-data'))
+    parser.add_argument('--service-id')
+    args = parser.parse_args()
+    # Loopback example only; use independent MCP authentication and TLS remotely.
+    if args.with_artifact:
+        from tcode_artifacts.server import run_with_artifact
+
+        try:
+            run_with_artifact(mcp, port=args.port, data_dir=args.data_dir, service_id=args.service_id)
+        except ValueError as exc:
+            parser.error(str(exc))
+    else:
+        mcp.run(transport='streamable-http', host='127.0.0.1', port=args.port)

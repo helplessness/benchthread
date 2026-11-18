@@ -217,6 +217,10 @@ def copy_tree(source: Path, destination: Path, *, relative_paths: set[str] | Non
     return hashes
 
 
+class WorkspaceFileExists(ValueError):
+    """A create-only publication found an existing workspace file."""
+
+
 def publish_file(root: Path, relative: str, data: bytes, *, expected: str | None = None) -> None:
     parts = Path(relative).parts
     if not parts or Path(relative).is_absolute() or any(p in {'.', '..'} or _excluded(p) for p in parts):
@@ -237,9 +241,11 @@ def publish_file(root: Path, relative: str, data: bytes, *, expected: str | None
             try:
                 if not stat.S_ISREG(os.fstat(old).st_mode):
                     raise ValueError('输出目标不是普通文件')
+                if expected is None:
+                    raise WorkspaceFileExists('目标文件已变化，保留原文件，请重试')
                 with os.fdopen(old, 'rb', closefd=False) as stream:
                     previous = hashlib.sha256(stream.read(MAX_BYTES + 1)).hexdigest()
-                if expected is None or previous != expected:
+                if previous != expected:
                     raise ValueError('目标文件已变化，保留原文件，请重试')
             finally: os.close(old)
         elif expected is not None:
