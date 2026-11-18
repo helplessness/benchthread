@@ -59,7 +59,13 @@ SDK 的最小依赖只有 httpx；运行 MCP 示例还需安装 `fastmcp>=3.2,<4
 
 ## 启动 Artifact 服务端
 
-已有兼容服务时不用安装或启动新的服务端。没有服务时，在 **MCP 所在的机器**或双方都能访问的独立主机上安装额外依赖。下面的命令从仓库根目录运行；用 wheel 部署时，给 wheel 安装路径加上相同的 extras。
+先决定文件存在哪里，再选一种方式。下面的命令从仓库根目录运行；用 wheel 部署时，给 wheel 安装路径加上相同的 extras。
+
+| 部署方式 | 在哪台机器启动 | BenchThread 里填什么 |
+| --- | --- | --- |
+| [和 MCP 同端口](#和-mcp-同端口启动) | 在 **MCP 主机**启动一个进程，同时提供 MCP 和 Artifact。BenchThread 不用另起文件服务。 | 「MCP 服务」填可达的 `/mcp` 地址；「文件服务」填同一主机、同一端口的 `/artifact` 地址，服务 ID 用启动时的值（示例 `echo-files`），绑定到刚添加的 MCP。 |
+| [独立启动 Artifact](#仅启动-artifact) | 在 **BenchThread 后端和 MCP 都能访问的主机**运行 `tcode-artifact serve`。可以是任一侧主机或第三台。MCP 单独启动，并配置这个 Artifact 的 URL、服务 ID 和令牌。 | 「MCP 服务」填实际 MCP 地址；「文件服务」填独立 Artifact 的基础地址和服务 ID（示例 `shared-files`）。要给 MCP 传文件就绑定它；只在聊天里使用文件服务则不添加、不绑定 MCP。 |
+| [复用已有 Artifact](#复用已有-artifact-服务) | **不启动新的 Artifact。** 在 MCP 主机按原方式启动 MCP，把 SDK 指向已有文件服务。 | 「MCP 服务」填实际 MCP 地址；「文件服务」填已有 Artifact 的实际基础地址和服务 ID，绑定到对应 MCP。若该文件服务已登记，直接复用现有配置，不另建同 ID 的条目。 |
 
 ### 和 MCP 同端口启动
 
@@ -70,7 +76,7 @@ python packages/artifact-sdk/examples/mcp_server.py --with-artifact --port 18080
   --data-dir ./artifact-data --service-id echo-files
 ```
 
-同机时，MCP 地址是 `http://127.0.0.1:18080/mcp`，Artifact 基础地址是 `http://127.0.0.1:18080/artifact`。两者共用一个进程和端口，文件请求仍需要自己的 `X-Artifact-Token`，MCP 的认证设置保持独立。开发自己的 FastMCP 服务时，可以保留工具函数，只替换启动入口：
+这条命令仅监听环回：本机测试地址为 `http://127.0.0.1:18080/mcp` 和 `http://127.0.0.1:18080/artifact`。**即使 Web 与 MCP 同机，也不要把这个 MCP 环回地址填进普通 Web 的 MCP 表单。** 接入 Web 时，按 [快速开始](#echo_file-快速开始)让示例监听可达的私网地址，或通过带认证的 HTTPS 反向代理提供 `/mcp` 和 `/artifact`。两者同端口不代表共用凭据：文件请求使用 `X-Artifact-Token`，MCP 的认证独立设置。开发自己的 FastMCP 服务时，可以保留工具函数，只替换启动入口：
 
 ```python
 from tcode_artifacts.server import run_with_artifact
@@ -90,13 +96,14 @@ python -m pip install './packages/artifact-sdk[server]'
 tcode-artifact serve --port 18081 --data-dir ./artifact-data --service-id shared-files
 ```
 
-基础地址为 `http://127.0.0.1:18081/artifact`。MCP 进程设置该地址、相同的 `TMCP_ARTIFACT_SERVICE_ID` 和文件服务令牌，仍按原方式启动。也可在自己的 Python 入口调用 `run_artifact(data_dir=..., service_id=..., port=...)`。两种方式复用同一份服务端和存储格式，但**不要用两个进程同时对外提供同一个数据目录**。
+默认基础地址为 `http://127.0.0.1:18081/artifact`，仅同主机、同网络环境的客户端能访问。跨主机时给 `tcode-artifact serve` 加 `--host <文件主机的私网IP>`（或让服务保持环回监听，由同机 HTTPS 反向代理转发），并使用调用方真正可达的地址。MCP 进程按[服务配置](#服务配置)设置 Artifact 地址、相同的服务 ID 和文件服务令牌，再启动 MCP。也可在自己的 Python 入口调用 `run_artifact(data_dir=..., service_id=..., port=...)`。两种方式复用同一份服务端和存储格式，但**不要用两个进程同时对外提供同一个数据目录**。
 
 ### 配置 BenchThread 和验证
 
-若只在 BenchThread 聊天中浏览、上传和下载，可将「MCP 绑定」留空。完整的独立启动、后端授权和聊天示例见 [不绑定 MCP 使用 Artifact](../../docs/RUNNING.md#不绑定-mcp-使用-artifact)。
-
-在 BenchThread「设置 → 远端服务 → Artifact 文件服务」填基础地址和相同的服务 ID，凭据字段填已注入到 BenchThread 后端的**环境变量名**。可把它设为默认，或绑定到已添加的 MCP。Web 保存后重启生效。用环境变量代替页面配置时，BenchThread 后端和 MCP 都要配 `TMCP_ARTIFACT_SERVICE_ID`，值须与服务端的 ID 一致，不能只填 URL 和令牌。跨主机使用两端都可达的 HTTPS 地址，不用 `127.0.0.1`；通过反向代理部署时保留 `/mcp` 和 `/artifact` 路径，另外配置 MCP 认证，不要直接暴露不带 MCP 认证的本地回显示例。
+1. 打开 **设置 → 文件服务**（部分内置 Web 版本显示为 **设置 → 远端服务**），点「添加服务」。在「服务地址」填 Artifact 的基础地址（SDK 服务端以 `/artifact` 结尾，不带 `/health`），填入实际服务 ID。「显示名称」是给用户看的，不代替服务 ID。普通 Web 的 **MCP 地址**不接受 `127.0.0.1` 或 `localhost`；**Artifact 地址**只有在 Web 后端和它共用同一网络环境时才可填环回地址。浏览器能打开的地址不一定对 Web 后端可达。跨主机部署请用各端都可达的地址，公开部署用 HTTPS 和独立的 MCP 认证，不要把未认证的本地回显示例直接暴露到公网。
+2. 「凭据环境变量名」填 **BenchThread 后端进程**里的变量名，例如 `ECHO_ARTIFACT_TOKEN`，不填令牌原文。把真实的文件服务令牌注入后端的该变量；不要用 MCP 连接令牌。仅在 MCP 进程中设置，Web 后端不会自动拿到它。若用环境变量代替 Web 页面配置，BenchThread 后端和 MCP 都按[服务配置](#服务配置)提供 URL、服务 ID 和所需凭据，服务 ID 都应与服务端一致。
+3. **绑定**指定某个 MCP 使用哪一个文件服务，填写「MCP 服务」中登记的服务名称，例如 `sdk-echo`。**默认文件服务**供没单独绑定的 MCP 使用。Web 表单需要保留一个默认服务；给新 MCP 做绑定时，不用把它的文件服务改成全局默认。若只在聊天里浏览、上传和下载，绑定留空，并按 [不绑定 MCP 使用 Artifact](../../docs/RUNNING.md#不绑定-mcp-使用-artifact)配置后端授权。
+4. 点 **保存 Artifact 配置**，用同一个运行目录**重启 Web**，再回来点该服务的 **测试连接**。不用重启 MCP；重启前测试会提示配置尚未生效。如果只显示「可达」，说明尚未验证凭据。连接测试不代表 MCP 已经能完成文件往返。
 
 首次启动可请求 `/artifact/health`（也需要文件令牌）确认服务 ID。两种启动方式都提供单文件和目录包上传；单文件可直接用 `ArtifactIO().upload_file("./sample.txt")`，也可向 Artifact 基础地址下的 `POST /api/v1/artifacts` 提交带令牌的 multipart `file` 字段，得到 `ArtifactRef`。完整验证要把一个无敏感内容的小文件交给 `echo_file`，取回 `echo.dat` 并核对内容。重启时保留同一数据目录、服务 ID 和访问配置，再用原引用下载，无需重跑工具。
 
@@ -197,7 +204,7 @@ TCODE_MANAGED_JOB_PROTOCOL=1 PYTHON_BIN="$PWD/.venv/bin/python" \
 1. 登录 Web，先选择或新建工作区，例如 `artifact-demo`。文件传输声明按工作区保存；后续在同一工作区测试。
 2. 打开 **设置 → MCP 服务 → 添加常规 MCP**。服务名称填 `sdk-echo`，MCP 地址填 `http://192.168.1.20:18080/mcp`（替换 IP），传输方式选 **Streamable HTTP**，调用方式选 **异步执行（通过 Job Protocol）**。
 3. 勾选 **为自定义异步 MCP 配置文件字段**，远端接收方式选 **已支持产物引用**。点击 **发现工具与参数（不提交计算）**，展开 `echo_file`，勾选 **启用此工具的异步接入**，把 `input_file` 设为 **文件 / 文件列表**，点 **保存并连接**。保存后应看到 **已注册文件传输**。
-4. 打开 **设置 → 远端服务**，在「文件服务」页面点击「添加服务」。服务 ID 填 `echo-files`，显示名称可填「Echo 文件服务」，服务地址填 `http://192.168.1.20:18080/artifact`，凭据环境变量名填 `ECHO_ARTIFACT_TOKEN`（**不是令牌本身**），绑定的 MCP 名称填 `sdk-echo`。选为默认文件服务，点击 **保存 Artifact 配置**，再用同一个运行目录**重启 Web**（无需重启 MCP）。重启后回到「远端服务」，在新配置的服务下点击 **测试连接**，应显示「连接正常」。重启前测试会提示配置尚未生效；只有下一步取回文件才算跑通。
+4. 打开 **设置 → 文件服务**（也可能显示为 **设置 → 远端服务**），点「添加服务」。服务 ID 填 `echo-files`，显示名称可填「Echo 文件服务」，服务地址填 `http://192.168.1.20:18080/artifact`（替换 IP），凭据环境变量名填 `ECHO_ARTIFACT_TOKEN`（**不是令牌本身**），绑定的 MCP 名称填 `sdk-echo`。如果还没有默认服务，就选它为默认；已有默认服务可以保留。点 **保存 Artifact 配置**，用同一个运行目录**重启 Web**（无需重启 MCP），再回到该页面点 **测试连接**，应显示「连接正常」。只有下一步取回文件才算跑通。
 
 ### 3. 上传附件并取回 echo.dat
 
@@ -215,7 +222,7 @@ python packages/artifact-sdk/examples/mcp_server.py
 
 默认仅监听 `127.0.0.1:10240/mcp`，暴露 `echo_file(input_file: dict)`；仅复制合成输入并上传 `echo.dat`，不运行蛋白或 GPU 计算。公开部署之前自行配置 MCP 认证／TLS，不直接把未认证示例暴露到公网。
 
-仅启动 MCP 前，先按[服务配置](#服务配置)注入外部文件服务地址、ID 和令牌。按上面的 Web 步骤登记工具并绑定该外部服务。SDK 不会启动第二套文件服务。
+在 **MCP 主机**启动前，先按[服务配置](#服务配置)注入已有文件服务的地址、ID 和令牌。上面的命令只供环回测试；接入 Web 时，使用可达的 MCP 地址（例如由同机 HTTPS 反向代理转发 `/mcp`，并配置 MCP 认证）。参考[快速开始的 Web 登记步骤](#2-在-web-登记-mcp-和文件服务)，把示例地址和 ID 替换成实际值，再绑定已有 Artifact；不要照抄 `echo-files`。SDK 不会启动第二套文件服务，连接失败也不会自动切换。
 
 这个最小工具是 **blocking** 接入：桌面把它作为已有异步任务执行，但 SDK 不会让远端同步函数自动获得幂等／断线续跑。需要提交幂等性、status/result/cancel 和远端恢复时，复用仓库 `examples/third_party_mcp/remote_server.py` 与 `async-plugin/async-targets.json` 的 remote-job v1 示例。该示例的 `artifact_io.py` 已转为本 SDK 的兼容导入，不另维护第二份传输实现；任务状态机仍留在原示例／宿主。
 
