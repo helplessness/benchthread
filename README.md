@@ -95,7 +95,7 @@ ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 user@server
 | **启用工具沙箱** | [组件分工与启动顺序](#linux-web沙箱组件与启动顺序) · [隔离执行 Bash 或 Python](#linux-web隔离执行-bash-或-python) · [Agent 浏览器](docs/RUNNING.md#linux-web-启用-agent-浏览器) · [通用执行器和 BLAST 镜像](docs/RUNNING.md#通用执行器和-blast-镜像) | 按需构建对应镜像、配置 Sandbox Runner；不需要另起 Docker Web。 |
 | **连接普通 MCP** | [普通 MCP：配置与验证](tcode_agent/MCP_QUICKSTART.md#配置一个服务) | 先启动实际工具服务，再在 BenchThread 配置地址和认证；不需要 Job Protocol 或 Docker。 |
 | **启用远程异步计算** | [Job Protocol 与执行端：启动和验收](docs/RUNNING.md#远程异步计算) | 配网关、后台执行和跟踪；实际执行计算的 MCP 服务需单独准备。 |
-| **让远程工具收发文件** | [Artifact 文件服务：准备、接入与验收](docs/RUNNING.md#文件服务artifact) | 只在传文件时需要。安装文件 SDK 不等于启动文件服务。 |
+| **让远程工具收发文件** | [用 `echo_file` 跑通第一次往返](packages/artifact-sdk/README.md#echo_file-快速开始) · [Artifact 部署指南](docs/RUNNING.md#文件服务artifact) | 只在传文件时需要。安装文件 SDK 不等于启动文件服务。 |
 
 其他入口：[运行指南](docs/RUNNING.md) · [配置指南](docs/CONFIGURATION.md) · [网页搜索配置](docs/CONFIGURATION.md#网页搜索可选) · [启动排查](docs/RUNNING.md#启动排查)。
 

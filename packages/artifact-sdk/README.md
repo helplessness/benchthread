@@ -2,6 +2,8 @@
 
 同仓库维护、可独立安装的文件客户端，可选安装 Artifact 服务端。发行包名 `tcode-artifact-sdk`，导入名 `tcode_artifacts`。当前版本 0.1.0，仅提供源码／wheel 安装，**尚未发布到 PyPI**。
 
+[第一次让 MCP 收发文件：`echo_file` 快速开始](#echo_file-快速开始) · [只在聊天中使用文件服务，不接 MCP](../../docs/RUNNING.md#不绑定-mcp-使用-artifact)
+
 基础客户端只依赖 `httpx`；安装基础包或导入 `ArtifactIO` 不会启动服务，也不导入 `tcode_agent` 或 `tmcp`。客户端和可选服务端沿用 Artifact HTTP v1 接口和 `ArtifactRef`／`BundleRef`，不实现计算、队列、审核或轮询。Python 3.10+。客户端在 Linux／macOS 保留安全目录描述符实现；**Windows 10+ 本地 NTFS 客户端为实验性支持（原生验收尚未完成）**，使用系统句柄，不提供关闭路径保护的降级方式。
 
 ## Windows：手动安装与验证，不依赖 CI
@@ -109,7 +111,8 @@ BenchThread Web 代已登录用户上传目录时，现有接口会发送实际�
 ## 服务配置
 
 ```sh
-export TMCP_ARTIFACT_SERVICE_URL='https://artifact.example.org'
+export TMCP_ARTIFACT_SERVICE_URL='https://artifact.example.org/artifact'
+export TMCP_ARTIFACT_SERVICE_ID='echo-files'  # 改成服务端 --service-id 或 /health 返回的 service_id
 # 只在实际部署时设置真实访问令牌，勿放进参数或文件引用
 export TMCP_ARTIFACT_API_TOKEN='your-artifact-access-token'
 ```
@@ -153,7 +156,58 @@ result = {"status": "completed", "output_bundle": output_ref}
 
 HTTP／校验错误会抛异常，不返回虚假成功、不跟随重定向、不自动重试 POST／PUT。失败的目录下载可能保留已校验的部分文件，失败的上传可能保留远端草稿包；应记录失败并在新的私有目录重试文件操作，不能把残留目录当作完整结果。不要因此重新提交状态不明的科学计算。
 
-## 最小 MCP 示例
+## echo_file 快速开始
+
+这个示例把一份小文件原样回传为 `echo.dat`。准备一个**带登录、已配置对话模型的 Web**，并启用 [Job Protocol](../../docs/RUNNING.md#远程异步计算)。自定义文件字段通过异步入口登记；`tcode-server --local` 不会启动 Job Protocol，不能用于这次 Web 验证。无需 Docker 沙箱或 TMCP。
+
+### 1. 启动示例
+
+从仓库根目录运行下面的命令。只在隔离的测试网络上使用合成文件；把 `192.168.1.20` 改成 **运行 MCP 的机器实际持有、且 Web 后端可以访问的私网 IP**。这是监听地址，不是 Web 的地址。测试令牌由安装者生成，不要提交到仓库或发送给 Agent。
+
+```bash
+source .venv/bin/activate
+python -m pip install './packages/artifact-sdk[server,example]'
+export ECHO_ARTIFACT_TOKEN="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export ARTIFACT_DEMO_HOST='192.168.1.20'
+
+env -u TMCP_ARTIFACT_SERVICE_URL -u TMCP_ARTIFACT_SERVICES -u TMCP_ARTIFACT_SERVICE_ID \
+  TMCP_ARTIFACT_API_TOKEN="$ECHO_ARTIFACT_TOKEN" python - <<'PY' &
+import os
+import runpy
+from tcode_artifacts.server import run_with_artifact
+
+mcp = runpy.run_path("packages/artifact-sdk/examples/mcp_server.py")["mcp"]
+run_with_artifact(mcp, host=os.environ["ARTIFACT_DEMO_HOST"], port=18080,
+                  data_dir="./artifact-data", service_id="echo-files")
+PY
+ECHO_MCP_PID=$!
+```
+
+Web 的 MCP 表单不接受 `127.0.0.1` 或 `localhost`，即使 MCP 和 Web 在同一台机器也一样。已有 HTTPS 反向代理时，也可以继续用[环回启动命令](#和-mcp-同端口启动)，由代理对 Web 提供可达的 HTTPS 地址，并保留 `/mcp`、`/artifact` 两条路径。不要把这个未启用 MCP 认证的测试示例直接暴露到公网。
+
+如果 Web 还没开 Job Protocol，按[运行指南](../../docs/RUNNING.md#远程异步计算)准备依赖。以下示例假设你在同一台机器启动本次试验的 Web：在同一个终端启动，使 Web 进程继承刚才的 `ECHO_ARTIFACT_TOKEN`。如果复用正在运行的 Web，在它的部署环境注入令牌后重启，不要再起一个使用同一运行目录的实例。两端不在同一台机器时，分别注入同一个测试令牌。
+
+```bash
+TCODE_MANAGED_JOB_PROTOCOL=1 PYTHON_BIN="$PWD/.venv/bin/python" \
+  ./scripts/start_web.sh --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local"
+```
+
+### 2. 在 Web 登记 MCP 和文件服务
+
+1. 登录 Web，先选择或新建工作区，例如 `artifact-demo`。文件传输声明按工作区保存；后续在同一工作区测试。
+2. 打开 **设置 → MCP 服务 → 添加常规 MCP**。服务名称填 `sdk-echo`，MCP 地址填 `http://192.168.1.20:18080/mcp`（替换 IP），传输方式选 **Streamable HTTP**，调用方式选 **异步执行（通过 Job Protocol）**。
+3. 勾选 **为自定义异步 MCP 配置文件字段**，远端接收方式选 **已支持产物引用**。点击 **发现工具与参数（不提交计算）**，展开 `echo_file`，勾选 **启用此工具的异步接入**，把 `input_file` 设为 **文件 / 文件列表**，点 **保存并连接**。保存后应看到 **已注册文件传输**。
+4. 打开 **设置 → 远端服务**，在「文件服务」页面点击「添加服务」。服务 ID 填 `echo-files`，显示名称可填「Echo 文件服务」，服务地址填 `http://192.168.1.20:18080/artifact`，凭据环境变量名填 `ECHO_ARTIFACT_TOKEN`（**不是令牌本身**），绑定的 MCP 名称填 `sdk-echo`。选为默认文件服务，点击 **保存 Artifact 配置**，再用同一个运行目录**重启 Web**（无需重启 MCP）。重启后回到「远端服务」，在新配置的服务下点击 **测试连接**，应显示「连接正常」。重启前测试会提示配置尚未生效；只有下一步取回文件才算跑通。
+
+### 3. 上传附件并取回 echo.dat
+
+1. 在本地创建一个无敏感内容的 `artifact-echo-test.txt`，例如只写一行 `BenchThread Artifact echo tutorial sample.`。
+2. 回到 **同一工作区**，新建任务，用聊天输入框的 **上传附件** 选中该文件。发送：「请通过 Job Protocol 异步提交 `sdk-echo` 的 `echo_file`，原样回传附件 `artifact-echo-test.txt`。」异步目标由 Job Protocol 调用，不会作为直连 MCP 工具出现在 Agent 的工具列表。如果界面询问文件读取或任务执行权限，确认来源和参数后仅批准这一次。
+3. 受理编号不代表完成。等原会话的异步结果回传，再到当前工作区的文件列表，在 `artifacts/jobs/` 下打开或下载 `echo.dat`。内容应与输入完全相同。尚未回传时先查看该任务状态，不要重复提交。
+
+本次上传的是单文件附件，不是 Web 目录上传，因此只用普通文件服务令牌，不需要配置[可信文件包写入](#可信文件包写入)。测试后可先停止这次启动的 Web，再在原终端运行 `kill "$ECHO_MCP_PID"` 停止示例；保留数据目录和服务 ID 可继续读取原来的结果。
+
+### 复用已有 Artifact 服务
 
 ```sh
 python packages/artifact-sdk/examples/mcp_server.py
@@ -161,7 +215,7 @@ python packages/artifact-sdk/examples/mcp_server.py
 
 默认仅监听 `127.0.0.1:10240/mcp`，暴露 `echo_file(input_file: dict)`；仅复制合成输入并上传 `echo.dat`，不运行蛋白或 GPU 计算。公开部署之前自行配置 MCP 认证／TLS，不直接把未认证示例暴露到公网。
 
-在 BenchThread 中使用已有“设置 → MCP 服务 → 异步执行 → 输入文件传输”：发现 echo_file 并将 input_file 声明为文件字段，远端接收方式选“已支持产物引用”。BenchThread 负责读取授权、上传、队列和结果回传；用户批准后仅提交一次，收到受理编号后等待通知，不由示例自行轮询或重新提交。
+仅启动 MCP 前，先按[服务配置](#服务配置)注入外部文件服务地址、ID 和令牌。按上面的 Web 步骤登记工具并绑定该外部服务。SDK 不会启动第二套文件服务。
 
 这个最小工具是 **blocking** 接入：桌面把它作为已有异步任务执行，但 SDK 不会让远端同步函数自动获得幂等／断线续跑。需要提交幂等性、status/result/cancel 和远端恢复时，复用仓库 `examples/third_party_mcp/remote_server.py` 与 `async-plugin/async-targets.json` 的 remote-job v1 示例。该示例的 `artifact_io.py` 已转为本 SDK 的兼容导入，不另维护第二份传输实现；任务状态机仍留在原示例／宿主。
 
