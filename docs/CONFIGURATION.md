@@ -52,7 +52,7 @@ export TCODE_DEMO_API_KEY='replace-with-your-key'
 - `mcp.json` 是前台服务清单；`mcp_agent_config.json` 控制 Agent 可见范围。后台任务的服务配置与前台分开，见 [MCP 接入](../tcode_agent/MCP_QUICKSTART.md)。
 - `plugins.json` 只登记已审阅的插件；安装包、权限申请和运行授权是不同环节。见[插件 SDK](plugin-sdk/README.md)。
 - `human_review.json` 管理工具审核规则；`sandbox_runner_tool_policy.json` 是 Runner 侧工具执行的权限上限。不要为解决连接问题而放宽审核或隔离策略。
-- `local.env` 继承同目录的 `symphony_route.env`。`desktop.env` 与 `mcp_host.env` 分别用于桌面与独立服务主机；非对应场景无需填写。
+- 新版 `local.env` 默认不加载 `symphony_route.env`；高级部署可审查后启用模板中的加载行，已有部署沿用原配置。`desktop.env` 与 `mcp_host.env` 分别用于桌面与独立服务主机；非对应场景无需填写。
 
 ### 需要哪些服务？
 

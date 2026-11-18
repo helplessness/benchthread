@@ -39,7 +39,7 @@ Web 默认要求登录。认证库还没有用户时，启动前必须提供 `TC
 
 #### 使用部署脚本
 
-先确认私有的 `.tcode-local/local.env` 存在（缺失时运行 `./scripts/init_local_config.sh`）。首次启用登录，在加载 `symphony_route.env` 的 `if … fi` 段后添加 `TCODE_BOOTSTRAP_PASSWORD='你的强密码'`，替换成自己的密码；需要自定义邮箱时同处设置 `TCODE_BOOTSTRAP_EMAIL`。不要将真实密码写入公开模板或提交该文件。
+先确认私有的 `.tcode-local/local.env` 存在（缺失时运行 `./scripts/init_local_config.sh`）。首次启用登录，在其中设置 `TCODE_BOOTSTRAP_PASSWORD='你的强密码'`，替换成自己的密码；需要自定义邮箱时同处设置 `TCODE_BOOTSTRAP_EMAIL`。新模板默认不加载高级部署用的 `symphony_route.env`；已有配置继续按原方式加载，不必迁移或重复填写密码。不要将真实密码写入公开模板或提交该文件。
 
 从仓库根目录运行：
 

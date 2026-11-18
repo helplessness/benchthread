@@ -55,6 +55,8 @@ tcode-server --local --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local
 
 首次安装沿用方式 A 的安装步骤（到 `./scripts/install_tcode.sh` 为止），**不要运行 A 的启动命令**。如果已经启动了试聊，先用 `Ctrl+C` 停掉它，避免两个进程占用同一端口或运行目录。
 
+新安装的基础 Web 只需在 `local.env` 配置首次登录，管理员密码只填一处。新模板默认不加载高级部署用的 `symphony_route.env`。已有部署沿用原来的环境文件和加载方式，不必迁移或重复填写密码。
+
 1. 编辑仓库根目录下生成的 **`.tcode-local/local.env`**。其中的 `# TCODE_BOOTSTRAP_PASSWORD=` 只是注释，不是默认密码。首次创建管理员时，去掉行首 `#`，填入自己设置的强密码（至少 12 个字符，不用示例值）。登录邮箱默认是 `admin@example.com`。这个密码不是模型 API Key，修改它也不会重置已有账号的密码。
 
    ```bash
