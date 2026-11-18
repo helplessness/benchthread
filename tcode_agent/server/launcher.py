@@ -169,12 +169,19 @@ Examples:
 
     # Set workdir in environment for app to use
     os.environ["TCODE_WORKDIR"] = workdir
-    if args.local and not os.environ.get("TCODE_CONFIG_ROOT", "").strip():
+    if "TCODE_CONFIG_ROOT" not in os.environ:
+        local_config_root = source_root / ".tcode-local"
+        if not local_config_root.is_dir():
+            local_config_root = Path.cwd() / ".tcode-local"
+        if local_config_root.is_dir():
+            default_config_root = local_config_root
+        else:
+            default_config_root = source_root if (source_root / "tcode.json").is_file() else Path(workdir)
+        os.environ["TCODE_CONFIG_ROOT"] = str(default_config_root)
+    elif args.local and not os.environ["TCODE_CONFIG_ROOT"].strip():
         local_config_root = Path.cwd() / ".tcode-local"
         if (local_config_root / "tcode.json").is_file():
             os.environ["TCODE_CONFIG_ROOT"] = str(local_config_root)
-    default_config_root = source_root if (source_root / "tcode.json").is_file() else Path(workdir)
-    os.environ.setdefault("TCODE_CONFIG_ROOT", str(default_config_root))
 
     # Load optional routing/runtime env config even when launcher is started directly.
     env_file = os.environ.get("TCODE_ENV_FILE") or _default_env_file(workdir)

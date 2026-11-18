@@ -42,7 +42,7 @@ def test_local_profile_is_explicit_and_loopback_only(monkeypatch, tmp_path):
     (True, True, False, ".tcode-local"),
     (True, True, True, "explicit"),
     (True, False, False, "runtime"),
-    (False, True, False, "runtime"),
+    (False, True, False, ".tcode-local"),
 ])
 def test_local_config_root_discovery(monkeypatch, tmp_path, local, has_local_config, explicit, expected):
     monkeypatch.chdir(tmp_path)
@@ -51,9 +51,10 @@ def test_local_config_root_discovery(monkeypatch, tmp_path, local, has_local_con
     monkeypatch.setattr(launcher, "_configure_local_web", Mock())
     monkeypatch.setattr(launcher, "_load_env_file", Mock())
     monkeypatch.setattr(launcher, "_run", Mock())
-    for name in (".tcode-local", "runtime", "explicit"):
+    for name in ("runtime", "explicit"):
         (tmp_path / name).mkdir()
     if has_local_config:
+        (tmp_path / ".tcode-local").mkdir()
         (tmp_path / ".tcode-local/tcode.json").write_text("{}")
     monkeypatch.setenv("TCODE_WORKDIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("TCODE_CONFIG_ROOT", str(tmp_path / "explicit"))
