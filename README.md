@@ -16,7 +16,20 @@ BenchThread（原 TCode）是一个可自托管的 AI 研究工作台。把文�
 
 ### Linux Web：发出第一条消息
 
-准备 **Git、Python 3.12（含 venv/pip）、Node.js 22.12+（含 npm）**，以及一个可访问的文本模型服务。基础聊天不需要 Docker、Redis、GPU 或 MCP。
+**首次安装必需：Git、Python 3.12（含 venv/pip）、Node.js 22.12+（含 npm）和网络访问。** 先安装这些系统依赖，并确保 Linux 主机能访问 GitHub、PyPI 和 npm 仓库（或对应镜像）。安装脚本负责下载项目依赖、构建前端和生成配置模板，不会安装系统依赖。脚本默认查找 `python3.12`；若兼容的解释器不在该命令名下，用 `PYTHON_BIN=/path/to/python ./scripts/install_tcode.sh` 指定。若缺少 `venv` 或 `ensurepip`，见[运行指南](docs/RUNNING.md#linux-web-安装与构建)。
+
+**发送消息还需要**一个从 Linux 主机可访问的文本模型服务，以及该服务要求的凭证。基础聊天不需要 Docker、Redis、GPU 或 MCP。
+
+Linux Web 的两种入口启动的是同一个服务。首次安装步骤相同，按场景选一条启动命令：
+
+| 场景 | 启动入口 | 是否加载 `.tcode-local/local.env` |
+| --- | --- | --- |
+| [A. 本机试聊（无需登录）](#方式-a本机试聊无需登录) | `tcode-server --local` | 不加载 |
+| [B. 带登录部署](#方式-b带登录启动) | `./scripts/start_web.sh`（不加 `--local`） | 默认在文件存在时加载 |
+
+#### 方式 A：本机试聊（无需登录）
+
+**启动命令必须带 `--local`**。这个模式只在本机环回地址监听，不要求登录，也不用设置 `TCODE_BOOTSTRAP_PASSWORD`。不要通过代理或隧道对外开放。
 
 **首次聊天前要配置真实模型。** 安装脚本生成的 `.tcode-local/tcode.json` 只是模板，`demo/your-model-id` 不是可用模型。新用户建议直接在网页配置；如果想用文件，先按[文件配置步骤](docs/CONFIGURATION.md#从文件配置模型)填写真实模型 ID、地址和所需密钥。
 
@@ -34,7 +47,41 @@ tcode-server --local --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local
 2. 对刚添加的模型点 **文本测试**，通过后选为 **实例默认对话模型**。
 3. 回到聊天页，点 **新建任务**。在「创建会话」中选工作目录；没有目录时先输入 `demo-workspace` 并点 **新增目录**。点 **创建会话**，确认输入框选中了实际模型，发送「你好，请用一句话介绍你能做什么」。收到回复即跑通。
 
-`--local` 仅用于本机个人试用，不要求登录，不要通过代理或隧道对外开放。用同一个 `--workdir` 重启可保留设置和会话。需要登录时走[带登录的 Web 部署](docs/RUNNING.md#按本机配置启动-web)；找不到模型时看[模型配置排查](docs/CONFIGURATION.md#模型不显示或无法发送)。
+直接运行 `tcode-server` 时，不设置 `TCODE_CONFIG_ROOT` 会优先使用已有的项目根目录 `.tcode-local/`；如果从已安装的命令启动，也可在项目根目录运行，让它找到当前目录下的 `.tcode-local/`。找不到该目录时沿用原来的默认路径。**找到配置目录不等于加载其中的 `local.env`**：`.tcode-local/tcode.json` 是应用配置，`local.env` 是部署脚本加载的环境文件。显式设置 `TCODE_CONFIG_ROOT` 可指定配置目录，`--workdir` 仍用于指定运行目录。
+
+用同一个 `--workdir` 重启可保留设置和会话。找不到模型时看[模型配置排查](docs/CONFIGURATION.md#模型不显示或无法发送)。
+
+#### 方式 B：带登录启动
+
+首次安装沿用方式 A 的安装步骤（到 `./scripts/install_tcode.sh` 为止），**不要运行 A 的启动命令**。如果已经启动了试聊，先用 `Ctrl+C` 停掉它，避免两个进程占用同一端口或运行目录。
+
+1. 编辑仓库根目录下生成的 **`.tcode-local/local.env`**。其中的 `# TCODE_BOOTSTRAP_PASSWORD=` 只是注释，不是默认密码。首次创建管理员时，去掉行首 `#`，填入自己设置的强密码（至少 12 个字符，不用示例值）。登录邮箱默认是 `admin@example.com`。这个密码不是模型 API Key，修改它也不会重置已有账号的密码。
+
+   ```bash
+   TCODE_BOOTSTRAP_PASSWORD='替换为你自己生成的强密码'
+   ```
+
+   等号两边不要加空格。单引号可保留密码里的空格和 `$` 等字符；如果密码本身含单引号，需按 Shell 语法转义，或重新生成不含单引号的强密码。不要把真实密码写入公开模板或提交到 Git。
+
+2. 从仓库根目录用部署脚本启动，**不加 `--local`**。脚本默认读取 `.tcode-local/local.env`；如果已设置 `TCODE_ENV_FILE`，则以显式指定的环境文件为准。直接运行 `tcode-server` 即使去掉 `--local`，也不会默认读取 `local.env`。
+
+   ```bash
+   mkdir -p workdirs/local
+   PYTHON_BIN="$PWD/.venv/bin/python" \
+   ./scripts/start_web.sh --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local"
+   ```
+
+3. 如果浏览器和服务在同一台机器上，打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)；如果服务跑在远程 Linux 上，按下文转发后访问。用管理员邮箱和密码登录，再按方式 A 的网页步骤配置模型并发送消息。
+
+**从自己的电脑访问远程 Linux（仅方式 B）：** 保持服务绑定远程主机的 `127.0.0.1:8080`，不用对外开放 Web 端口。在你自己电脑的终端执行下面的命令，把 `user@server` 换成实际的 SSH 用户和服务器地址：
+
+```bash
+ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 user@server
+```
+
+保持 SSH 连接打开，然后在自己电脑的浏览器访问 [http://127.0.0.1:18080](http://127.0.0.1:18080) 并登录。远程主机需可通过 SSH 登录且允许端口转发。**不要用这种方式转发免登录试聊。**
+
+更多说明见[带登录的 Web 部署](docs/RUNNING.md#按本机配置启动-web)。
 
 ## 安装与部署
 
