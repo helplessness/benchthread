@@ -8,6 +8,7 @@ import { planFolderImport } from '../utils/folderImport';
 import { installUploadFeedback } from '../utils/uploadFeedback';
 import { isHtmlFile, isImageFile, isOfficeFile, isPdfFile } from '../utils/filePreview';
 import OfficeFilePreview from './OfficeFilePreview';
+import TextFilePreview from './TextFilePreview';
 import {
   getInlineFileUrl,
   getJobArtifactContent,
@@ -138,7 +139,6 @@ export default function FileBrowser(props: FileBrowserProps) {
 
   const downloadFile = (path: string) => {
     if (!path) return;
-    if (desktop) return;
     const url = isArtifactMode() && props.jobId && props.artifactRoot
       ? getJobArtifactDownloadUrl(props.jobId, { path, root: props.artifactRoot })
       : (() => {
@@ -473,7 +473,7 @@ export default function FileBrowser(props: FileBrowserProps) {
           <Show when={desktop && props.workspaceId && selectedFile() && !isArtifactMode()}>
             <button class="btn btn-sm" onClick={() => void desktop!.revealFile(props.workspaceId!, selectedFile()!).catch(error => setUploadErrors([String(error)]))}>在文件夹中显示</button>
           </Show>
-          <Show when={!desktop && selectedFile()}>
+          <Show when={selectedFile()}>
             {(filePath) => (
               <button
                 class={`${iconButtonClass} tcode-download-button is-icon`}
@@ -608,9 +608,7 @@ export default function FileBrowser(props: FileBrowserProps) {
                         onError={setPreviewError}
                       />
                     ) : (
-                      <pre class="overflow-x-auto rounded-2xl border border-[#2a3136] bg-[#0d1216] p-4 font-mono text-xs text-[#e6edf3] whitespace-pre-wrap">
-                        {fileContent()}
-                      </pre>
+                      <TextFilePreview path={selectedFile() || ''} content={fileContent()} />
                     )}
                   >
                     <div class="overflow-hidden rounded-2xl border border-[#2a3136] bg-[#0d1216]">
