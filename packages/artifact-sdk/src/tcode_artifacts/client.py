@@ -275,6 +275,16 @@ class ArtifactIO:
     def upload_file(self, source, *, workspace_id='third-party'):
         return self._ref('artifact', 'artifact_id', self._upload(source, 'POST', '/api/v1/artifacts', data={'workspace_id': workspace_id}))
 
+    def upload_named_file(self, source, remote_path):
+        """Create a file at a service-relative path and return its pinned reference."""
+        response = self._upload(source, 'PUT', '/api/v1/files/by-path', params={'path': _relative(remote_path).as_posix()})
+        return self._ref('artifact', 'artifact_id', response)
+
+    def file_ref_by_path(self, remote_path):
+        """Resolve a service-relative path once before submitting a task."""
+        response = self.request('GET', '/api/v1/files/by-path', params={'path': _relative(remote_path).as_posix()})
+        return self._ref('artifact', 'artifact_id', response)
+
     def upload_directory(self, source, *, workspace_id='third-party'):
         root = _local_path(source)
         files, total = [], 0

@@ -126,15 +126,20 @@ export TMCP_ARTIFACT_API_TOKEN='your-artifact-access-token'
 
 双方必须能访问同一个 Artifact 服务。远端的 `127.0.0.1` 不是用户电脑；客户端不会自动启动服务、转发端口或把客户端路径当作远端路径。公网部署需要 HTTPS、鉴权和服务端配额。Artifact 凭据与 MCP 连接 Token 是两种不同凭据。
 
-多服务配置与现有 TMCP 命名一致：
+部署自己的 MCP 时，可以把这些设置和 MCP 令牌集中放在 **MCP 主机的一份私有配置文件**，由启动脚本或服务管理器注入进程，不用每次在终端手输。FastMCP 的 `auth=`、配置加载和 BenchThread 连接步骤见[部署自己的 FastMCP 服务](../../tcode_agent/MCP_QUICKSTART.md#部署自己的-fastmcp-服务)。一个 MCP 入口不需要因为文件服务变多就增加 MCP 令牌；每个 Artifact 服务仍按自己的认证要求配置。
 
-```sh
-export TMCP_ARTIFACT_SERVICE_ID='primary'
-export BACKUP_ARTIFACT_TOKEN='your-second-service-token'
-export TMCP_ARTIFACT_SERVICES='{"backup":{"url":"https://backup.example.org","token_env":"BACKUP_ARTIFACT_TOKEN"}}'
+例如，复用两个已经部署的 Artifact 服务时，可在同一份私有环境文件里写下以下设置。值均为占位符，不要提交真实令牌：
+
+```dotenv
+TMCP_ARTIFACT_SERVICE_ID=primary
+PRIMARY_ARTIFACT_TOKEN=replace-with-primary-artifact-token
+ARCHIVE_ARTIFACT_TOKEN=replace-with-archive-artifact-token
+TMCP_ARTIFACT_SERVICES='{"primary":{"url":"https://files.example.org/artifact","token_env":"PRIMARY_ARTIFACT_TOKEN"},"archive":{"url":"https://archive.example.org/artifact","token_env":"ARCHIVE_ARTIFACT_TOKEN"}}'
 ```
 
-带 `service_id=backup` 的输入只使用本地 allowlist 中 backup 的地址和令牌，未知 ID 立即失败，不回退到默认服务；引用内的 URL 不参与路由。没有 service_id 的旧引用沿用默认服务。默认输出归属由构造函数／环境配置确定，不会因读取另一个服务的输入而悄悄改变。SDK 不读取宿主的 target-server 路由设置，因为它不负责调度目标。
+`token_env` 填**变量名**。这个写法已在映射中指定默认服务，不需要另设 `TMCP_ARTIFACT_SERVICE_URL` 或 `TMCP_ARTIFACT_API_TOKEN`；MCP 只启动自己的工具服务，不另起 Artifact。不要套用内置 Artifact 演示中清除外部服务变量的命令。若 BenchThread 也需要上传输入或取回输出，在它自己的[文件服务设置](#配置-benchthread-和验证)中登记所需服务，保持服务 ID 一致；两台机器不一定使用相同的环境变量名。
+
+带 `service_id=archive` 的输入只使用本地允许列表中 `archive` 的地址和凭据，未知 ID 立即失败，不回退；引用里的 URL 不参与路由。没有服务 ID 的旧引用使用默认服务。默认输出归属由构造函数或环境配置决定：在上例中始终写到 `primary`，不会因为输入来自 `archive` 而改变。SDK 不负责调度目标，也不读取宿主的目标路由设置。
 
 ## 文件与目录 API
 
@@ -156,10 +161,13 @@ result = {"status": "completed", "output_bundle": output_ref}
 - `materialize(ref, destination)`：接收 `kind=artifact` 或 `kind=artifact_bundle`，可带 `service_id`；返回本地 `Path`。
 - `download_file(artifact_id, destination)`：默认服务上的单文件读取，兼容原示例入口。
 - `upload_file(source, workspace_id="third-party")`：返回 ArtifactRef。
+- `upload_named_file(source, "incoming/input.txt")`：按路径创建文件，不覆盖，返回同样的固定引用。`file_ref_by_path("incoming/input.txt")` 可以取得已有文件的引用，无需再次上传。
 - `upload_directory(source, workspace_id="third-party")`：上传并完成目录包，返回 BundleRef；只有服务确认 ready 才返回成功。
 - 默认总字节上限 500 MiB、文件数 10,000，可使用 `max_bytes`／`max_files` 构造参数调整。原示例的 `EXAMPLE_MAX_BYTES`／`EXAMPLE_MAX_FILES` 环境变量仍兼容；服务端及 BenchThread 宿主另有独立限制，不能只改 SDK 就视为全链路放宽。
 
 输入文件不能覆盖现有文件，目录接收使用不存在的新目录；下载核对实际字节数及 SHA-256，并核对目录清单与文件元数据。拒绝目录穿越、符号链接和非普通输出文件。为每个任务分配私有任务目录，输出完成后再上传；不要在传输期间并发修改源文件或将任务目录交给不可信进程写入。同步 API 可用于同步 MCP 工具；不要直接放进异步事件循环的长阻塞代码中。
+
+使用此 SDK 的 Linux/macOS 内置服务时，新命名上传还会自动在服务端 `<data-dir>/files/incoming/input.txt` 生成一份服务器运行账号可读的副本。可读目录不用导出，也不能用来反向编辑服务上的原件；任务引用仍读取独立的原件，旧上传不会批量补写。每份可读副本会多占用一份文件大小的磁盘空间，请为命名上传预留空间，并保持存储目录仅供服务账号维护。Windows 服务端保持原有 API 路径浏览行为，不生成磁盘副本。
 
 HTTP／校验错误会抛异常，不返回虚假成功、不跟随重定向、不自动重试 POST／PUT。失败的目录下载可能保留已校验的部分文件，失败的上传可能保留远端草稿包；应记录失败并在新的私有目录重试文件操作，不能把残留目录当作完整结果。不要因此重新提交状态不明的科学计算。
 

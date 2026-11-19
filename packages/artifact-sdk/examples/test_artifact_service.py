@@ -101,15 +101,28 @@ def test_one_port_file_round_trip_and_restart(tmp_path):
             assert http.put(named_path, params=query, files={'file': ('x', content)}).status_code == 401
             assert http.put(named_path, headers=HEADERS, params={'path': '../report.dat'},
                             files={'file': ('x', content)}).status_code == 400
-            created = http.put(named_path, headers=HEADERS, params=query, files={'file': ('x', content)})
-            assert created.status_code == 201
+            created = files.upload_named_file(source, query['path'])
             assert http.put(named_path, headers=HEADERS, params=query,
                             files={'file': ('x', b'different')}).status_code == 409
-            named = http.get(named_path, headers=HEADERS, params=query).raise_for_status().json()['ref']
-            assert named == created.json()['ref']
+            named = files.file_ref_by_path(query['path'])
+            assert named == created
             assert http.get(named_path, headers=HEADERS, params={'path': 'report.dat'}).status_code == 404
             assert http.put(named_path, headers=HEADERS, params={'path': 'report.dat'},
                             files={'file': ('x', b'root file')}).status_code == 201
+            if os.name == 'posix':
+                visible = data / 'files' / query['path']
+                assert visible.read_bytes() == content
+                assert not visible.samefile(data / named['artifact_id'])
+                visible.chmod(0o600)
+                visible.write_bytes(b'edited copy')
+                outside = tmp_path / 'outside'
+                outside.mkdir()
+                (data / 'files' / 'escape').symlink_to(outside, target_is_directory=True)
+                denied = {'path': 'escape/report.dat'}
+                assert http.put(named_path, headers=HEADERS, params=denied,
+                                files={'file': ('x', content)}).status_code == 409
+                assert http.get(named_path, headers=HEADERS, params=denied).status_code == 404
+                assert not list(outside.iterdir())
         named_result = asyncio.run(echo(base, named))
         assert (files.materialize(named_result, tmp_path / 'named-result') / 'echo.dat').read_bytes() == content
 
@@ -117,6 +130,8 @@ def test_one_port_file_round_trip_and_restart(tmp_path):
     with launch(tmp_path, ECHO, ['--data-dir', str(data)]) as base:
         files = ArtifactIO(base + '/artifact', token=TOKEN, service_id='shared-files')
         assert files.materialize(original, tmp_path / 'input-after-restart').read_bytes() == content
+        assert files.file_ref_by_path(query['path']) == named
+        assert files.materialize(named, tmp_path / 'named-after-restart').read_bytes() == content
         assert (files.materialize(result, tmp_path / 'result-after-restart') / 'echo.dat').read_bytes() == content
         with httpx.Client(base_url=base, headers=HEADERS, trust_env=False) as http:
             assert http.get(named_path, params=query).raise_for_status().json()['ref'] == named

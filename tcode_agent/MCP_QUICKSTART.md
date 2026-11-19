@@ -2,9 +2,60 @@
 
 普通源码启动默认读取 Git 忽略的 `.tcode-local/mcp.json`。首次初始化生成的是 `{}`；不连接 MCP 时不用配置 TMCP。若文件缺失，运行 `./scripts/init_local_config.sh` 补齐。
 
+## 部署自己的 FastMCP 服务
+
+在 **MCP 所在主机**运行你自己的工具代码；不需要安装 BenchThread 或 TMCP。以下示例只回显文本，用来验证连接和认证，不需要 Artifact SDK：
+
+```bash
+python3 -m venv .venv-mcp
+.venv-mcp/bin/python -m pip install 'fastmcp>=3.2,<4'
+```
+
+将以下内容保存为 `server.py`。已有 FastMCP 项目只需在创建 `FastMCP(...)` 时传入 `auth`，原有工具注册保持不变。
+
+```python
+import os
+
+from fastmcp import FastMCP
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
+token = os.environ.get("MCP_BEARER_TOKEN", "").strip()
+if not token:
+    raise SystemExit("Set MCP_BEARER_TOKEN before starting this service")
+
+auth = StaticTokenVerifier(tokens={token: {"client_id": "demo-client", "scopes": []}})
+mcp = FastMCP("My tools", auth=auth)
+
+
+@mcp.tool
+def echo_text(text: str) -> str:
+    return text
+
+
+if __name__ == "__main__":
+    mcp.run(transport="streamable-http", host="127.0.0.1", port=10240, path="/mcp")
+```
+
+令牌由部署者自己生成。把 `MCP_BEARER_TOKEN=你的随机令牌` **只保存一次**到仓库外的私有 `~/.config/my-mcp/service.env`（权限 `0600`）。不要把真实令牌写进 Python、URL 或 Git。手动启动时，可以在子 Shell 加载自己维护的配置：
+
+```bash
+(
+  set -a
+  . "$HOME/.config/my-mcp/service.env"
+  set +a
+  exec .venv-mcp/bin/python server.py
+)
+```
+
+Linux 上若用 `systemd`，可让服务的 `EnvironmentFile=` 读取这个私有文件，`WorkingDirectory=` 指向项目目录，`ExecStart=` 使用虚拟环境 Python 和 `server.py` 的绝对路径。生产环境可改由密钥管理器注入。服务读取的是进程环境，不会自动读取 `.env`，也无需每次在终端输入。
+
+上面的监听地址只供本机访问。接入 BenchThread Web 时，用带 HTTPS 的反向代理将 `/mcp` 转发到该进程，并使用 **BenchThread 后端可达**的地址。将同一个令牌注入 **BenchThread 后端**的 `TCODE_MCP_TOKEN`，再按下节配置 `Authorization: Bearer ${TCODE_MCP_TOKEN}`。确认能列出工具后，调用一次 `echo_text` 核对回显。仅需本机匿名开发时，可不配置 `auth`，但不要把未鉴权的示例暴露到公网。
+
+需要收发文件时，另按 [Artifact SDK 部署与多服务配置](../packages/artifact-sdk/README.md#服务配置)配置文件服务；需要服务端持久化任务和重启恢复时，参考[第三方异步 MCP 部署](../docs/服务隔离/第三方MCP插件接入与运行.md)。
+
 ## 配置一个服务
 
-这一节只配置已经启动的普通 MCP 服务。先按该服务的文档启动工具端；BenchThread 不替第三方工具部署或启动服务。普通同步工具不需要 Job Protocol、Artifact 或 Docker，可沿用[本机 Web 启动方式](../README.md#linux-web发出第一条消息)。
+这一节只配置已经启动的普通 MCP 服务。先按该服务的文档或[上面的 FastMCP 示例](#部署自己的-fastmcp-服务)启动工具端；BenchThread 不替第三方工具部署或启动服务。普通同步工具不需要 Job Protocol、Artifact 或 Docker，可沿用[本机 Web 启动方式](../README.md#linux-web发出第一条消息)。
 
 ```json
 {

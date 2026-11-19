@@ -51,6 +51,8 @@ python examples/third_party_mcp/remote_server.py
 
 ## 4. 替换成自己的任务实现
 
+第一次部署自己的 FastMCP 服务，可先按[普通 MCP 部署指南](../../tcode_agent/MCP_QUICKSTART.md#部署自己的-fastmcp-服务)配置 HTTPS、服务令牌和启动方式，再接入下面的异步任务契约。令牌可从私有配置一次性加载；同一 MCP 需要接多个文件服务时，按 [Artifact SDK 服务配置](../../packages/artifact-sdk/README.md#服务配置)登记地址和凭据。
+
 保留 [异步目标声明](../../examples/third_party_mcp/async-plugin/async-targets.json)和服务端接口的一致性。提交工具接收 `request_id`、业务工具名和参数，先持久化再返回 `job_id`；相同请求只认同一份参数，不能启动第二次计算。状态、结果、取消按原 `job_id` 操作，完成后应重复返回已保存的结果引用。若提交状态不明，用原请求标识核对，不把超时当作可以盲目重提的失败。
 
 使用 BenchThread 内置 Job Protocol 时，`submitTool`、`statusTool` 和 `resultTool` 必填，`cancelTool` 可选。若远端有按请求 ID 查受理记录的只读工具，可额外声明：

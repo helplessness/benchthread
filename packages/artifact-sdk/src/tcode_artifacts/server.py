@@ -5,12 +5,14 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
-from contextlib import closing, contextmanager
+import tempfile
+from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from .client import ArtifactIO, _identifier, _relative
+from .client import ArtifactIO, _identifier, _parent, _relative
 from .windows_paths import bundle_paths
 
 PREFIX = '/artifact'
@@ -208,6 +210,33 @@ class _Store:
             raise _Problem(409, 'File path is ambiguous')
         return self.file(rows[0]['artifact_id'])
 
+    @contextmanager
+    def _publish_named_copy(self, blob, named_path):
+        # This readable copy must never share an inode with an immutable task input.
+        target = self.root / 'files' / named_path
+        with ExitStack() as parents:
+            linked = False
+            try:
+                try:
+                    parent, name = parents.enter_context(_parent(target, create=True))
+                    with tempfile.TemporaryDirectory(prefix='.named-', dir=self.root) as work:
+                        staged = Path(work) / 'copy'
+                        with blob.open('rb') as source, staged.open('xb') as output:
+                            shutil.copyfileobj(source, output, length=1024**2)
+                            os.fchmod(output.fileno(), 0o400)
+                            output.flush()
+                            os.fsync(output.fileno())
+                        os.link(staged, name, dst_dir_fd=parent, follow_symlinks=False)
+                        linked = True
+                except (FileExistsError, NotADirectoryError) as exc:
+                    raise _Problem(409, 'File path conflicts with the server file directory') from exc
+                os.fsync(parent)
+                yield
+            except BaseException:
+                if linked:
+                    os.unlink(name, dir_fd=parent)
+                raise
+
     def upload(self, stream, filename, bundle_id=None, relative_path=None, *, named_path=None, scope=None):
         identifier = f'art-{uuid4().hex}'
         path = self.root / identifier
@@ -218,7 +247,7 @@ class _Store:
         if not filename or filename in {'.', '..'} or not filename.isprintable():
             filename = 'artifact.bin'
         try:
-            with self._connection(write=True) as db:
+            with ExitStack() as publication, self._connection(write=True) as db:
                 if named_path is not None:
                     if (db.execute('SELECT 1 FROM named_files WHERE path=?', (named_path,)).fetchone()
                             or self._legacy_path_matches(db, named_path)):
@@ -262,6 +291,8 @@ class _Store:
                            (identifier, filename, size, checksum.hexdigest(), bundle_id, relative_path))
                 if named_path is not None:
                     db.execute('INSERT INTO named_files VALUES (?,?)', (named_path, identifier))
+                    if os.name == 'posix':
+                        publication.enter_context(self._publish_named_copy(path, named_path))
         except BaseException:
             if created:
                 path.unlink(missing_ok=True)
@@ -388,7 +419,7 @@ def _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes):
     @app.put('/api/v1/files/by-path', status_code=201)
     def create_named_file(path: str, file: UploadFile = File(...)):
         path = store._checked_path(path)
-        if (not path.isprintable() or any(char in path for char in '\\:*?"<>|')
+        if (not path.isprintable() or path.count('/') >= 32 or any(char in path for char in '\\:*?"<>|')
                 or re.fullmatch(r'bundle-[0-9a-f]{32}', path.split('/')[0])):
             raise _Problem(400, 'Invalid or reserved file path')
         return store.upload(file.file, path.rsplit('/', 1)[-1], named_path=path)
