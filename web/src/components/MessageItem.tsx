@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import MarkdownContent from './MarkdownContent';
 import UserMessageText from './UserMessageText';
@@ -49,6 +49,7 @@ interface MessageItemProps {
   message: Message;
   latestAssistantMessageId?: string;
   displayMode?: 'default' | 'process' | 'commentary';
+  renderResultContent?: () => JSX.Element;
 }
 
 type HumanReviewAlert = {
@@ -1777,8 +1778,9 @@ function MessageItem(props: MessageItemProps) {
               <div class="user-message-edit-footer"><small>从这里重新运行后续对话；不会撤销已执行的操作。</small><button type="button" disabled={editPending()} onClick={() => setEditing(false)}>取消</button><button type="button" disabled={editPending() || sessionStore.isRunning() || !editText().trim()} onClick={() => void submitEdit()}>{editPending() ? '发送中…' : '发送'}</button></div>
             </div>
           </Show>
-          <Show when={!editing() && (displayContent() || (props.message.content_blocks?.length || 0) > 0)}>
+          <Show when={!editing() && (displayContent() || (props.message.content_blocks?.length || 0) > 0 || props.renderResultContent)}>
             <div
+              data-message-result-body
               class={`rounded-2xl ${
                 props.displayMode === 'commentary' || isWorkflowNarration()
                   ? 'border border-[#31536a] bg-[#0e1820] px-4 py-3.5'
@@ -1846,6 +1848,7 @@ function MessageItem(props: MessageItemProps) {
                 blocks={props.message.content_blocks}
                 class={props.message.content ? 'mt-3' : ''}
               />
+              {props.renderResultContent?.()}
               <Show when={needsWorkflowReportRecovery(props.message) && recoveredReport()}>
                 <button
                   type="button"

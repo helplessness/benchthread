@@ -1,8 +1,10 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 from tcode_agent.tools.base import ToolContext
 from tcode_agent.tools.builtin import artifact_import
@@ -45,7 +47,8 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
         return real_client(transport=httpx.MockTransport(route), **kwargs)
 
     async def session_get(_session, **owner):
-        return object() if owner["workspace_id"] == "active" else None
+        if _session == "session" and owner.get("workspace_id", "active") == "active" and owner.get("user_id") == "alice":
+            return SimpleNamespace(workspace_id="active")
 
     approvals = []
 
@@ -175,5 +178,32 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
         assert legacy_row["artifact_id"] == legacy["artifact_id"]
         assert legacy_row["importable"] is False
         assert not (await browse.execute({"directory": "results/"}, context)).error
+        (root / "imports/b.csv").unlink()
+
+        from tcode_agent.server import artifact_services_api, workspace_scope
+        app = FastAPI()
+        app.include_router(artifact_services_api.router)
+        monkeypatch.setenv("TCODE_DESKTOP_PAUSE_REMOTE_SERVICES", "0")
+        monkeypatch.setattr(artifact_services_api, "require_current_user", lambda _: SimpleNamespace(tenant_id="tenant", user_id="alice"))
+        monkeypatch.setattr(artifact_services_api.workdirs, "assert_workspace_active", lambda _, scope: None)
+        monkeypatch.setattr(workspace_scope, "_resolve_user_workdir_path", lambda _, scope: root)
+        base = {"session_id": "session", "service_id": "lab-production"}
+        async with real_client(transport=httpx.ASGITransport(app=app), base_url="http://local") as http:
+            browse_path = "/api/artifact-services/chat/browse"
+            import_path = "/api/artifact-services/chat/import"
+            assert (await http.post(browse_path, json=base, headers={"Origin": "http://other"})).status_code == 403
+            assert (await http.post(browse_path, json={**base, "session_id": "not-owned"})).status_code == 404
+            assert (await http.post(browse_path, json={**base, "service_id": "not-allowed"})).status_code == 400
+            page = (await http.post(browse_path, json={**base, "directory": "results", "offset": 1, "limit": 1})).raise_for_status().json()
+            item = page["entries"][0]
+            assert item["path"] == "results/b.csv" and page["service_name"] == "实验室生产"
+            selection = {**base, "path": item["path"], "artifact_id": item["artifact_id"]}
+            assert (await http.post(import_path, json={**selection, "path": "results/a.csv"})).status_code == 400
+            response = await http.post(import_path, json=selection)
+            assert response.status_code == 200, response.text
+            receipt = response.json()
+            assert receipt["path"].endswith("imports/b.csv")
+            assert (root / "imports/b.csv").read_bytes() == b"lab-production"
+            assert (await http.post(import_path, json=selection)).status_code == 400
 
     asyncio.run(exercise())

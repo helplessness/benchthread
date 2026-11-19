@@ -6,15 +6,84 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request
 import httpx
+from pydantic import Field
 
+from ..tools.builtin.artifact_import import (
+    ArtifactBrowseParameters, ArtifactBrowseTool, ArtifactImportParameters, ArtifactImportTool,
+)
 from .auth import require_current_user
 from .desktop_config import artifact_configuration
 from . import workdirs
 
 router = APIRouter(prefix='/api/artifact-services', include_in_schema=False)
+
+
+class BrowseFromChat(ArtifactBrowseParameters):
+    session_id: str = Field(min_length=1, max_length=128)
+    service_id: str = Field(min_length=1, max_length=64)
+
+
+class ImportFromChat(ArtifactImportParameters):
+    session_id: str = Field(min_length=1, max_length=128)
+    service_id: str = Field(min_length=1, max_length=64)
+    artifact_id: str = Field(min_length=8, max_length=128, pattern=r'^[A-Za-z0-9._-]+$')
+
+
+async def _run_chat_file_action(request: Request, payload: BrowseFromChat | ImportFromChat):
+    from ..session.manager import SessionManager
+    from ..tools.base import ToolContext
+    from .desktop_config import remote_services_paused
+    from .state import ServerState
+    from .workspace_scope import _resolve_user_workdir_path
+
+    origin = request.headers.get('origin')
+    if request.headers.get('sec-fetch-site') in {'cross-site', 'same-site'} or (
+        origin and origin != f'{request.url.scheme}://{request.url.netloc}'
+    ):
+        raise HTTPException(403, '请从当前会话发起文件操作')
+    actor = require_current_user(request)
+    if remote_services_paused():
+        raise HTTPException(503, '远端服务已暂停')
+    session = await SessionManager.get(payload.session_id, tenant_id=actor.tenant_id, user_id=actor.user_id)
+    if session is None or not session.workspace_id:
+        raise HTTPException(404, '找不到当前会话的工作区')
+    scope = workdirs.resolve_workspace_context(tenant_id=actor.tenant_id, user_id=actor.user_id,
+                                               workspace_id=session.workspace_id)
+    workdirs.assert_workspace_active(ServerState.get_workdir(), scope)
+    root = _resolve_user_workdir_path(scope.workspace_id, scope).resolve()
+    importing = isinstance(payload, ImportFromChat)
+    source = payload.path if importing else payload.directory.removesuffix('/')
+    destination = f'imports/{source.rsplit("/", 1)[-1]}'
+
+    # The authenticated user has clicked this action; never grant a different path or tool.
+    def clicked_action(permission, patterns):
+        if permission == 'read':
+            return patterns == [f'artifact:{payload.service_id}/{source}']
+        return importing and permission == 'write' and patterns in ([destination], [f'/workspace/{destination}'])
+
+    context = ToolContext(session_id=payload.session_id, message_id='', agent='', abort=None, extra={
+        'tenant_id': actor.tenant_id, 'user_id': actor.user_id, 'workspace_id': scope.workspace_id,
+        'workdir': str(root), '__permission_ask__': clicked_action,
+    })
+    tool = ArtifactImportTool() if importing else ArtifactBrowseTool()
+    result = await tool.execute(payload.model_dump(exclude={'session_id', 'service_name'}), context)
+    if result.error:
+        raise HTTPException(400, result.error)
+    return {'path': result.output_path} if importing else json.loads(result.output)
+
+
+@router.post('/chat/browse')
+async def browse_from_chat(request: Request, payload: BrowseFromChat):
+    return await _run_chat_file_action(request, payload)
+
+
+@router.post('/chat/import')
+async def import_from_chat(request: Request, payload: ImportFromChat):
+    return await _run_chat_file_action(request, payload)
 
 
 def _config_path() -> Path:

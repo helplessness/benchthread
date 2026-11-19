@@ -18,6 +18,12 @@ const verification = {advisory:true, verification_status:'PARTIAL' as const, con
   criteria_total:2, criteria_passed:0, criteria_failed:1, criteria_unverified:1,
   findings:[{status:'failed' as const,title:'报告完整性',reason:'报告缺少计算依据'}]};
 
+it('opens a final result body for an interactive result even without assistant text', () => {
+  const html = renderToString(() => <MessageItem message={{id:'directory',role:'assistant',content:''}}
+    renderResultContent={() => <button type="button">下载到工作区</button>}/>);
+  expect(html).toMatch(/data-message-result-body[\s\S]*?最终结果[\s\S]*?下载到工作区/);
+});
+
 it('defaults to folded explanations, with optional acceptance and modification controls', () => {
   const html = renderToString(() => <MessageItem latestAssistantMessageId="result"
     message={{id:'result',role:'assistant',content:'已有结果',verification}}/>);

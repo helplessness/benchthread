@@ -6,12 +6,15 @@ beforeEach(() => { preferences.collapsed = false; });
 
 vi.mock('../stores/session', () => ({ sessionStore: {
   messages: () => [],
+  currentSessionId: () => 'test',
   messageToolsCollapsePreference: () => preferences.collapsed,
   setMessageToolsCollapsed: vi.fn(),
 } }));
 vi.mock('../api/client', () => ({}));
 vi.mock('./MessageItem', () => ({
-  default: (props: any) => <p>{props.message.content}</p>,
+  default: (props: any) => props.renderResultContent
+    ? <article aria-label="最终结果"><p>{props.message.content}</p>{props.renderResultContent()}</article>
+    : <p>{props.message.content}</p>,
   ToolCallItem: (props: any) => <span>{props.tool.tool_name}</span>,
 }));
 vi.mock('./MarkdownContent', () => ({ default: (props: any) => <p>{props.content}</p> }));
@@ -19,6 +22,22 @@ vi.mock('./BrowserLivePanel', () => ({ default: () => null }));
 vi.mock('./composer/InteractionPanel', () => ({ default: () => null }));
 
 import { MainChatTurn, MainProcessGroup } from './ChatView';
+
+it.each(['找到以下文件：', ''])('renders the Artifact directory inside the final result with or without a summary: %s', (summary) => {
+  const output = JSON.stringify({ service_id: 'internal-service', directory: 'results',
+    entries: [{ kind: 'file', path: 'results/report.csv', size: 12, artifact_id: 'internal-file' }], next_offset: null });
+  const html = renderToString(() => <MainChatTurn latestAssistantMessageId="answer" turn={{
+    key: 'browse', running: false,
+    processMessages: [{ id: 'tool', role: 'tool', content: '',
+      tool_calls: [{ tool_name: 'artifact_browse', arguments: {}, state: 'completed', output }] }],
+    result: { id: 'answer', role: 'assistant', content: `${summary}\n${output}` },
+  }}/>);
+  const final = html.match(/<article[^>]+aria-label="最终结果"[\s\S]*?<\/article>/)?.[0];
+  expect(final).toContain('下载 report.csv 到工作区');
+  if(summary) expect(final).toContain(summary);
+  expect(html.match(/aria-label="远端文件目录"/g)).toHaveLength(1);
+  expect(html).not.toMatch(/internal-service|internal-file/);
+});
 
 it('humanizes streamed and persisted commentary without rewriting source messages', () => {
   const message = { id: 'catalog', role: 'assistant' as const,

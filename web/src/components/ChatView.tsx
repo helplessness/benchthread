@@ -3,7 +3,7 @@ import {researchActionReceipts,researchActionDisplayKey} from '../utils/research
 import {hypothesisMapLinks} from '../api/hypothesisMap';
 import {HypothesisEvidenceSummary} from './HypothesisEvidenceMap';
 import { publicNarrationText, toolDisplayLabel } from '../utils/userFacingLabels';
-import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, untrack, type JSX } from 'solid-js';
+import { For, Index, Show, createEffect, createMemo, createSignal, on, onCleanup, untrack, type JSX } from 'solid-js';
 import { sessionStore, type Message } from '../stores/session';
 import MessageItem, { ToolCallItem } from './MessageItem';
 import HumanReviewCard, { reviewReferences } from './HumanReviewCard';
@@ -18,6 +18,7 @@ import InteractionPanel from './composer/InteractionPanel';
 import ResearchSessionPanel, { type ResearchSessionTab } from './ResearchSessionPanel';
 import { ResearchChangesSummary } from './ResearchChangesPanel';
 import { researchChangesLinks } from '../api/researchChanges';
+import ArtifactDirectoryCard, { directoryFromTool, withoutDirectoryEcho } from './ArtifactDirectoryCard';
 
 interface ChatViewProps {
   turns: PresentedChatTurn[];
@@ -160,6 +161,17 @@ export function MainProcessGroup(props: {
 }
 
 export function MainChatTurn(props: { turn: PresentedChatTurn; latestAssistantMessageId: string }) {
+  const directories = createMemo(() => collectProcessTools([
+    ...props.turn.processMessages, ...(props.turn.result ? [props.turn.result] : []),
+  ]).flatMap(({tool}) => directoryFromTool(tool) || []));
+  const renderDirectories = () => <Index each={directories()}>{page =>
+    <ArtifactDirectoryCard page={page()} sessionId={sessionStore.currentSessionId() || ''} />
+  }</Index>;
+  const cleanDirectoryEcho = (message: Message) => {
+    if (!directories().length || message.role !== 'assistant' || !message.content) return message;
+    const content = withoutDirectoryEcho(message.content, directories());
+    return content === message.content ? message : { ...message, content };
+  };
   const reviewCards = createMemo(() => reviewReferences(collectProcessTools([
     ...props.turn.processMessages, ...(props.turn.result ? [props.turn.result] : []),
   ]).map(entry => entry.tool)));
@@ -178,14 +190,18 @@ export function MainChatTurn(props: { turn: PresentedChatTurn; latestAssistantMe
     </Show>
     <Show when={props.turn.processMessages.some(message => message.content?.trim() || message.tool_calls?.length || message.content_blocks?.length)}>
       <div class="main-chat-row main-chat-row--agent main-chat-row--process">
-        <MainProcessGroup messages={props.turn.processMessages} running={props.turn.running}
+        <MainProcessGroup messages={props.turn.processMessages.map(cleanDirectoryEcho)} running={props.turn.running}
           hasFinalResult={Boolean(props.turn.result)} preferenceId={props.turn.key}/>
       </div>
     </Show>
     <Show when={props.turn.result}>
       {message => <div class="main-chat-row main-chat-row--agent">
-        <MessageItem message={message()} latestAssistantMessageId={props.latestAssistantMessageId}/>
+        <MessageItem message={cleanDirectoryEcho(message())} latestAssistantMessageId={props.latestAssistantMessageId}
+          renderResultContent={directories().length ? renderDirectories : undefined}/>
       </div>}
+    </Show>
+    <Show when={!props.turn.result && directories().length > 0}>
+      <div class="main-chat-row main-chat-row--agent">{renderDirectories()}</div>
     </Show>
     <For each={reviewCards()}>{reference => <div class="main-chat-row main-chat-row--agent"><HumanReviewCard reference={reference} sessionId={sessionStore.currentSessionId() || ''}/></div>}</For>
     <Show when={!props.turn.running}><For each={actionCards()}>{action=><div class="main-chat-row main-chat-row--agent"><ResearchActionCard action={action}/></div>}</For></Show>
