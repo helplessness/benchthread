@@ -64,8 +64,6 @@ export default function SessionList(props: SessionListProps) {
   const [showWorkdirModal, setShowWorkdirModal] = createSignal(false);
   const [workdirs, setWorkdirs] = createSignal<WorkdirItem[]>([]);
   const [deletedWorkdirs, setDeletedWorkdirs] = createSignal<DeletedWorkdirItem[]>([]);
-  const [maxWorkspacesPerUser, setMaxWorkspacesPerUser] = createSignal(1);
-  const [remainingWorkspaceSlots, setRemainingWorkspaceSlots] = createSignal(0);
   const [selectedWorkdirName, setSelectedWorkdirName] = createSignal('');
   const [creatingSession, setCreatingSession] = createSignal(false);
   const [newWorkdirName, setNewWorkdirName] = createSignal('');
@@ -339,8 +337,6 @@ export default function SessionList(props: SessionListProps) {
     ]);
     setWorkdirs(payload.workdirs || []);
     setDeletedWorkdirs(deleted);
-    setMaxWorkspacesPerUser(payload.max_workspaces_per_user);
-    setRemainingWorkspaceSlots(payload.remaining_workspace_slots);
     return payload.workdirs || [];
   };
 
@@ -1178,7 +1174,15 @@ export default function SessionList(props: SessionListProps) {
             <div class="space-y-4 px-5 py-5">
               <div class="flex items-center justify-between gap-3 text-xs text-[#9faeb7]">
                 <span>选择工作目录。会话创建后不可更改。</span>
-                <span>Workspace {workdirs().length}/{maxWorkspacesPerUser()}</span>
+                <span>工作区 {workdirs().length}</span>
+                <Show when={window.tcodeDesktop?.openProject}>
+                  <button class="btn btn-sm" type="button" onClick={async () => {
+                    try {
+                      const project = await window.tcodeDesktop?.openProject?.();
+                      if (project) { await refreshWorkdirs(); setSelectedWorkdirName(project.name); setWorkdirError(''); }
+                    } catch (error) { setWorkdirError(String(error)); }
+                  }}>打开项目文件夹</button>
+                </Show>
               </div>
               <div class="max-h-56 overflow-y-auto rounded-2xl border border-[#2a3136] bg-[#0f1418]">
                 <For each={workdirs()}>
@@ -1193,8 +1197,14 @@ export default function SessionList(props: SessionListProps) {
                           onChange={() => setSelectedWorkdirName(dir.name)}
                           disabled={workspaceMutationActive()}
                         />
-                        <span class="truncate text-sm text-[#e6edf3]" title={dir.name}>{dir.name}</span>
+                        <span class="truncate text-sm text-[#e6edf3]" title={dir.project_name || dir.name}>{dir.project_name || dir.name}</span>
                       </label>
+                      <Show when={dir.project_name && window.tcodeDesktop?.unlinkProject}>
+                        <button type="button" class="btn btn-sm" onClick={async () => {
+                          try { await window.tcodeDesktop!.unlinkProject!(dir.name); await refreshWorkdirs(); }
+                          catch (error) { setWorkdirError(String(error)); }
+                        }}>解除关联</button>
+                      </Show>
                       <button
                         type="button"
                         class="mr-3 inline-flex h-8 shrink-0 items-center justify-center rounded border border-[#6b2d2d] px-2.5 text-xs text-[#ff9c96] transition-colors hover:bg-[#3a1d1d] disabled:cursor-not-allowed disabled:opacity-50"
@@ -1292,19 +1302,16 @@ export default function SessionList(props: SessionListProps) {
                   placeholder="新增目录名"
                   value={newWorkdirName()}
                   onInput={(e) => { setNewWorkdirName(e.currentTarget.value); setWorkdirError(''); }}
-                  disabled={workspaceMutationActive() || remainingWorkspaceSlots() <= 0}
+                  disabled={workspaceMutationActive()}
                 />
                 <button
                   class="inline-flex items-center justify-center rounded-xl border border-[#38bdf8]/35 bg-[#38bdf8]/12 px-4 text-sm font-semibold text-[#8ed5ff] transition-colors hover:bg-[#38bdf8]/18 disabled:opacity-50"
                   onClick={handleCreateWorkdir}
-                  disabled={!newWorkdirName().trim() || creatingSession() || workspaceMutationActive() || remainingWorkspaceSlots() <= 0}
+                  disabled={!newWorkdirName().trim() || creatingSession() || workspaceMutationActive()}
                 >
                   新增目录
                 </button>
               </div>
-              <Show when={remainingWorkspaceSlots() <= 0}>
-                <div class="text-xs text-[#d7ad65]">已达到 Workspace 数量上限；删除一个 Workspace 后才能继续创建。</div>
-              </Show>
               <Show when={workdirError()}>
                 <div class="text-xs text-[#ff9c96]">{workdirError()}</div>
               </Show>

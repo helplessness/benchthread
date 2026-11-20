@@ -469,6 +469,22 @@ Examples:
                 error=decision.reason,
                 metadata=decision.metadata,
             )
+        if os.environ.get("TCODE_DESKTOP_MANAGED") == "1" and decision.relative_path and (
+            decision.relative_path.startswith("@project/") or not decision.host_path.exists()
+        ):
+            from ...server import project_files
+            from fastapi import HTTPException
+            workspace = (context.extra or {}).get("workdir", "")
+            try:
+                row = project_files.tool_input_binding(decision, context.extra or {})
+                if row:
+                    rel = decision.relative_path.removeprefix("@project/")
+                    copied = await asyncio.to_thread(project_files.snapshot, row, rel, Path(workspace))
+                    decision = resolve_workspace_io_path(str(copied.relative_to(workspace)), context, tool_id=self.id, operation="read")
+                    if decision.blocked:
+                        return ToolResult(title=rel, output="", error=decision.reason)
+            except (HTTPException, OSError) as exc:
+                return ToolResult(title=parsed.filePath, output="", error=str(exc))
         from ...runtime.sandbox.base import file_isolation_enabled
 
         if file_isolation_enabled():

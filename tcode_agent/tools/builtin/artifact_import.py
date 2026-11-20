@@ -311,7 +311,17 @@ class ArtifactUploadTool(_ArtifactFileTool):
         if (source.blocked or not path.is_relative_to(root) or path == root
                 or any(_excluded(part) for part in path.relative_to(root).parts)):
             return ToolResult(title=title, output="", error="请指定当前工作区内可读取的普通文件")
+        from ...server import project_files
+        from fastapi import HTTPException
+        read_approved = False
         try:
+            row = project_files.tool_input_binding(source, extra)
+            if row:
+                read_approved = await context.ask("read", [source.container_path or source.display_path])
+                if not read_approved:
+                    return ToolResult(title=title, output="", error="本地读取未获授权")
+                rel = source.relative_path.removeprefix("@project/")
+                path = await asyncio.to_thread(project_files.snapshot, row, rel, root)
             info = path.stat()
             if info.st_nlink != 1 or not path.is_file() or info.st_size > MAX_BYTES:
                 raise ValueError
@@ -319,9 +329,9 @@ class ArtifactUploadTool(_ArtifactFileTool):
             _, base, headers = artifact_service(key)
             if not headers.get("X-Artifact-Token"):
                 raise ValueError
-        except (ValueError, OSError):
+        except (ValueError, OSError, HTTPException):
             return ToolResult(title=title, output="", error="本地文件不可用、超过大小限制或服务令牌缺失")
-        if (not await context.ask("read", [source.container_path or source.display_path])
+        if ((not read_approved and not await context.ask("read", [source.container_path or source.display_path]))
                 or not await context.ask("write", [f"artifact:{key}/{params.remote_path}"])):
             return ToolResult(title=title, output="", error="本地读取或远端写入未获授权")
 

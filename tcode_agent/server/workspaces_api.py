@@ -71,15 +71,17 @@ def _cleanup_error_message(error: object) -> str:
 async def list_workdirs(request: Request):
     workspace_context = _workspace_context_from_request(request)
     workdirs = _list_user_workdirs(workspace_context)
-    max_per_user = workdir_utils.max_workspaces_per_user()
+    from .project_files import project_names
+    names = project_names(ServerState.get_workdir(), workspace_context)
+    for item in workdirs:
+        if item["name"] in names:
+            item["project_name"] = names[item["name"]]
     return {
         "tenant_id": workspace_context.tenant_id,
         "user_id": workspace_context.user_id,
         "workspace_id": workspace_context.workspace_id,
         "root": _user_workdirs_root(workspace_context).as_posix(),
         "template_root": _workdir_template_root().as_posix(),
-        "max_workspaces_per_user": max_per_user,
-        "remaining_workspace_slots": max(0, max_per_user - len(workdirs)),
         "workdirs": workdirs,
     }
 
@@ -1040,10 +1042,6 @@ async def restore_workdir(workdir_name: str, request: Request):
         raise HTTPException(410, "workspace files were permanently deleted")
     if not target.is_dir():
         raise HTTPException(404, "workdir files not found")
-    workdir_utils.assert_workspace_activation_allowed(
-        ServerState.get_workdir(),
-        workspace_context,
-    )
     if sandbox_enabled():
         try:
             await get_sandbox_runtime().restore_workspace(

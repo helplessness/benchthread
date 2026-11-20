@@ -15,6 +15,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from . import project_files
 
 from ._shared import (
     ServerState,
@@ -200,6 +201,10 @@ async def list_files(
     workspace_id: str = Query(default=""),
 ):
     workspace_context = _workspace_context_from_request(request, workspace_id=workspace_id)
+    project = project_files.binding(ServerState.get_workdir(), workspace_context)
+    if project and path.split("/")[0] == project_files.PREFIX:
+        workdir_utils.assert_workspace_active(ServerState.get_workdir(), workspace_context)
+        return {"path": path, "project_bound": True, "items": await asyncio.to_thread(project_files.entries, project, path.partition("/")[2])}
     base_dir, full_path = _resolve_workspace_file_path(path, workspace_context)
     if not full_path.is_dir():
         raise HTTPException(400, "Not a directory")
@@ -226,7 +231,9 @@ async def list_files(
                 item["size"] = 0
         items.append(item)
     items.sort(key=lambda x: (x["type"] != "directory", x["name"].lower()))
-    return {"path": path, "items": items}
+    if project and not path:
+        items.insert(0, {"name": "项目文件", "path": project_files.PREFIX, "type": "directory"})
+    return {"path": path, "items": items, "project_bound": bool(project)}
 
 
 @router.get("/api/files/search")
@@ -292,7 +299,7 @@ async def get_file_content(
     workspace_id: str = Query(default=""),
 ):
     workspace_context = _workspace_context_from_request(request, workspace_id=workspace_id)
-    _base_dir, full_path = _resolve_workspace_file_path(path, workspace_context)
+    _base_dir, full_path = await asyncio.to_thread(_resolve_local_file_access, path, workspace_context)
     if not full_path.is_file():
         raise HTTPException(404, "File not found")
     try:
@@ -308,6 +315,13 @@ def _resolve_local_file_access(
     path: str,
     context: workdir_utils.WorkspaceContext,
 ) -> tuple[Path, Path]:
+    if path.startswith(project_files.PREFIX + "/"):
+        runtime = ServerState.get_workdir()
+        row = project_files.binding(runtime, context)
+        if row:
+            workdir_utils.assert_workspace_active(runtime, context)
+            root = _resolve_user_workdir_path(context.workspace_id, context)
+            return root, project_files.snapshot(row, path.partition("/")[2], root)
     return _resolve_workspace_file_path(path, context)
 
 

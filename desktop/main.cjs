@@ -166,6 +166,63 @@ async function resolveWorkspaceFile(payload) {
 }
 
 function installNativeHandlers() {
+  ipcMain.handle('desktop:unlink-project', async (event, workspaceId) => {
+    assertSender(event, window, origin);
+    const cookies = await window.webContents.session.cookies.get({ url: origin });
+    const response = await fetch(origin + '/api/desktop/project-binding?' + new URLSearchParams({ workspace_id: workspaceId }), {
+      method: 'DELETE', headers: { Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token },
+    });
+    if (!response.ok) throw new Error('解除项目关联失败');
+  });
+  ipcMain.handle('desktop:export-project-file', async (event, workspaceId, source) => {
+    assertSender(event, window, origin);
+    const cookies = await window.webContents.session.cookies.get({ url: origin });
+    const headers = { Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token };
+    const lookup = await fetch(origin + '/api/desktop/project-root?' + new URLSearchParams({ workspace_id: workspaceId }), { headers });
+    const binding = await lookup.json();
+    if (!lookup.ok || !binding.path) throw new Error(binding.detail || '工作区未关联项目');
+    const selected = await dialog.showSaveDialog(window, { title: '写回项目文件', defaultPath: path.join(binding.path, path.basename(source)) });
+    if (selected.canceled) return;
+    const destination = path.relative(binding.path, path.join(await fs.promises.realpath(path.dirname(selected.filePath)), path.basename(selected.filePath)));
+    if (!destination || destination.startsWith('..') || path.isAbsolute(destination)) throw new Error('请选择项目目录内的位置');
+    const response = await fetch(origin + '/api/desktop/project-export', { method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ workspace_id: workspaceId, source, destination }) });
+    if (!response.ok) throw new Error((await response.json()).detail || '写回失败');
+  });
+  ipcMain.handle('desktop:project-input', async (event, workspaceId) => {
+    assertSender(event, window, origin);
+    const cookies = await window.webContents.session.cookies.get({ url: origin });
+    const headers = { Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token };
+    const params = new URLSearchParams({ workspace_id: workspaceId });
+    const lookup = await fetch(origin + '/api/desktop/project-root?' + params, { headers });
+    const binding = await lookup.json();
+    if (!lookup.ok || !binding.path) throw new Error(binding.detail || '请选择已关联的项目工作区');
+    const selected = await dialog.showOpenDialog(window, { title: '选取项目输入文件', defaultPath: binding.path, properties: ['openFile'] });
+    if (selected.canceled) return null;
+    const file = await fs.promises.realpath(selected.filePaths[0]);
+    const relative = path.relative(binding.path, file);
+    if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('请选择项目目录内的文件');
+    const response = await fetch(origin + '/api/desktop/project-input', { method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace_id: workspaceId, relative_path: relative }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || '项目输入文件导入失败');
+    return data.relative_path;
+  });
+  ipcMain.handle('desktop:open-project', async event => {
+    assertSender(event, window, origin);
+    const selection = await dialog.showOpenDialog(window, { title: '打开项目文件夹', properties: ['openDirectory'] });
+    if (selection.canceled) return null;
+    const cookies = await window.webContents.session.cookies.get({ url: origin });
+    const response = await fetch(origin + '/api/desktop/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token },
+      body: JSON.stringify({ path: selection.filePaths[0] }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || '无法打开项目文件夹');
+    return result;
+  });
   ipcMain.handle('desktop:model-settings', async (event, payload) => {
     assertSender(event, window, origin);
     if (modelConfigPending) throw new Error('正在处理模型配置，请稍候');

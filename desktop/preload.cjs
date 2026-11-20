@@ -3,6 +3,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 // Previews and MCP frames never receive native capabilities.
 if (process.isMainFrame) {
   contextBridge.exposeInMainWorld('tcodeDesktop', Object.freeze({
+    openProject: () => ipcRenderer.invoke('desktop:open-project'),
+    unlinkProject: workspaceId => ipcRenderer.invoke('desktop:unlink-project', workspaceId),
+    exportProjectFile: (workspaceId, source) => ipcRenderer.invoke('desktop:export-project-file', workspaceId, source),
+    projectInput: workspaceId => ipcRenderer.invoke('desktop:project-input', workspaceId),
     modelSettings: payload => ipcRenderer.invoke('desktop:model-settings', payload),
     workspace: (workspaceId, action) => ipcRenderer.invoke('desktop:workspace', { workspaceId, action }),
     revealFile: (workspaceId, path) => ipcRenderer.invoke('desktop:reveal-file', { workspaceId, path }),

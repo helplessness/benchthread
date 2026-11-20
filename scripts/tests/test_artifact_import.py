@@ -163,6 +163,39 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
         assert not imported.error
         assert (root / "imports/report.csv").read_bytes() == b"lab-production"
 
+        # Exercise the same desktop binding and transfer code as the app, without a host service.
+        from tcode_agent.server import desktop_api, workdirs
+        with monkeypatch.context() as scoped:
+            runtime = str(tmp_path / "runtime")
+            source_dir = tmp_path / "project"
+            source_dir.mkdir()
+            (source_dir / "input.csv").write_bytes(b"original")
+            scoped.setenv("TCODE_DESKTOP_MANAGED", "1")
+            scoped.setenv("TCODE_WORKDIR", runtime)
+            scoped.setattr(desktop_api.ServerState, "get_workdir", lambda: runtime)
+            scoped.setattr(desktop_api, "require_current_user", lambda _: True)
+            scoped.setattr(desktop_api, "_workspace_context_from_request", lambda _, workspace_id="active":
+                           workdirs.WorkspaceContext("tenant", "alice", workspace_id))
+            desktop_app = FastAPI()
+            desktop_app.include_router(desktop_api.desktop_router("unit-test"))
+            async with real_client(transport=httpx.ASGITransport(app=desktop_app), base_url="http://desktop",
+                                   headers={"x-tcode-desktop-native": "unit-test"}) as desktop_client:
+                wid = (await desktop_client.post("/api/desktop/projects", json={"path": str(source_dir)})).raise_for_status().json()["name"]
+                managed = workdirs.resolve_user_workdir_path(runtime, wid, tenant_id="tenant", user_id="alice")
+                async def owned_session(_, **owner):
+                    return owner if owner == dict(tenant_id="tenant", user_id="alice", workspace_id=wid) else None
+                scoped.setattr(artifact_import.SessionManager, "get", owned_session)
+                ctx = ToolContext("bound", "message", "build", None, extra={**context.extra, "workdir": str(managed), "workspace_id": wid})
+                args = {"local_path": "@project/input.csv", "remote_path": "outputs/from-project.csv"}
+                result = await upload.execute(args, ctx)
+                assert not result.error, result.error
+                (source_dir / "input.csv").write_bytes(b"changed")
+                (await desktop_client.delete("/api/desktop/project-binding", params={"workspace_id": wid})).raise_for_status()
+                assert (await upload.execute({**args, "remote_path": "outputs/after-unlink.csv"}, ctx)).error
+                assert not (await tool.execute({"path": args["remote_path"]}, ctx)).error
+                assert (managed / "imports/from-project.csv").read_bytes() == b"original"
+                assert (source_dir / "input.csv").read_bytes() == b"changed"
+
         async with client(base_url="http://lab-production", headers={"X-Artifact-Token": token}) as fixture:
             legacy = (await fixture.post("/api/v1/artifacts",
                                          files={"file": ("legacy:report.csv", b"old reference")})).raise_for_status().json()["ref"]

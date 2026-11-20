@@ -46,6 +46,7 @@ export default function FileBrowser(props: FileBrowserProps) {
   const [files, setFiles] = createSignal<FileItem[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [listError, setListError] = createSignal('');
+  const [boundWorkspace, setBoundWorkspace] = createSignal('');
   const [selectedFile, setSelectedFile] = createSignal<string | null>(null);
   const [fileContent, setFileContent] = createSignal<string>('');
   const [previewError, setPreviewError] = createSignal<string>('');
@@ -123,6 +124,7 @@ export default function FileBrowser(props: FileBrowserProps) {
         const data = await resp.json();
         if (!resp.ok) throw new Error(String(data.detail || `读取目录失败 (${resp.status})`));
         if (requestId !== latestFileRequest) return;
+        setBoundWorkspace(data.project_bound ? props.workspaceId || '' : '');
         setFiles(data.items || []);
       }
       setCurrentPath(path);
@@ -458,6 +460,14 @@ export default function FileBrowser(props: FileBrowserProps) {
             <input ref={uploadInput} type="file" multiple hidden aria-label="选择资产文件" disabled={!canUpload() || uploading()}
               onChange={event => { const selected = Array.from(event.currentTarget.files || []); event.currentTarget.value = ''; void uploadFiles(selected); }} />
             <button class="btn btn-sm" disabled={!canUpload() || uploading()} onClick={() => uploadInput.click()}>{uploading() ? '导入中…' : desktop ? '导入本地文件' : '上传文件'}</button>
+            <Show when={desktop?.projectInput && canUpload() && boundWorkspace() === props.workspaceId}>
+              <button class="btn btn-sm" onClick={async () => {
+                try {
+                  const imported = await desktop?.projectInput?.(props.workspaceId!);
+                  if (imported) await openFileAtPath(imported);
+                } catch (error) { setUploadErrors([String(error)]); }
+              }}>选取项目输入</button>
+            </Show>
             <Show when={desktop && props.workspaceId}><button class="btn btn-sm" onClick={()=>void desktop!.workspace(props.workspaceId!, 'finder').catch(error=>setUploadErrors([String(error)]))}>Finder</button><button class="btn btn-sm" onClick={()=>void desktop!.workspace(props.workspaceId!, 'terminal').catch(error=>setUploadErrors([String(error)]))}>终端</button></Show>
             <Show when={desktop}><input ref={element => { folderInput = element; element.setAttribute('webkitdirectory', ''); }} type="file" multiple hidden aria-label="选择本地文件夹"
               onChange={event => {
@@ -471,7 +481,10 @@ export default function FileBrowser(props: FileBrowserProps) {
             <button class="btn btn-sm" onClick={()=>window.dispatchEvent(new CustomEvent('tcode-open-structure',{detail:{path:selectedFile(),workspaceId:props.workspaceId,workdir:props.workdir,jobId:props.jobId,artifactRoot:props.artifactRoot}}))}>三维查看</button>
           </Show>
           <Show when={desktop && props.workspaceId && selectedFile() && !isArtifactMode()}>
-            <button class="btn btn-sm" onClick={() => void desktop!.revealFile(props.workspaceId!, selectedFile()!).catch(error => setUploadErrors([String(error)]))}>在文件夹中显示</button>
+            <Show when={desktop?.exportProjectFile && boundWorkspace() === props.workspaceId && !selectedFile()?.startsWith('@project/')}>
+              <button class="btn btn-sm" onClick={() => void desktop!.exportProjectFile!(props.workspaceId!, selectedFile()!).catch(e => setUploadErrors([String(e)]))}>写回项目…</button>
+            </Show>
+            <Show when={!selectedFile()?.startsWith('@project/')}><button class="btn btn-sm" onClick={() => void desktop!.revealFile(props.workspaceId!, selectedFile()!).catch(error => setUploadErrors([String(error)]))}>在文件夹中显示</button></Show>
           </Show>
           <Show when={selectedFile()}>
             {(filePath) => (

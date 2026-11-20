@@ -3,6 +3,7 @@
 const API_BASE = '';
 
 export type WorkdirItem = {
+  project_name?: string;
   name: string;
   path: string;
   created_at?: number;
@@ -12,8 +13,6 @@ export type WorkdirItem = {
 export type WorkdirListResponse = {
   root: string;
   template_root: string;
-  max_workspaces_per_user: number;
-  remaining_workspace_slots: number;
   workdirs: WorkdirItem[];
 };
 
@@ -25,9 +24,6 @@ function workdirApiError(detail: unknown, fallback: string): string {
   }
   if (message === 'workdir already exists') {
     return '同名 Workspace 已存在，请直接选择该目录。';
-  }
-  if (message.startsWith('workspace limit reached:')) {
-    return '已达到 Workspace 数量上限，请先删除或永久清理一个 Workspace。';
   }
   if (message.startsWith('workdir cleanup is incomplete')) {
     return '同名 Workspace 尚未清理完成，请先在回收站中恢复或继续永久删除。';
@@ -42,19 +38,9 @@ export async function getWorkdirs(): Promise<WorkdirListResponse> {
     throw new Error(data.detail || '加载工作目录失败');
   }
   const workdirs = Array.isArray(data.workdirs) ? data.workdirs : [];
-  const configuredMax = Number(data.max_workspaces_per_user);
-  const maxWorkspaces = Number.isFinite(configuredMax) && configuredMax >= 1
-    ? configuredMax
-    : 5;
-  const configuredRemaining = Number(data.remaining_workspace_slots);
-  const remainingSlots = Number.isFinite(configuredRemaining) && configuredRemaining >= 0
-    ? configuredRemaining
-    : Math.max(0, maxWorkspaces - workdirs.length);
   return {
     root: String(data.root || ''),
     template_root: String(data.template_root || ''),
-    max_workspaces_per_user: maxWorkspaces,
-    remaining_workspace_slots: remainingSlots,
     workdirs,
   };
 }

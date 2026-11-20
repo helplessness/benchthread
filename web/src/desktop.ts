@@ -8,6 +8,10 @@ export type ComputerState = {
 export type BrowserCommand = { action: 'attach' | 'detach' | 'close' | 'state' | 'menu' | 'navigate' | 'back' | 'forward' | 'reload' | 'zoom' | 'fit' | 'find' | 'print' | 'screenshot' | 'clear-data' | 'downloads-enabled' | 'reveal-download'; bounds?: { x: number; y: number; width: number; height: number }; url?: string; factor?: number; text?: string; forward?: boolean; enabled?: boolean; id?: string };
 export type BrowserState = { url: string; title: string; loading: boolean; error?: string; canGoBack: boolean; canGoForward: boolean; zoom: number; fitWidth?: boolean; history?: { url: string; title: string; time: number }[]; downloads?: { id: string; name: string; state: string; received: number; total: number }[]; downloadsEnabled?: boolean };
 type DesktopBridge = {
+  openProject?: () => Promise<{ name: string } | null>;
+  unlinkProject?: (workspaceId: string) => Promise<void>;
+  exportProjectFile?: (workspaceId: string, source: string) => Promise<void>;
+  projectInput?: (workspaceId: string) => Promise<string | null>;
   modelSettings?: (payload: Record<string, unknown>) => Promise<{ok?: boolean; message?: string; services?: DesktopModelService[]; default_chat?: string; default_embedding?: string; secure_storage?: boolean; embedding_local_only?: boolean}>;
   browserPanel?: (session: string, command: BrowserCommand) => Promise<BrowserState>;
   onBrowserNewTab?: (callback: (url: string) => void) => () => void;

@@ -21,7 +21,6 @@ DEFAULT_USER_WORKDIRS = ("workspace-1", "workspace-2", "workspace-3")
 DEFAULT_TENANT_ID = "admin_tenant"
 DEFAULT_USER_ID = "local-user"
 DEFAULT_WORKSPACE_ID = "workspace-1"
-DEFAULT_MAX_WORKSPACES_PER_USER = 5
 _WORKSPACE_STATE_LOCK = threading.RLock()
 _WORKSPACE_MUTATION_LOCK = threading.RLock()
 _HIDDEN_WORKSPACE_STATUSES = {
@@ -337,29 +336,6 @@ def default_workspace_id() -> str:
     ) or DEFAULT_WORKSPACE_ID
 
 
-def max_workspaces_per_user() -> int:
-    """Return the configured per-user workspace limit.
-
-    Invalid values fall back to the safe product default instead of disabling
-    the limit accidentally.
-    """
-
-    raw_value = str(
-        os.environ.get(
-            "TCODE_MAX_WORKSPACES_PER_USER",
-            DEFAULT_MAX_WORKSPACES_PER_USER,
-        )
-        or ""
-    ).strip()
-    try:
-        configured = int(raw_value)
-    except (TypeError, ValueError):
-        return DEFAULT_MAX_WORKSPACES_PER_USER
-    if configured < 1:
-        return DEFAULT_MAX_WORKSPACES_PER_USER
-    return configured
-
-
 def _lookup(mapping: Any, *names: str) -> str:
     if mapping is None:
         return ""
@@ -590,8 +566,7 @@ def ensure_default_user_workdirs(
         existing_dirs = [item for item in root.iterdir() if item.is_dir()]
         if existing_dirs:
             return
-        default_limit = max_workspaces_per_user()
-        for name in default_names[:default_limit]:
+        for name in default_names:
             context = WorkspaceContext(
                 tenant_id=sanitize_owner_id(tenant_id, default_tenant_id()),
                 user_id=sanitize_owner_id(user_id, default_user_id()),
@@ -607,56 +582,6 @@ def ensure_default_user_workdirs(
             )
             target.mkdir(parents=True, exist_ok=True)
             copy_template_to_workdir(server_workdir, target)
-
-
-def active_workspace_count(
-    server_workdir: str,
-    *,
-    tenant_id: str = "",
-    user_id: str = "",
-) -> int:
-    safe_tenant_id = sanitize_owner_id(tenant_id, default_tenant_id())
-    safe_user_id = sanitize_owner_id(user_id, default_user_id())
-    root = user_workdirs_root(
-        server_workdir,
-        tenant_id=safe_tenant_id,
-        user_id=safe_user_id,
-    )
-    if not root.is_dir():
-        return 0
-    count = 0
-    for entry in root.iterdir():
-        if not entry.is_dir():
-            continue
-        context = WorkspaceContext(
-            tenant_id=safe_tenant_id,
-            user_id=safe_user_id,
-            workspace_id=entry.name,
-        )
-        if not workspace_is_hidden(server_workdir, context):
-            count += 1
-    return count
-
-
-def assert_workspace_activation_allowed(
-    server_workdir: str,
-    context: WorkspaceContext,
-) -> None:
-    """Reject restoring a hidden workspace when the user is already at quota."""
-
-    if not workspace_is_hidden(server_workdir, context):
-        return
-    limit = max_workspaces_per_user()
-    current = active_workspace_count(
-        server_workdir,
-        tenant_id=context.tenant_id,
-        user_id=context.user_id,
-    )
-    if current >= limit:
-        raise HTTPException(
-            409,
-            f"workspace limit reached: user already has {current} of {limit} active workspaces",
-        )
 
 
 def list_user_workdirs(
@@ -758,18 +683,6 @@ def create_user_workdir(
             )
         if target.exists() and status != "purged":
             raise HTTPException(409, "workdir already exists")
-
-        limit = max_workspaces_per_user()
-        current = active_workspace_count(
-            server_workdir,
-            tenant_id=safe_tenant_id,
-            user_id=safe_user_id,
-        )
-        if current >= limit:
-            raise HTTPException(
-                409,
-                f"workspace limit reached: user already has {current} of {limit} active workspaces",
-            )
 
         if target.exists() and status == "purged":
             # A purged workspace id is explicitly reusable.  If a crashed
