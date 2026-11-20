@@ -50,7 +50,7 @@ _LINE_SUFFIX = re.compile(r":\d+(?::\d+)?$")
 _INPUT_WORDS = re.compile(r"输入|只读|读取|阅读|读回|核对|对照|打开|(?<![A-Za-z])(?:read|inspect|open)(?![A-Za-z])", re.IGNORECASE)
 _COMPLEX_TASK_WORDS = re.compile(
     r"(?:调研|研究|分析|比较|评估|规划|设计|实现|开发|修复|排查|测试|运行|执行|"
-    r"生成报告|生成方案|工作流|workflow|research|analy[sz]e|compare|evaluate|plan|"
+    r"下载|克隆|拉取|\bclone\b|\bdownload\b|生成报告|生成方案|工作流|workflow|research|analy[sz]e|compare|evaluate|plan|"
     r"design|implement|develop|debug|test|execute|investigate)",
     re.IGNORECASE,
 )
@@ -126,6 +126,7 @@ class OutcomeContractPlanner:
         structured = cls._structured_output_contract(user_message, output_format)
         if structured is not None:
             return structured
+
 
         targets = cls._mutation_targets(user_message, workspace_root)
         if targets:
@@ -315,7 +316,8 @@ class OutcomeContractPlanner:
             "Classify the user's task for result verification. Do not execute the task. "
             "Return exactly one JSON object with: level (V0|V1|V2|V3), confidence "
             "(0..1), risk_level (low|medium|high|critical), requires_tool_evidence "
-            "(boolean), reason_code (short string), and success_criteria (array of 1-6 "
+            "(boolean), published_origin (optional HTTPS repository URL "
+            "only if the user explicitly requests a checkout of that origin), reason_code (short string), and success_criteria (array of 1-6 "
             "plain-language requirements taken only from the user's intent). V0 is only "
             "for simple conversational answers with no tools or persistent effects; V1 "
             "is a bounded format/read check; V2 is a multi-step, tool, artifact, research, "
@@ -406,7 +408,9 @@ class OutcomeContractPlanner:
         proposed_risk = max((proposed_risk, risk_floor), key=_RISK_RANK.__getitem__)
         if proposed_risk in {"high", "critical"}:
             level = "V3"
-        requires_tool_evidence = bool(decision.get("requires_tool_evidence", False))
+        requires_tool_evidence = bool(decision.get("requires_tool_evidence", False)) or (
+            not decision and bool(re.search(r"下载|克隆|拉取|\bclone\b|\bdownload\b", user_message, re.I))
+        )
         # The async completion turn consumes evidence produced outside the current
         # turn.  A turn-local tool_success criterion can never prove that earlier
         # execution and used to force otherwise successful continuations to 5%.
@@ -435,13 +439,21 @@ class OutcomeContractPlanner:
             }
             for item in criteria
         ]
+        origin = str(decision.get("published_origin") or "").rstrip("/").removesuffix(".git")
+        if (os.environ.get("TCODE_DESKTOP_MANAGED") == "1" and
+                re.fullmatch(r"https://[A-Za-z0-9.-]+/[\w.-]+/[\w.-]+", origin) and
+                (origin.split("/")[2].casefold() in user_message.casefold() or
+                 (origin.split("/")[2].lower() == "github.com" and "github" in user_message.casefold())) and
+                all(token.casefold() in user_message.casefold() for token in origin.split("/")[-2:])):
+            success_criteria.append({"description": "核对已保存仓库的来源与用户要求一致",
+                "required": True, "verifier_refs": ["tool_success"], "parameters": {"published_origin": origin}})
         if requires_tool_evidence:
             success_criteria.append(
                 {
-                    "description": "Required tool execution completed without an error.",
+                    "description": "The observed execution evidence establishes the requested result on the intended target. An unrelated success is insufficient.",
                     "required": True,
-                    "verifier_refs": ["tool_success"],
-                    "parameters": {"require_all": True},
+                    "verifier_refs": ["tool_success", "semantic"] if proposed_risk in {"low", "medium"} else ["tool_success"],
+                    "parameters": {"require_all": True, "observed_execution": proposed_risk in {"low", "medium"}},
                 }
             )
         try:

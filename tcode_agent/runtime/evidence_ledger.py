@@ -35,8 +35,17 @@ def _call_facts(tool_name: str, arguments: dict, metadata: dict) -> dict[str, An
         parameters["wait"] = arguments["wait"]
 
     facts = {"call_parameters": parameters} if parameters else {}
+    if tool_name == "browser" and metadata.get("desktop_browser") is True:
+        url = str(metadata.get("url") or "").partition("#")[0]
+        session = str(metadata.get("browser_session_id") or "")
+        if url.startswith(("https://", "http://")) and session:
+            facts["browser_page_key"] = hashlib.sha256((session + "\n" + url).encode()).hexdigest()
+            facts["browser_error"] = metadata.get("error_code")
+            facts["browser_action"] = arguments.get("action")
     if tool_name in {"bash", "exec"}:
         execution = {}
+        if metadata.get("sandbox") is True and isinstance(metadata.get("published_checkout"), dict):
+            facts["published_checkout"] = metadata["published_checkout"]
         for key in ("execution_timeout_seconds", "wait_timeout_seconds"):
             value = metadata.get(key)
             if type(value) is int and value > 0:
@@ -146,6 +155,15 @@ class EvidenceLedger:
                 ):
                     refs.update(_call_facts(tool_name, arguments, metadata))
                 execution = refs.get("execution") or {}
+                if refs.get("browser_page_key") and state_value == "completed" and not error:
+                    try:
+                        page = json.loads(content)
+                        if isinstance(page, dict) and isinstance(page.get("text"), str) and page["text"].strip():
+                            refs["browser_page_read"] = True
+                            # Include actual page text, not just element headings, for semantic review.
+                            limit = max(limit, 8500)
+                    except ValueError:
+                        pass
                 process_failed = (
                     execution.get("exit_code") not in (None, 0)
                     or execution.get("process_status") in {"failed", "timed_out", "conflict", "terminated", "missing"}
@@ -259,7 +277,7 @@ class EvidenceLedger:
             path_match = 1.0 if entry.output_path in expected_paths else 0.0
             failure_weight = 0.15 if entry.status in {"error", "failed"} else 0.0
             score = contract_overlap * 0.55 + candidate_overlap * 0.2 + path_match + failure_weight
-            if entry.references.get("web_evidence_section") and candidate_overlap:
+            if (entry.references.get("web_evidence_section") or entry.references.get("browser_page_read")) and candidate_overlap:
                 score += 0.25
             if entry.call_id in bound_ids:
                 score += 10
@@ -281,7 +299,7 @@ class EvidenceLedger:
             payload = entry.to_dict()
             preview = str(payload.get("content_preview") or "")
             limit = max(preview_chars, 16_000) if entry.tool_name in {"intelligent_page", "canvas", "knowledge_search"} or entry.references.get("hypothesis_map") or entry.references.get("research_changes") else preview_chars
-            if entry.references.get("web_evidence_section") and extended_sections < 6:
+            if (entry.references.get("web_evidence_section") or entry.references.get("browser_page_read")) and extended_sections < 6:
                 limit = max(limit, 8500)
                 extended_sections += 1
             if len(preview) > limit:

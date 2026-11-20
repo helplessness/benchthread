@@ -389,6 +389,18 @@ def _tool_success_checks(
     criterion: OutcomeSuccessCriterion,
     ledger: EvidenceLedger,
 ) -> list[dict[str, Any]]:
+    origin = criterion.parameters.get("published_origin")
+    if origin:
+        def identity(value):
+            value = str(value or "").rstrip("/").removesuffix(".git")
+            # Existing GitHub contracts stored lowercase owner/repo pairs.
+            return value.casefold() if value.lower().startswith("https://github.com/") else value
+        for entry in ledger.entries:
+            receipt = entry.references.get("published_checkout") or {}
+            if (entry.tool_name in {"exec", "bash"} and entry.status == "completed"
+                    and receipt.get("path") and identity(receipt.get("origin")) == identity(origin)):
+                return [{"status": "pass", "reason_code": "project_checkout_verified", "call_ids": [entry.call_id]}]
+        return [{"status": "uncertain", "reason_code": "project_checkout_not_verified"}]
     raw_names = criterion.parameters.get("tool_names", [])
     if isinstance(raw_names, str):
         raw_names = [raw_names]
@@ -405,6 +417,13 @@ def _tool_success_checks(
     ]
     if not entries:
         return [{"status": "fail", "reason_code": "required_tool_evidence_missing"}]
+    # Presence is necessary, not sufficient: the paired semantic verifier must
+    # attribute a completed observation to the requested target and final state.
+    if criterion.parameters.get("observed_execution") and "semantic" in criterion.verifier_refs:
+        completed = [e for e in entries if e.status == "completed" and not e.references.get("execution_skipped")]
+        return [{"status": "pass" if completed else "fail",
+                 "reason_code": "execution_observed" if completed else "required_tool_evidence_missing",
+                 "call_ids": [e.call_id for e in completed if e.call_id]}]
     # Only trusted pre-execution validation failures can recover. Nested scene
     # validation additionally requires the same intended scene identity.
     recovered = [
@@ -422,6 +441,19 @@ def _tool_success_checks(
                 for later in entries[index + 1:])
     ]
     failures = [entry for entry in entries if entry.status in {"error", "failed"} and entry not in recovered]
+    if criterion.parameters.get("browser_read_only") is True and all(e.tool_name == "browser" for e in entries):
+        read_pages = set()
+        for e in reversed(entries):
+            key = e.references.get("browser_page_key")
+            if not key:
+                continue
+            if e.status == "completed" and e.references.get("browser_page_read"):
+                read_pages.add(key)
+            elif (e in failures and key in read_pages and e.references.get("browser_error")
+                  in {"browser_dom_action_failed", "stale_ref", "browser_document_not_committed"}):
+                failures.remove(e)
+        if not read_pages:
+            return [{"status": "uncertain", "reason_code": "browser_page_evidence_missing"}]
     require_all = bool(criterion.parameters.get("require_all", True))
     passed = not failures if require_all else len(failures) < len(entries)
     return [
