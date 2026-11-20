@@ -37,13 +37,17 @@ class ExecTool(Tool):
 
     @property
     def description(self) -> str:
-        return """Run commands in the full workspace execution environment.
+        description = """Run commands in the full workspace execution environment.
 Use this instead of `execute_code` for third-party Python packages, dependency
 installation, arbitrary modules, long-running computation, or background work.
 When sandbox mode is enabled, commands use the workspace sandbox runtime and may
 reuse its installed user dependencies. Set wait=false for background work, then
 use `process` with the returned process_id for status/output/wait/terminate.
 Set wait=true to block until completion (or timeout)."""
+        if os.environ.get("TCODE_DESKTOP_MANAGED") == "1":
+            from ...runtime.sandbox.project_network_exec import PROJECT_TRANSFER_HELP
+            return description + "\n" + PROJECT_TRANSFER_HELP
+        return description
 
     @property
     def parameters(self) -> type:
@@ -98,6 +102,10 @@ Set wait=true to block until completion (or timeout)."""
         except Exception:
             pass
 
+        from ...runtime.sandbox.project_network_exec import run_project_transfer
+        transfer = await run_project_transfer(parsed, context, self.id)
+        if transfer is not None:
+            return transfer
         command_decision = await authorize_command(
             parsed.command,
             context=context,

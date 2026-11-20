@@ -120,6 +120,13 @@ async def run_sandbox_file_io(
     arguments: dict[str, Any],
     title: str | None = None,
 ) -> ToolResult:
+    if os.environ.get("TCODE_DESKTOP_MANAGED") == "1" and decision.relative_path.startswith("@project/"):
+        from ..server import project_files
+        from .path_policy import resolve_workspace_io_path
+        if project_files.tool_input_binding(decision, context.extra or {}):
+            decision = resolve_workspace_io_path(decision.relative_path.removeprefix("@project/"), context, tool_id=operation, operation=operation)
+            if decision.blocked:
+                return ToolResult(title=decision.display_path, output="", error=decision.reason)
     request = {"operation": operation, "path": decision.container_path, **arguments}
     encoded = base64.b64encode(json.dumps(request, ensure_ascii=False).encode()).decode()
     if len(encoded) > 60_000:
@@ -141,6 +148,8 @@ async def run_sandbox_file_io(
             context=context,
             extra_env={"TCODE_FILE_IO_REQUEST": encoded},
         )
+        if native and operation in {"read", "write", "edit"} and decision.relative_path:
+            spec.metadata["project_file_input"] = decision.relative_path
         if not native and (spec.network != "none" or spec.user in {"0", "root"} or spec.user.startswith("0:") or spec.read_only is not True):
             raise RuntimeError("strict file operations require a non-root, read-only, offline profile")
         result = await get_sandbox_runtime().run_once(spec)
@@ -150,12 +159,12 @@ async def run_sandbox_file_io(
         if not isinstance(payload, dict):
             raise ValueError("invalid sandbox file response")
         if native:
-            from ..runtime.sandbox.macos_native import _jobs, publish_file
+            from ..runtime.sandbox.macos_native import _jobs
             state = _jobs[result.sandbox_job_id]
             payload['output'] = str(payload.get('output') or '').replace(str(state['work']), '/workspace')
             if operation in {'write', 'edit'} and not payload.get('error'):
                 relative = decision.relative_path
-                publish_file(state['workspace'], relative, (state['work'] / relative).read_bytes(), expected=state['hashes'].get(relative))
+                state['publish'](relative, (state['work'] / relative).read_bytes(), state['hashes'].get(relative))
         return ToolResult(
             title=title or decision.display_path,
             output=str(payload.get("output") or ""),

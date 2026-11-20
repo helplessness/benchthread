@@ -186,14 +186,92 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
                     return owner if owner == dict(tenant_id="tenant", user_id="alice", workspace_id=wid) else None
                 scoped.setattr(artifact_import.SessionManager, "get", owned_session)
                 ctx = ToolContext("bound", "message", "build", None, extra={**context.extra, "workdir": str(managed), "workspace_id": wid})
+                from tcode_agent.runtime.sandbox.project_network_exec import transfer_argv, run_project_transfer
+                from tcode_agent.tools.builtin.exec import ExecParameters
+                assert not transfer_argv("git clone https://github.com/octocat/Hello-World ../escape")
+                assert not transfer_argv("curl -o file https://example.org/f && echo extra")
+                checkout = ExecParameters(command="git clone --depth 1 https://github.com/octocat/Hello-World sample")
+                import sys
+                if sys.platform == "darwin":
+                    import subprocess
+                    with monkeypatch.context() as local:
+                        trash = tmp_path / "disposable-trash"
+                        trash.mkdir()
+                        def trash_cmd(argv, *, cwd, **kw):
+                            assert argv[0] == "/usr/bin/trash" and artifact_import.os.path.samefile(cwd, source_dir)
+                            artifact_import.os.rename(artifact_import.os.path.join(cwd, argv[1]), trash / argv[1])
+                        local.setattr(subprocess, "run", trash_cmd)
+                        for name in ("test-file", "test-folder"):
+                            source = source_dir / name
+                            if name.endswith("folder"):
+                                source.mkdir()
+                                (source / "entry").write_text("keep")
+                            else:
+                                source.write_text("keep")
+                            assert not (await run_project_transfer(ExecParameters(command=f"trash {name}"),ctx,"exec")).error
+                            assert not source.exists() and (trash / name).exists()
+                        assert (trash / "test-folder/entry").read_text() == "keep"
+                        assert not transfer_argv("trash ../outside")
+                with monkeypatch.context() as denied:
+                    denied.setitem(ctx.extra,"__permission_ask__",lambda *_:False)
+                    assert (await run_project_transfer(checkout,ctx,"exec")).error
+                    assert not (source_dir/"sample").exists()
+                if artifact_import.os.environ.get("TCODE_TEST_PUBLIC_GITHUB") == "1":
+                    import subprocess, zipfile
+                    for params in (checkout, ExecParameters(command="curl -fL -o source.zip https://codeload.github.com/octocat/Hello-World/zip/refs/heads/master")):
+                        outcome = await run_project_transfer(params,ctx,"exec")
+                        assert not outcome.error, outcome.error
+                        if params is checkout:
+                            assert outcome.metadata["published_checkout"] == {"origin": "https://github.com/octocat/Hello-World", "path": "sample"}
+                        assert (await run_project_transfer(params,ctx,"exec")).error
+                    with zipfile.ZipFile(source_dir/"source.zip") as archive:
+                        assert archive.comment == subprocess.check_output(["git","-C",str(source_dir/"sample"),"rev-parse","HEAD"]).strip()
+                        assert archive.read("Hello-World-master/README") == (source_dir/"sample/README").read_bytes()
+                import sys
+                if sys.platform == "darwin":
+                    from tcode_agent.tools.builtin.write import WriteTool
+                    from tcode_agent.tools.builtin.edit import EditTool
+                    from tcode_agent.tools.builtin.read import ReadTool
+                    scoped.setenv("TCODE_DESKTOP_NATIVE_READY", "1")
+                    for actor, args_ in [
+                        (WriteTool(), {"filePath": "notes/new.md", "content": "first"}),
+                        (EditTool(), {"filePath": "notes/new.md", "oldString": "first", "newString": "second"}),
+                    ]:
+                        result = await actor.execute(args_, ctx)
+                        assert not result.error, result.error
+                    assert (source_dir / "notes/new.md").read_text() == "second"
+                    assert not (managed / "notes/new.md").exists()
+                    (source_dir / "notes/new.md").write_text("changed outside")
+                    assert "changed outside" in (await ReadTool().execute({"filePath": "notes/new.md"}, ctx)).output
                 args = {"local_path": "@project/input.csv", "remote_path": "outputs/from-project.csv"}
                 result = await upload.execute(args, ctx)
                 assert not result.error, result.error
+                download = {"path": args["remote_path"], "local_path": "results/returned.csv"}
+                assert not (await tool.execute(download, ctx)).error
+                assert (source_dir / "results/returned.csv").read_bytes() == b"original"
+                assert not (managed / "results/returned.csv").exists()
+                assert (await tool.execute(download, ctx)).error
                 (source_dir / "input.csv").write_bytes(b"changed")
                 (await desktop_client.delete("/api/desktop/project-binding", params={"workspace_id": wid})).raise_for_status()
                 assert (await upload.execute({**args, "remote_path": "outputs/after-unlink.csv"}, ctx)).error
                 assert not (await tool.execute({"path": args["remote_path"]}, ctx)).error
                 assert (managed / "imports/from-project.csv").read_bytes() == b"original"
+                assert (source_dir / "input.csv").read_bytes() == b"changed"
+                owner = workdirs.WorkspaceContext("tenant", "alice", wid)
+                open_args = {"json": {"path": str(source_dir)}}
+                def status(value):
+                    workdirs.set_workspace_state(runtime, owner, value)
+                old_generation = workdirs.workspace_generation(runtime, owner)
+                status("deleted")
+                assert (await desktop_client.post("/api/desktop/projects", **open_args)).status_code == 410
+                status("purging")
+                status("purged")
+                # Simulate remnants after purge: never adopt the prior generation's files.
+                for _ in range(2):
+                    reopened = await desktop_client.post("/api/desktop/projects", **open_args)
+                    assert reopened.raise_for_status().json()["name"] == wid
+                assert workdirs.workspace_generation(runtime, owner) > old_generation
+                assert not (managed / "imports/from-project.csv").exists()
                 assert (source_dir / "input.csv").read_bytes() == b"changed"
 
         async with client(base_url="http://lab-production", headers={"X-Artifact-Token": token}) as fixture:

@@ -202,9 +202,10 @@ async def list_files(
 ):
     workspace_context = _workspace_context_from_request(request, workspace_id=workspace_id)
     project = project_files.binding(ServerState.get_workdir(), workspace_context)
-    if project and path.split("/")[0] == project_files.PREFIX:
+    if project:
         workdir_utils.assert_workspace_active(ServerState.get_workdir(), workspace_context)
-        return {"path": path, "project_bound": True, "items": await asyncio.to_thread(project_files.entries, project, path.partition("/")[2])}
+        relative = "" if path == project_files.PREFIX else path.removeprefix(project_files.PREFIX + "/")
+        return {"path": path, "project_bound": True, "items": await asyncio.to_thread(project_files.entries, project, relative)}
     base_dir, full_path = _resolve_workspace_file_path(path, workspace_context)
     if not full_path.is_dir():
         raise HTTPException(400, "Not a directory")
@@ -231,8 +232,6 @@ async def list_files(
                 item["size"] = 0
         items.append(item)
     items.sort(key=lambda x: (x["type"] != "directory", x["name"].lower()))
-    if project and not path:
-        items.insert(0, {"name": "项目文件", "path": project_files.PREFIX, "type": "directory"})
     return {"path": path, "items": items, "project_bound": bool(project)}
 
 
@@ -246,14 +245,14 @@ async def search_files(
     workspace_context = _workspace_context_from_request(request, workspace_id=workspace_id)
     workdir_utils.assert_workspace_active(ServerState.get_workdir(), workspace_context)
     base_dir, _full_path = _resolve_workspace_file_path("", workspace_context)
-    items, scanned, truncated = await asyncio.to_thread(
-        _search_workspace_files,
-        base_dir,
-        query=q,
-        limit=limit,
-        server_workdir=ServerState.get_workdir(),
-        workspace_context=workspace_context,
-    )
+    row = project_files.binding(ServerState.get_workdir(), workspace_context)
+    if row:
+        items, scanned, truncated = await asyncio.to_thread(project_files.search, row, q, max(1,min(100,limit)))
+    else:
+        items, scanned, truncated = await asyncio.to_thread(
+            _search_workspace_files, base_dir, query=q, limit=limit,
+            server_workdir=ServerState.get_workdir(), workspace_context=workspace_context,
+        )
     return {
         "workspace_id": workspace_context.workspace_id,
         "query": str(q or "").strip()[:200],
@@ -267,12 +266,16 @@ async def search_files(
 async def rename_workspace_file(payload: dict[str, Any], request: Request):
     workspace_id = str(payload.get("workspace_id") or "")
     context = _workspace_context_from_request(request, workspace_id=workspace_id)
-    _base_path, source = await asyncio.to_thread(
-        _require_visible_workspace_file, str(payload.get("path") or ""), context
-    )
     name = str(payload.get("name") or "").strip()
     if not name or name != Path(name).name or name.startswith(".") or len(name) > 255:
         raise HTTPException(400, "Invalid file name")
+    path = str(payload.get("path") or "")
+    row = project_files.binding(ServerState.get_workdir(), context)
+    if row:
+        workdir_utils.assert_workspace_active(ServerState.get_workdir(), context)
+        await asyncio.to_thread(project_files.change_entry, row, path, name)
+        return {"path": str(Path(path).with_name(name)), "name": name}
+    _base_path, source = await asyncio.to_thread(_require_visible_workspace_file, path, context)
     target = source.with_name(name)
     if target.exists():
         raise HTTPException(409, "A file with that name already exists")
@@ -287,6 +290,11 @@ async def delete_workspace_file(
     workspace_id: str = Query(default=""),
 ):
     context = _workspace_context_from_request(request, workspace_id=workspace_id)
+    row = project_files.binding(ServerState.get_workdir(), context)
+    if row:
+        workdir_utils.assert_workspace_active(ServerState.get_workdir(), context)
+        await asyncio.to_thread(project_files.trash_bound, ServerState.get_workdir(), context, row, path)
+        return {"deleted": True, "trashed": True, "path": path}
     _base_path, target = await asyncio.to_thread(_require_visible_workspace_file, path, context)
     await asyncio.to_thread(target.unlink)
     return {"deleted": True, "path": path}
@@ -315,13 +323,12 @@ def _resolve_local_file_access(
     path: str,
     context: workdir_utils.WorkspaceContext,
 ) -> tuple[Path, Path]:
-    if path.startswith(project_files.PREFIX + "/"):
-        runtime = ServerState.get_workdir()
-        row = project_files.binding(runtime, context)
-        if row:
-            workdir_utils.assert_workspace_active(runtime, context)
-            root = _resolve_user_workdir_path(context.workspace_id, context)
-            return root, project_files.snapshot(row, path.partition("/")[2], root)
+    runtime = ServerState.get_workdir()
+    row = project_files.binding(runtime, context)
+    if row:
+        workdir_utils.assert_workspace_active(runtime, context)
+        root = _resolve_user_workdir_path(context.workspace_id, context)
+        return root, project_files.snapshot(row, path.removeprefix(project_files.PREFIX + "/"), root)
     return _resolve_workspace_file_path(path, context)
 
 
@@ -495,6 +502,8 @@ async def upload_file(
         raise HTTPException(400, "invalid relative_path")
 
     target_root_path = Path(target_root).resolve()
+    runtime = ServerState.get_workdir()
+    bound = project_files.binding(runtime, workspace_context) if target_root_path == _resolve_user_workdir_path(workspace_context.workspace_id, workspace_context) else None
     upload_root_path = (target_root_path / "upload").resolve()
     if not upload_root_path.is_relative_to(target_root_path):
         raise HTTPException(403, "upload path escapes workdir")
@@ -547,6 +556,17 @@ async def upload_file(
         while True:
             try:
                 os.link(temp_path, full_path)
+                if bound:
+                    from ..runtime.sandbox.macos_native import WorkspaceFileExists
+                    try:
+                        await asyncio.to_thread(project_files.publish_bound, runtime, workspace_context, bound,
+                                                full_path.relative_to(target_root_path).as_posix(), temp_path.read_bytes())
+                    except WorkspaceFileExists:
+                        full_path.unlink()
+                        raise FileExistsError
+                    except Exception:
+                        full_path.unlink()
+                        raise
                 break
             except FileExistsError:
                 full_path = requested_path.with_name(

@@ -25,6 +25,21 @@ from .base import SandboxJob, SandboxJobStatus, SandboxResult, SandboxSpec
 MAX_BYTES = 64 * 1024 * 1024
 MAX_FILES = 2000
 MAX_OUTPUT = 512 * 1024
+
+
+def _publish_changes(exported, before, after, publish, metadata, prefix):
+    changes = [rel for rel in after if before.get(rel) != after[rel]]
+    files = metadata['artifacts'] = []
+    for index, rel in enumerate(changes):
+        try:
+            publish(prefix + rel, (exported / rel).read_bytes(), None if prefix else before.get(rel))
+        except Exception as exc:
+            remaining = [prefix + path for path in changes[index:]]
+            metadata['unpublished_artifacts'] = remaining
+            raise ValueError(f'{exc}；已写回 {len(files)} 项：{files[:10]}；'
+                             f'未写回 {len(remaining)} 项：{remaining[:10]}（名称最多显示 10 项）') from exc
+        files.append(prefix + rel)
+
 _jobs: dict[str, dict] = {}
 _starting = 0
 
@@ -209,7 +224,7 @@ def copy_tree(source: Path, destination: Path, *, relative_paths: set[str] | Non
                     os.close(child)
             else:
                 raise ValueError(f'本地隔离不接收符号链接、硬链接或特殊文件：{rel}')
-    fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = os.dup(source) if isinstance(source, int) else os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         visit(fd, destination, Path())
     finally:
@@ -225,7 +240,7 @@ def publish_file(root: Path, relative: str, data: bytes, *, expected: str | None
     parts = Path(relative).parts
     if not parts or Path(relative).is_absolute() or any(p in {'.', '..'} or _excluded(p) for p in parts):
         raise ValueError('不允许写入管理文件或工作区之外')
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = os.dup(root) if isinstance(root, int) else os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     temp = '.native-' + uuid.uuid4().hex
     try:
         for part in parts[:-1]:
@@ -252,6 +267,8 @@ def publish_file(root: Path, relative: str, data: bytes, *, expected: str | None
             raise ValueError('目标文件已移除，请重试')
         out = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         with os.fdopen(out, 'wb') as stream:
+            if expected is not None and isinstance(root, int):
+                os.fchmod(stream.fileno(), os.stat(parts[-1], dir_fd=fd, follow_symlinks=False).st_mode & 0o777)
             stream.write(data); stream.flush(); os.fsync(stream.fileno())
         if expected is None:
             os.link(temp, parts[-1], src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
@@ -336,7 +353,15 @@ class MacOSNativeRuntime:
         # ponytail: bounded whole-workspace copies; use per-operation snapshots
         # when workspaces larger than 64 MiB need native processing.
         try:
-            hashes = copy_tree(workspace, work)
+            from ...server import project_files
+            scope = resolve_workspace_context(**owner)
+            bound = project_files.binding(server_root, scope) if workspace == expected else None
+            if bound:
+                with project_files.opened(bound, "", directory=True) as fd:
+                    selected = spec.metadata.get("project_file_input")
+                    hashes = copy_tree(fd, work, relative_paths={selected} if selected else None)
+            else:
+                hashes = copy_tree(workspace, work)
             if skill_source is not None:
                 skill = root / 'skill'; skill.mkdir()
                 copy_tree(skill_source, skill)
@@ -390,7 +415,14 @@ class MacOSNativeRuntime:
         proc.stdin.write((json.dumps({'argv': argv, 'cwd': str(cwd), 'root':str(root), 'env': env, 'timeout': execution_timeout}) + '\n').encode())
         await proc.stdin.drain()
         job = SandboxJob(identifier, '', '', command, metadata={'backend': 'macos-seatbelt', 'network': 'disabled', 'single_process': True, 'execution_timeout_seconds': execution_timeout, 'workspace_copy': str(work), **owner})
-        state = {'job': job, 'proc': proc, 'stdout': bytearray(), 'stderr': bytearray(), 'exit_code': None,
+        def publish(relative, data, previous=None):
+            if bound:
+                if (workspace / relative).exists():
+                    raise ValueError(f'旧托管工作区存在同名文件 {relative}；请先核对两份文件，未写入')
+                project_files.publish_bound(server_root, scope, bound, relative, data, expected=previous)
+            else:
+                publish_file(workspace, relative, data, expected=previous)
+        state = {'publish': publish, 'job': job, 'proc': proc, 'stdout': bytearray(), 'stderr': bytearray(), 'exit_code': None,
                  'work': work, 'workspace': workspace, 'hashes': hashes, 'spec': spec}
         async def drain(stream, output):
             while chunk := await stream.read(16384):
@@ -412,13 +444,10 @@ class MacOSNativeRuntime:
                 try:
                     exported = root / 'export'; exported.mkdir()
                     result_hashes = copy_tree(work, exported)
-                    files = []
-                    for rel, digest in result_hashes.items():
-                        if hashes.get(rel) != digest:
-                            destination = f'artifacts/local/{identifier}/{rel}'
-                            publish_file(workspace, destination, (exported / rel).read_bytes())
-                            files.append(destination)
-                    job.metadata['artifacts'] = files
+                    if bound and hashes.keys() - result_hashes.keys():
+                        raise ValueError('本地隔离命令不支持删除或移动项目原文件，未发布改动')
+                    _publish_changes(exported, hashes, result_hashes, publish, job.metadata,
+                                     '' if bound else f'artifacts/local/{identifier}/')
                 except Exception as exc:
                     job.status = 'failed'
                     state['stderr'].extend(f'\n结果保存失败：{exc}'.encode())

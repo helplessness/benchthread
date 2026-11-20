@@ -62,10 +62,11 @@ def desktop_router(token: str) -> APIRouter:
             db.execute("CREATE TABLE IF NOT EXISTS desktop_projects (tenant TEXT, user TEXT, workspace TEXT, generation INTEGER, path TEXT, device INTEGER, inode INTEGER, PRIMARY KEY(tenant,user,workspace))")
             key = (context.tenant_id, context.user_id, name)
             bound = workdirs.WorkspaceContext(*key)
-            workdirs.assert_workspace_active(str(runtime), bound)
-            generation = workdirs.workspace_generation(str(runtime), bound)
-            row = db.execute("SELECT * FROM desktop_projects WHERE tenant=? AND user=? AND workspace=?", key).fetchone()
-            if target.exists():
+            state = workdirs.workspace_state(str(runtime), bound) or {}
+            if target.exists() and state.get("status") != "purged":
+                workdirs.assert_workspace_active(str(runtime), bound)
+                generation = workdirs.workspace_generation(str(runtime), bound)
+                row = db.execute("SELECT * FROM desktop_projects WHERE tenant=? AND user=? AND workspace=?", key).fetchone()
                 if not row or row["generation"] != generation or row["path"] not in ("", str(source)):
                     raise HTTPException(409, "工作区名称已占用")
                 if not row["path"]:
@@ -128,9 +129,9 @@ def desktop_router(token: str) -> APIRouter:
         row = project_files.binding(ServerState.get_workdir(), context)
         if not row:
             raise HTTPException(404, "工作区未关联项目")
-        root = _resolve_user_workdir_path(workspace_id, context)
-        target = project_files.snapshot(row, str(payload.get("relative_path") or ""), root)
-        return {"relative_path": target.relative_to(root).as_posix()}
+        relative = str(payload.get("relative_path") or "")
+        with project_files.opened(row, relative):
+            return {"relative_path": relative}
 
     @router.post("/project-export")
     def export_project_file(request: Request, payload: dict):
@@ -329,7 +330,7 @@ def desktop_router(token: str) -> APIRouter:
         context = _workspace_context_from_request(request, workspace_id=workspace_id)
         workdirs.assert_workspace_active(ServerState.get_workdir(), context)
         root = _resolve_user_workdir_path(context.workspace_id, context).resolve(strict=True)
-        return {"path": str(root)}
+        return {"path": project_root(request, workspace_id)["path"] or str(root)}
 
     @router.get("/file")
     async def resolve_workspace_file(request: Request, workspace_id: str, path: str):
@@ -339,6 +340,12 @@ def desktop_router(token: str) -> APIRouter:
         context = _workspace_context_from_request(request, workspace_id=workspace_id)
         workdirs.assert_workspace_active(ServerState.get_workdir(), context)
         from .files_api import _resolve_workspace_file_path
+        from . import project_files
+        row = project_files.binding(ServerState.get_workdir(), context)
+        if row:
+            rel = path.removeprefix("@project/")
+            with project_files.opened(row, rel):
+                return {"path": str(Path(row["path"]) / rel)}
         _root, target = await asyncio.to_thread(_resolve_workspace_file_path, path, context)
         if not target.is_file() or target.is_symlink():
             raise HTTPException(404, "File not found")

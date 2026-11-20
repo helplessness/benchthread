@@ -62,6 +62,7 @@ export default function SessionList(props: SessionListProps) {
   const inFlight = new Set<string>();
   const [mcpServers, setMcpServers] = createSignal<MCPServerStatus[]>([]);
   const [showWorkdirModal, setShowWorkdirModal] = createSignal(false);
+  const [manageWorkdirs, setManageWorkdirs] = createSignal(false);
   const [workdirs, setWorkdirs] = createSignal<WorkdirItem[]>([]);
   const [deletedWorkdirs, setDeletedWorkdirs] = createSignal<DeletedWorkdirItem[]>([]);
   const [selectedWorkdirName, setSelectedWorkdirName] = createSignal('');
@@ -346,6 +347,7 @@ export default function SessionList(props: SessionListProps) {
     if (current.length > 0) {
       setSelectedWorkdirName(current[0].name);
     }
+    setManageWorkdirs(false);
     setShowWorkdirModal(true);
   };
 
@@ -851,7 +853,7 @@ export default function SessionList(props: SessionListProps) {
 
         <button
           onClick={handleNewSession}
-          class="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-[#38bdf8]/35 bg-[#38bdf8]/12 px-4 py-3 text-sm font-semibold text-[#8ed5ff] transition-colors hover:bg-[#38bdf8]/18"
+          class="task-create-primary mt-5 flex w-full items-center justify-center gap-2 px-4 text-sm font-semibold"
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-4 w-4">
             <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z" />
@@ -1157,11 +1159,11 @@ export default function SessionList(props: SessionListProps) {
 
       <Show when={showWorkdirModal()}>
         <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div class="w-full max-w-xl overflow-hidden rounded-2xl border border-[#2a3136] bg-[#11171b] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
+          <div role="dialog" aria-labelledby="new-task-heading" class="task-create-panel flex max-h-[90dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border shadow-2xl">
             <div class="flex items-center justify-between border-b border-[#2a3136] px-5 py-4">
               <div>
-                <div class="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#7bd0ff]">创建会话</div>
-                <div class="mt-1 text-sm font-semibold text-[#f5f7fa]">新建会话</div>
+                <h2 id="new-task-heading" class="text-xl font-semibold">新建任务</h2>
+                <p class="mt-1 text-sm text-[var(--tcode-text-muted)]">选择保存这次对话和产物的工作区。创建后不能更换。</p>
               </div>
               <button
                 class="inline-flex h-8 items-center justify-center rounded border border-[#303539] bg-[#171c20] px-3 text-xs text-[#8b949e] transition-colors hover:border-[#7bd0ff]/35 hover:text-[#8ed5ff]"
@@ -1171,10 +1173,10 @@ export default function SessionList(props: SessionListProps) {
                 关闭
               </button>
             </div>
-            <div class="space-y-4 px-5 py-5">
-              <div class="flex items-center justify-between gap-3 text-xs text-[#9faeb7]">
-                <span>选择工作目录。会话创建后不可更改。</span>
-                <span>工作区 {workdirs().length}</span>
+            <div class="min-h-0 space-y-4 overflow-y-auto px-5 py-5">
+              <div class="flex flex-wrap items-center gap-3 text-sm">
+                <strong class="mr-auto">工作区 <span class="ml-1 text-xs font-normal">{workdirs().length}</span></strong>
+                <button class="btn btn-sm" type="button" aria-pressed={manageWorkdirs()} onClick={() => setManageWorkdirs(!manageWorkdirs())}>{manageWorkdirs() ? '完成管理' : '管理'}</button>
                 <Show when={window.tcodeDesktop?.openProject}>
                   <button class="btn btn-sm" type="button" onClick={async () => {
                     try {
@@ -1187,7 +1189,7 @@ export default function SessionList(props: SessionListProps) {
               <div class="max-h-56 overflow-y-auto rounded-2xl border border-[#2a3136] bg-[#0f1418]">
                 <For each={workdirs()}>
                   {(dir) => (
-                    <div class="flex min-h-12 items-center border-b border-[#2a3136] last:border-b-0 hover:bg-[#151d22]">
+                    <div class="task-workdir-row flex min-h-12 items-center border-b border-[#2a3136] last:border-b-0" data-selected={selectedWorkdirName() === dir.name}>
                       <label class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-4 py-3">
                         <input
                           type="radio"
@@ -1199,6 +1201,7 @@ export default function SessionList(props: SessionListProps) {
                         />
                         <span class="truncate text-sm text-[#e6edf3]" title={dir.project_name || dir.name}>{dir.project_name || dir.name}</span>
                       </label>
+                      <Show when={manageWorkdirs()}>
                       <Show when={dir.project_name && window.tcodeDesktop?.unlinkProject}>
                         <button type="button" class="btn btn-sm" onClick={async () => {
                           try { await window.tcodeDesktop!.unlinkProject!(dir.name); await refreshWorkdirs(); }
@@ -1215,11 +1218,15 @@ export default function SessionList(props: SessionListProps) {
                       >
                         {deletingWorkdirName() === dir.name ? '删除中...' : '删除'}
                       </button>
+                      </Show>
                     </div>
                   )}
                 </For>
               </div>
-              <Show when={deletedWorkdirs().length > 0}>
+              <Show when={manageWorkdirs() && workdirs().some(dir => dir.project_name)}>
+                <p class="text-xs text-[var(--tcode-text-muted)]">解除关联后，该工作区的所有任务将无法读取原文件夹；文件和聊天记录不会删除。</p>
+              </Show>
+              <Show when={manageWorkdirs() && deletedWorkdirs().length > 0}>
                 <div class="space-y-2">
                   <div class="flex items-center justify-between text-xs text-[#9faeb7]">
                     <span>回收站与残留</span>
@@ -1296,10 +1303,11 @@ export default function SessionList(props: SessionListProps) {
                   </div>
                 </div>
               </Show>
+              <label class="block text-sm font-semibold" for="new-task-workdir">新建工作区</label>
               <div class="flex gap-2">
                 <input
                   class="flex-1 rounded-xl border border-[#2a3136] bg-[#0f1418] px-3 py-2 text-sm text-[#e6edf3] outline-none transition-colors placeholder:text-[#6f7d87] focus:border-[#7bd0ff]/45"
-                  placeholder="新增目录名"
+                  id="new-task-workdir" style="min-width:0" placeholder="输入工作区名称"
                   value={newWorkdirName()}
                   onInput={(e) => { setNewWorkdirName(e.currentTarget.value); setWorkdirError(''); }}
                   disabled={workspaceMutationActive()}
@@ -1309,7 +1317,7 @@ export default function SessionList(props: SessionListProps) {
                   onClick={handleCreateWorkdir}
                   disabled={!newWorkdirName().trim() || creatingSession() || workspaceMutationActive()}
                 >
-                  新增目录
+                  添加
                 </button>
               </div>
               <Show when={workdirError()}>
@@ -1325,11 +1333,11 @@ export default function SessionList(props: SessionListProps) {
                 取消
               </button>
               <button
-                class="inline-flex items-center justify-center rounded-xl border border-[#38bdf8]/35 bg-[#38bdf8] px-4 py-2 text-sm font-semibold text-[#043245] transition-colors hover:bg-[#67caf5] disabled:cursor-not-allowed disabled:opacity-50"
+                class="task-create-primary inline-flex items-center justify-center px-5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={handleConfirmCreateSession}
                 disabled={creatingSession() || workspaceMutationActive() || !selectedWorkdirName().trim()}
               >
-                {creatingSession() ? '创建中...' : '创建会话'}
+                {creatingSession() ? '创建中…' : '创建任务'}
               </button>
             </div>
           </div>

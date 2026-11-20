@@ -37,7 +37,8 @@ class BashTool(Tool):
     @property
     def description(self) -> str:
         if os.environ.get('TCODE_DESKTOP_MANAGED') == '1':
-            return ('Execute one offline command in a private copy of the current workspace using macOS Seatbelt. '
+            from ...runtime.sandbox.project_network_exec import PROJECT_TRANSFER_HELP
+            return PROJECT_TRANSFER_HELP + (' For other commands, execute one offline command in a private copy of the current workspace using macOS Seatbelt. '
                     'Use relative paths and workdir; /workspace is not a native filesystem mount. '
                     'Use python3 -I -S for standard-library file processing. Fork, pipelines, background jobs, '
                     'network, application control, third-party packages and access outside this task are unavailable. '
@@ -103,6 +104,10 @@ Parallel Commands:
 
     async def execute(self, args: dict[str, Any], context: ToolContext) -> ToolResult:
         parsed = BashParameters(**args)
+        from ...runtime.sandbox.project_network_exec import run_project_transfer
+        transfer = await run_project_transfer(parsed, context, self.id)
+        if transfer is not None:
+            return transfer
         command_decision = await authorize_command(
             parsed.command,
             context=context,

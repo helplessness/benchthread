@@ -21,6 +21,7 @@ from .question import QuestionTool
 
 
 class ArtifactImportParameters(ParameterSchema):
+    local_path: str = Field(default="", max_length=1024, description="Optional destination relative to the active project; existing files are never overwritten.")
     path: str = Field(min_length=1, max_length=1024)
     service_name: str = Field(default="", max_length=120)
     service_id: str = Field(default="", max_length=64, description="Service ID returned by Artifact browsing.")
@@ -150,11 +151,18 @@ class ArtifactImportTool(_ArtifactFileTool):
             return key
 
         root = Path(extra["workdir"]).resolve()
-        relative = "imports/" + parts[-1]
+        relative = params.local_path or "imports/" + parts[-1]
+        if not _valid_path(relative) or any(_excluded(part) for part in relative.split("/")):
+            return ToolResult(title=title, output="", error="请输入有效的本地相对文件路径")
         target = resolve_workspace_io_path(relative, context, tool_id=self.id, operation="write")
         if target.blocked or target.host_path != root / relative:
             return ToolResult(title=title, output="", error="无法写入当前工作区的导入目录")
         visible = target.container_path or relative
+        from ...server import project_files, workdirs
+        from fastapi import HTTPException
+        row = project_files.tool_input_binding(target, extra)
+        if row and target.host_path.exists():
+            return ToolResult(title=title, output="", error="旧托管工作区已有同名文件；请核对或指定其他目标路径")
         if (not await context.ask("read", [f"artifact:{key}/{params.path}"])
                 or not await context.ask("write", [visible])):
             return ToolResult(title=title, output="", error="文件读取或工作区写入未获授权")
@@ -162,7 +170,11 @@ class ArtifactImportTool(_ArtifactFileTool):
             data = await _download(key, params.path, params.artifact_id)
             if context.abort is not None and context.abort.is_set():
                 return ToolResult(title=title, output="", error="导入已取消")
-            await asyncio.to_thread(publish_file, root, relative, data)
+            if row:
+                await asyncio.to_thread(project_files.publish_bound, os.environ["TCODE_WORKDIR"],
+                                        workdirs.resolve_workspace_context(**owner), row, relative, data)
+            else:
+                await asyncio.to_thread(publish_file, root, relative, data)
         except httpx.HTTPStatusError as exc:
             error = {401: "文件服务认证失败", 403: "文件服务拒绝访问",
                      404: "找不到该路径，或服务尚未支持按路径查询",
@@ -177,7 +189,7 @@ class ArtifactImportTool(_ArtifactFileTool):
             return ToolResult(title=title, output="", error="文件校验失败或超过大小限制，未保存下载内容")
         except (WorkspaceFileExists, FileExistsError):
             return ToolResult(title=title, output="", error="工作区已有同名文件，保留原文件。请移动或重命名原文件后重试")
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, HTTPException):
             return ToolResult(title=title, output="", error="无法完成导入，请检查文件服务配置和工作区写入状态")
         return ToolResult(title=title, output=f"已导入 {visible}", output_path=visible)
 

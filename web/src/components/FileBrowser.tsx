@@ -481,9 +481,6 @@ export default function FileBrowser(props: FileBrowserProps) {
             <button class="btn btn-sm" onClick={()=>window.dispatchEvent(new CustomEvent('tcode-open-structure',{detail:{path:selectedFile(),workspaceId:props.workspaceId,workdir:props.workdir,jobId:props.jobId,artifactRoot:props.artifactRoot}}))}>三维查看</button>
           </Show>
           <Show when={desktop && props.workspaceId && selectedFile() && !isArtifactMode()}>
-            <Show when={desktop?.exportProjectFile && boundWorkspace() === props.workspaceId && !selectedFile()?.startsWith('@project/')}>
-              <button class="btn btn-sm" onClick={() => void desktop!.exportProjectFile!(props.workspaceId!, selectedFile()!).catch(e => setUploadErrors([String(e)]))}>写回项目…</button>
-            </Show>
             <Show when={!selectedFile()?.startsWith('@project/')}><button class="btn btn-sm" onClick={() => void desktop!.revealFile(props.workspaceId!, selectedFile()!).catch(error => setUploadErrors([String(error)]))}>在文件夹中显示</button></Show>
           </Show>
           <Show when={selectedFile()}>

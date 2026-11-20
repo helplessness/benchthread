@@ -57,7 +57,7 @@ def opened(row, rel, directory=False):
                 fd = op(part, flags | (os.O_DIRECTORY if directory or i < len(parts)-1 else 0), fd)
         except OSError as exc:
             raise HTTPException(404, "项目文件不可用") from exc
-        if not directory and not stat.S_ISREG(os.fstat(fd).st_mode):
+        if not directory and (not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_nlink != 1):
             raise HTTPException(400, "请选择普通文件")
         yield fd
 
@@ -110,8 +110,6 @@ def tool_input_binding(decision, extra):
     """Only the authenticated owner's exact managed workspace may use its grant."""
     if os.environ.get("TCODE_DESKTOP_MANAGED") != "1" or decision.blocked or not decision.relative_path:
         return None
-    if not decision.relative_path.startswith(PREFIX + "/") and decision.host_path.exists():
-        return None
     runtime = os.environ.get("TCODE_WORKDIR", "")
     workspace = extra.get("workdir")
     if not runtime or not workspace:
@@ -126,6 +124,18 @@ def tool_input_binding(decision, extra):
     return binding(runtime, owner)
 
 
+def publish_bound(runtime, owner, row, relative, data, *, expected=None):
+    """Publish only while the same workspace generation still owns this directory."""
+    from ..runtime.sandbox.macos_native import publish_file
+    with workdirs._WORKSPACE_MUTATION_LOCK:
+        workdirs.assert_workspace_active(runtime, owner)
+        current = binding(runtime, owner)
+        if current is None or dict(current) != dict(row):
+            raise ValueError("项目关联已变更，未写入文件")
+        with opened(current, "", directory=True) as fd:
+            publish_file(fd, relative, data, expected=expected)
+
+
 def entries(row, rel):
     with opened(row, rel, directory=True) as fd, os.scandir(fd) as scan:
         result = []
@@ -134,6 +144,67 @@ def entries(row, rel):
                 continue
             if not (item.is_file(follow_symlinks=False) or item.is_dir(follow_symlinks=False)):
                 continue
-            result.append({"name": item.name, "path": "/".join(filter(None, (PREFIX, rel, item.name))),
+            result.append({"name": item.name, "path": "/".join(filter(None, (rel, item.name))),
+                           "size": item.stat(follow_symlinks=False).st_size if item.is_file(follow_symlinks=False) else 0,
                            "type": "directory" if item.is_dir(follow_symlinks=False) else "file"})
         return sorted(result, key=lambda item: (item["type"] != "directory", item["name"].casefold()))
+
+
+def change_entry(row, rel, new_name=None):
+    rel = rel.removeprefix(PREFIX + "/")
+    if any(not part or part.startswith(".") for part in rel.split("/")):
+        raise HTTPException(403, "项目路径不可访问")
+    parent, _, name = rel.rpartition("/")
+    with opened(row, parent, directory=True) as fd:
+        if not name or name.startswith(".") or not stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+            raise HTTPException(400, "只能操作普通项目文件")
+        if new_name is not None:
+            try:
+                os.link(name, new_name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+            except FileExistsError:
+                raise HTTPException(409, "目标名称已存在")
+        os.unlink(name, dir_fd=fd)
+
+
+def trash_bound(runtime, scope, grant, rel):
+    """Use the macOS Trash (including Put Back); never fall back to unlink."""
+    import subprocess
+    import sys
+    rel = rel.removeprefix(PREFIX + "/")
+    if sys.platform != "darwin" or any(not p or p.startswith(".") or p == "node_modules" for p in rel.split("/")):
+        raise HTTPException(400, "只能将已关联项目内的普通文件或文件夹移到废纸篓")
+    parent, _, name = rel.rpartition("/")
+    with workdirs._WORKSPACE_MUTATION_LOCK:
+        workdirs.assert_workspace_active(runtime, scope)
+        if dict(binding(runtime, scope) or {}) != dict(grant):
+            raise HTTPException(409, "项目关联已变更")
+        with opened(grant, parent, directory=True) as src:
+            mode = os.stat(name, dir_fd=src, follow_symlinks=False).st_mode
+            if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                raise HTTPException(400, "不支持移动符号链接或特殊文件")
+            try:
+                directory = os.fstat(src)
+                # Darwin's device/inode namespace addresses the directory we validated,
+                # even if a path component is renamed while the command starts.
+                subprocess.run(["/usr/bin/trash", "./" + name], cwd=f"/.vol/{directory.st_dev}/{directory.st_ino}",
+                               stdin=subprocess.DEVNULL, capture_output=True,
+                               check=True, timeout=15)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise HTTPException(409, "系统未确认移入废纸篓，请检查原位置；不会永久删除") from exc
+
+
+def search(row, query, limit):
+    pending, hits, scanned = [""], [], 0
+    words = query.casefold().split()
+    while pending:
+        for item in entries(row, pending.pop()):
+            scanned += 1
+            if scanned > 4000:
+                return hits, scanned, True
+            if item["type"] == "directory":
+                pending.append(item["path"])
+            elif all(word in item["path"].casefold() for word in words):
+                hits.append({**item, "origin": "project"})
+                if len(hits) >= limit:
+                    return hits, scanned, True
+    return hits, scanned, False
