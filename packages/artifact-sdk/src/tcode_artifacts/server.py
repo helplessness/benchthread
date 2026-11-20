@@ -464,8 +464,23 @@ def run_artifact(*, data_dir, service_id=None, token=None, host='127.0.0.1', por
     import uvicorn
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    app.mount(PREFIX, _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes))
-    uvicorn.run(app, host=host, port=port, workers=1)
+    files = _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes)
+    app.mount(PREFIX, files)
+
+    class ArtifactServer(uvicorn.Server):
+        async def startup(self, sockets=None):
+            await super().startup(sockets=sockets)
+            if self.started:
+                client_host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(host, host)
+                url_host = f'[{client_host}]' if ':' in client_host else client_host
+                print(f'Artifact base URL: http://{url_host}:{port}{PREFIX}\n'
+                      f'Artifact service ID: {files.state.service_id}\n'
+                      'BenchThread: Settings > File services (or Remote services). Enter the URL, service ID, and '
+                      'backend credential environment variable name (not the token). Save, restart Web, then test.\n'
+                      'Remote clients need a reachable address (--host or reverse proxy), not a loopback URL.',
+                      flush=True)
+
+    ArtifactServer(uvicorn.Config(app, host=host, port=port, workers=1)).run()
 
 
 def run_with_artifact(mcp, *, data_dir, service_id=None, token=None, host='127.0.0.1', port=10240,

@@ -2,7 +2,7 @@
 
 同仓库维护、可独立安装的文件客户端，可选安装 Artifact 服务端。发行包名 `tcode-artifact-sdk`，导入名 `tcode_artifacts`。当前版本 0.1.0，仅提供源码／wheel 安装，**尚未发布到 PyPI**。
 
-[第一次让 MCP 收发文件：`echo_file` 快速开始](#echo_file-快速开始) · [只在聊天中使用文件服务，不接 MCP](../../docs/RUNNING.md#不绑定-mcp-使用-artifact)
+[最小 FastMCP 示例代码](#最小-fastmcp-示例) · [第一次让 MCP 收发文件：`echo_file` 快速开始](#echo_file-快速开始) · [只在聊天中使用文件服务，不接 MCP](../../docs/RUNNING.md#不绑定-mcp-使用-artifact)
 
 基础客户端只依赖 `httpx`；安装基础包或导入 `ArtifactIO` 不会启动服务，也不导入 `tcode_agent` 或 `tmcp`。客户端和可选服务端沿用 Artifact HTTP v1 接口和 `ArtifactRef`／`BundleRef`，不实现计算、队列、审核或轮询。Python 3.10+。客户端在 Linux／macOS 保留安全目录描述符实现；**Windows 10+ 本地 NTFS 客户端为实验性支持（原生验收尚未完成）**，使用系统句柄，不提供关闭路径保护的降级方式。
 
@@ -76,13 +76,7 @@ python packages/artifact-sdk/examples/mcp_server.py --with-artifact --port 18080
   --data-dir ./artifact-data --service-id echo-files
 ```
 
-这条命令仅监听环回：本机测试地址为 `http://127.0.0.1:18080/mcp` 和 `http://127.0.0.1:18080/artifact`。**即使 Web 与 MCP 同机，也不要把这个 MCP 环回地址填进普通 Web 的 MCP 表单。** 接入 Web 时，按 [快速开始](#echo_file-快速开始)让示例监听可达的私网地址，或通过带认证的 HTTPS 反向代理提供 `/mcp` 和 `/artifact`。两者同端口不代表共用凭据：文件请求使用 `X-Artifact-Token`，MCP 的认证独立设置。开发自己的 FastMCP 服务时，可以保留工具函数，只替换启动入口：
-
-```python
-from tcode_artifacts.server import run_with_artifact
-
-run_with_artifact(mcp, port=18080, data_dir="./artifact-data", service_id="echo-files")
-```
+这条命令仅监听环回：本机测试地址为 `http://127.0.0.1:18080/mcp` 和 `http://127.0.0.1:18080/artifact`。**即使 Web 与 MCP 同机，也不要把这个 MCP 环回地址填进普通 Web 的 MCP 表单。** 接入 Web 时，按 [快速开始](#echo_file-快速开始)让示例监听可达的私网地址，或通过带认证的 HTTPS 反向代理提供 `/mcp` 和 `/artifact`。两者同端口不代表共用凭据：文件请求使用 `X-Artifact-Token`，MCP 的认证独立设置。开发自己的 FastMCP 服务时，参考[最小示例代码](#最小-fastmcp-示例)，把已有的 `mcp = FastMCP(...)` 对象交给 `run_with_artifact` 即可。
 
 入口默认只监听环回地址。若已设置非空 `TMCP_ARTIFACT_SERVICE_URL`，或配置了 `TMCP_ARTIFACT_SERVICES` 和默认服务 ID，只启动 MCP，沿用 SDK 的外部配置；不会创建本地存储或在连接失败后切换。`run_with_artifact(..., token=...)` 只接受内置服务的令牌；复用外部服务时传这个参数会明确报错。外部凭据通过 `TMCP_ARTIFACT_API_TOKEN` 或服务映射的 `token_env` 设置。
 
@@ -95,6 +89,8 @@ python -m pip install './packages/artifact-sdk[server]'
 # 同样先注入 TMCP_ARTIFACT_API_TOKEN
 tcode-artifact serve --port 18081 --data-dir ./artifact-data --service-id shared-files
 ```
+
+`--service-id` 可以省略：首次启动会生成 ID，此后同一数据目录会沿用该 ID。成功监听后，终端会打印本机连接地址、实际服务 ID 和 BenchThread 填写提示，不会打印令牌。新建服务时可直接用这里显示的 ID；跨主机要把地址换成 Web 后端可达的地址。
 
 默认基础地址为 `http://127.0.0.1:18081/artifact`，仅同主机、同网络环境的客户端能访问。跨主机时给 `tcode-artifact serve` 加 `--host <文件主机的私网IP>`（或让服务保持环回监听，由同机 HTTPS 反向代理转发），并使用调用方真正可达的地址。MCP 进程按[服务配置](#服务配置)设置 Artifact 地址、相同的服务 ID 和文件服务令牌，再启动 MCP。也可在自己的 Python 入口调用 `run_artifact(data_dir=..., service_id=..., port=...)`。两种方式复用同一份服务端和存储格式，但**不要用两个进程同时对外提供同一个数据目录**。
 
@@ -171,13 +167,57 @@ result = {"status": "completed", "output_bundle": output_ref}
 
 HTTP／校验错误会抛异常，不返回虚假成功、不跟随重定向、不自动重试 POST／PUT。失败的目录下载可能保留已校验的部分文件，失败的上传可能保留远端草稿包；应记录失败并在新的私有目录重试文件操作，不能把残留目录当作完整结果。不要因此重新提交状态不明的科学计算。
 
+## 最小 FastMCP 示例
+
+下面是一份可独立运行的 `server.py`。和仓库里的 [完整示例](examples/mcp_server.py) 一样，它用 `@mcp.tool` 注册文件回显工具。调用方传的是上传后得到的 `ArtifactRef`，不是调用方机器的文件路径。工具用 `materialize()` 下载到私有临时目录，再用 `upload_directory()` 返回包含 `echo.dat` 的文件包引用。
+
+```python
+import os
+import shutil
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from fastmcp import FastMCP
+from tcode_artifacts import ArtifactIO
+from tcode_artifacts.server import run_with_artifact
+
+mcp = FastMCP("Artifact file echo")
+
+
+@mcp.tool
+def echo_file(input_file: dict) -> dict:
+    """原样回传一个文件。输入为 ArtifactRef，输出包含 echo.dat。"""
+    if input_file.get("kind") != "artifact":
+        raise ValueError("echo_file requires an ArtifactRef")
+    files = ArtifactIO()
+    with TemporaryDirectory(prefix="artifact-echo-") as directory:
+        root = Path(directory).resolve()
+        source = files.materialize(input_file, root / "input.dat")
+        output = root / "output"
+        output.mkdir()
+        shutil.copyfile(source, output / "echo.dat")
+        return {"status": "completed", "output_bundle": files.upload_directory(output)}
+
+
+if __name__ == "__main__":
+    run_with_artifact(
+        mcp,
+        host=os.environ.get("ARTIFACT_DEMO_HOST", "127.0.0.1"),
+        port=18080,
+        data_dir="./artifact-data",
+        service_id="echo-files",
+    )
+```
+
+在 MCP 主机安装 `./packages/artifact-sdk[server,example]` 并注入 `TMCP_ARTIFACT_API_TOKEN` 后，用 `python server.py` 启动。默认监听本机，提供 `/mcp` 和 `/artifact`；远端测试和 BenchThread 接入见下节。已有自己的 FastMCP 工具时，不需要重写工具注册：保留原来的 `mcp` 对象和 `@mcp.tool`，在需要文件的工具中使用 `ArtifactIO`。已有外部 Artifact 时也可以保留原来的 `mcp.run(...)`，只给 SDK 注入[外部连接配置](#服务配置)。
+
 ## echo_file 快速开始
 
 这个示例把一份小文件原样回传为 `echo.dat`。准备一个**带登录、已配置对话模型的 Web**，并启用 [Job Protocol](../../docs/RUNNING.md#远程异步计算)。自定义文件字段通过异步入口登记；`tcode-server --local` 不会启动 Job Protocol，不能用于这次 Web 验证。无需 Docker 沙箱或 TMCP。
 
 ### 1. 启动示例
 
-从仓库根目录运行下面的命令。只在隔离的测试网络上使用合成文件；把 `192.168.1.20` 改成 **运行 MCP 的机器实际持有、且 Web 后端可以访问的私网 IP**。这是监听地址，不是 Web 的地址。测试令牌由安装者生成，不要提交到仓库或发送给 Agent。
+将[上面的最小示例](#最小-fastmcp-示例)保存为仓库根目录下的 `server.py`，然后从仓库根目录运行下面的命令。只在隔离的测试网络上使用合成文件；把 `192.168.1.20` 改成 **运行 MCP 的机器实际持有、且 Web 后端可以访问的私网 IP**。这是监听地址，不是 Web 的地址。测试令牌由安装者生成，不要提交到仓库或发送给 Agent。
 
 ```bash
 source .venv/bin/activate
@@ -186,15 +226,7 @@ export ECHO_ARTIFACT_TOKEN="$(python -c 'import secrets; print(secrets.token_hex
 export ARTIFACT_DEMO_HOST='192.168.1.20'
 
 env -u TMCP_ARTIFACT_SERVICE_URL -u TMCP_ARTIFACT_SERVICES -u TMCP_ARTIFACT_SERVICE_ID \
-  TMCP_ARTIFACT_API_TOKEN="$ECHO_ARTIFACT_TOKEN" python - <<'PY' &
-import os
-import runpy
-from tcode_artifacts.server import run_with_artifact
-
-mcp = runpy.run_path("packages/artifact-sdk/examples/mcp_server.py")["mcp"]
-run_with_artifact(mcp, host=os.environ["ARTIFACT_DEMO_HOST"], port=18080,
-                  data_dir="./artifact-data", service_id="echo-files")
-PY
+  TMCP_ARTIFACT_API_TOKEN="$ECHO_ARTIFACT_TOKEN" python server.py &
 ECHO_MCP_PID=$!
 ```
 

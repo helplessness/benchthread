@@ -864,8 +864,8 @@ export default function SessionList(props: SessionListProps) {
         <div class="session-shortcuts-secondary mt-5 space-y-1 text-xs">
           <button
             type="button"
-            aria-label="主页"
-            title="主页"
+            aria-label="返回当前聊天"
+            title={desktop() ? undefined : '返回当前聊天'}
             class="flex w-full items-center gap-3 rounded-lg border border-[#38bdf8]/25 bg-[#38bdf8]/10 px-3 py-2 text-[#8ed5ff] transition-colors hover:bg-[#38bdf8]/16"
             onClick={() => props.onOpenHome?.()}
           >
@@ -873,11 +873,12 @@ export default function SessionList(props: SessionListProps) {
               <path d="M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z" />
             </svg>
             <span>主页</span>
+            <Show when={desktop()}><span class="studio-rail-label" role="tooltip">返回当前聊天</span></Show>
           </button>
           <button
             type="button"
             aria-label="历史记录"
-            title="历史记录"
+            title={desktop() ? undefined : '历史记录'}
             class="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[#7f8b93] transition-colors hover:bg-[#171c20] hover:text-[#dee3e8]"
             onClick={() => props.onOpenHistory?.()}
           >
@@ -885,6 +886,7 @@ export default function SessionList(props: SessionListProps) {
               <path d="M13 3a9 9 0 1 0 8.95 10H20a7 7 0 1 1-2.05-4.95l-3.95 3.95H21V5l-3.64 3.64A8.96 8.96 0 0 0 13 3Z" />
             </svg>
             <span>历史记录</span>
+            <Show when={desktop()}><span class="studio-rail-label" role="tooltip">查看历史记录</span></Show>
           </button>
         </div>
       </div>
@@ -912,8 +914,9 @@ export default function SessionList(props: SessionListProps) {
           <select value={sessionFilter()} onChange={event=>setSessionFilter(event.currentTarget.value as 'all' | 'active' | 'attention' | 'completed')} aria-label="筛选任务状态">
             <option value="all">全部状态</option><option value="active">运行中</option><option value="attention">待处理</option><option value="completed">已完成</option>
           </select>
-          <Show when={desktop()}><button type="button" class="session-workspace-toggle" aria-label="按工作区分组" aria-pressed={grouped()} title={grouped()?'关闭工作区分组':'按工作区分组'} onClick={()=>{setContextMenu(null);saveWorkspaces({grouped:!grouped()});}}>
+          <Show when={desktop()}><button type="button" class="session-workspace-toggle" aria-label="按工作区分组" aria-pressed={grouped()} onClick={()=>{setContextMenu(null);saveWorkspaces({grouped:!grouped()});}}>
             <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v11H3zM3 7V4h7l2 3M6 13h12M6 17h8"/></svg>
+            <span class="studio-rail-label" role="tooltip">{grouped() ? '切换为平铺任务列表' : '按工作区分组显示任务'}</span>
           </button></Show>
         </div>
       </div>

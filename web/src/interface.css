@@ -584,7 +584,10 @@ html[data-desktop=true] .studio-sessions [data-embedded=true]>.session-shortcuts
 html[data-desktop=true] .studio-sessions [data-embedded=true]>.session-shortcuts>button{flex:1;min-width:0;min-height:34px;margin:0;padding:6px;font-size:12px;white-space:nowrap}
 html[data-desktop=true] .studio-sessions [data-embedded=true]>.session-shortcuts>.session-shortcuts-secondary{flex:none;display:flex;gap:4px;margin:0}
 html[data-desktop=true] .studio-sessions .session-shortcuts-secondary>button{flex:none;width:34px;height:34px;padding:0;display:grid;place-items:center}
-html[data-desktop=true] .studio-sessions .session-shortcuts-secondary>button>span{display:none}
+html[data-desktop=true] .studio-sessions .session-shortcuts-secondary>button>span:not([role=tooltip]){display:none}
+html[data-desktop=true] .studio-sessions :is(.session-shortcuts-secondary>button,.session-workspace-toggle){position:relative}
+html[data-desktop=true] .studio-sessions :is(.session-shortcuts-secondary>button,.session-workspace-toggle)>.studio-rail-label{display:block;left:auto;right:0;top:calc(100% + 4px);transform:translateY(-3px);visibility:hidden}
+html[data-desktop=true] .studio-sessions :is(.session-shortcuts-secondary>button,.session-workspace-toggle):is(:hover,:focus-visible)>.studio-rail-label{visibility:visible;opacity:1;transform:none}
 html[data-desktop=true] .studio-sessions .session-list-scroll{padding:8px}
 html[data-desktop=true] .studio-sessions .session-list-header{padding:8px 8px 0;background:inherit}
 html[data-desktop=true] .studio-sessions .session-list-header .session-list-tools{margin-bottom:0}

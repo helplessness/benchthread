@@ -444,9 +444,9 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
         <Show when={!artifactEditable()}><p role="status">只读：请联系部署管理员修改全局 Artifact 配置。</p></Show>
         <div class="artifact-settings-list" role="region" aria-label="Artifact 服务配置列表" tabIndex={0}>
           <Index each={artifactServices()}>{(entry, index) => <fieldset disabled={artifactSaving() || !artifactEditable()}><legend>{entry().name || entry().service_id || `新服务 ${index + 1}`}</legend>
-            <label>服务 ID<input value={entry().service_id} onInput={e => updateArtifact(index, { service_id: e.currentTarget.value })} placeholder="例如 store-eu" /></label>
+            <label><span>服务 ID<span aria-hidden="true">（必填）</span></span><input required value={entry().service_id} onInput={e => updateArtifact(index, { service_id: e.currentTarget.value })} placeholder="例如 store-eu" /></label>
             <label>显示名称<input value={entry().name} onInput={e => updateArtifact(index, { name: e.currentTarget.value })} /></label>
-            <label>服务地址<input type="url" value={entry().url} onInput={e => updateArtifact(index, { url: e.currentTarget.value })} placeholder="https://artifacts.example.com" /></label>
+            <label><span>服务地址<span aria-hidden="true">（必填）</span></span><input type="url" required value={entry().url} onInput={e => updateArtifact(index, { url: e.currentTarget.value })} placeholder="https://artifacts.example.com" /></label>
             <label>凭据环境变量名（可选，不是令牌本身）<input value={entry().token_env} onInput={e => updateArtifact(index, { token_env: e.currentTarget.value })} placeholder="ARTIFACT_STORE_TOKEN" /></label>
             <label>绑定的 MCP 名称（逗号分隔，可选）<input value={entry().targets} onInput={e => updateArtifact(index, { targets: e.currentTarget.value })} /></label>
             <label class="artifact-default"><input type="radio" name="default-artifact-service" checked={defaultArtifact() === entry().service_id && !!entry().service_id} onChange={() => setDefaultArtifact(entry().service_id)} />默认文件服务</label>

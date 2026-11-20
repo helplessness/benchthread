@@ -73,6 +73,23 @@ def launch(tmp_path, command, options, *, has_artifact=True, **config):
                     proc.wait(timeout=5)
 
 
+def test_standalone_prints_persisted_service_id_without_credentials(tmp_path):
+    options = ['--data-dir', str(tmp_path / 'store')]
+    proxy = 'test-standalone-proxy-credential-not-for-production'
+    ids = []
+    for _ in range(2):
+        with launch(tmp_path, STANDALONE, options, TMCP_ARTIFACT_PROXY_TOKEN=proxy) as base:
+            with httpx.Client(trust_env=False) as http:
+                service_id = http.get(f'{base}/artifact/health', headers=HEADERS).raise_for_status().json()['service_id']
+            ids.append(service_id)
+            log = (tmp_path / f"process-{base.rsplit(':', 1)[1]}.log").read_text(encoding='utf-8')
+            assert f'Artifact base URL: {base}/artifact' in log
+            assert f'Artifact service ID: {service_id}' in log
+            assert 'backend credential environment variable name' in log
+            assert TOKEN not in log and proxy not in log
+    assert ids[0].startswith('artifact-') and ids[0] == ids[1]
+
+
 async def echo(base, reference):
     async with Client(base + '/mcp') as client:
         assert 'echo_file' in {tool.name for tool in await client.list_tools()}

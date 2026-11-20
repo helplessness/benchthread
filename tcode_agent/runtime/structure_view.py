@@ -183,7 +183,7 @@ class StructureBridge:
         self.prune()
         connection = self.connections.get(owner)
         if connection is None or not connection.enabled:
-            return {"ok": False, "error": "viewer_not_connected", "hint": "Open this session in the web app, and enable Agent structure control."}
+            return {"ok": False, "error": "viewer_not_connected", "hint": "在当前会话左侧点「三维结构」，勾选「允许 Agent 操作视图」，显示「Agent 已连接」后重试。桌面端不需要另开浏览器。"}
         if connection.future and not connection.future.done():
             return {"ok": False, "error": "viewer_busy_retry_after_previous_tool"}
         if command.action not in {"open", "inspect"} and connection.state.get("sha256") != command.expected_sha256:
