@@ -175,13 +175,18 @@ def start_optional_job_protocol(project: Path, runtime: Path, stack: ExitStack) 
         job = config.get("job-protocol-mcp", {})
         managed = desktop.get("managed_job_protocol")
         # A previous desktop may have persisted a generated loopback address.
-        # Only its explicit ownership marker makes that address non-external.
+        # Older installations used the legacy task store instead of an ownership marker.
         from urllib.parse import urlsplit
         legacy_db = (runtime / ".tcode/job-protocol/jobs.sqlite3").exists()
         owned_url = (managed is True or managed is None and legacy_db) and (
             urlsplit(str(job.get("url") or "")).hostname in {"localhost", "127.0.0.1", "::1"}
         )
         external = external_entry({} if owned_url else config)
+        # local.env may repeat the desktop-owned endpoint as a plugin base URL.
+        if owned_url and external and (
+            external["url"].rstrip("/") == str(job["url"]).rstrip("/").removesuffix("/mcp") + "/mcp"
+        ):
+            external = {}
         if external:
             os.environ["TCODE_PLUGIN_JOB_PROTOCOL_URL"] = external["url"].removesuffix("/mcp").rstrip("/")
             return None, ""
@@ -191,7 +196,7 @@ def start_optional_job_protocol(project: Path, runtime: Path, stack: ExitStack) 
     except (OSError, ValueError, AttributeError, TypeError):
         return None, ""
     try:
-        if legacy_db or owned_url and not getattr(sys, "frozen", False):
+        if legacy_db:
             return start_managed_job_protocol(project, runtime)
         return None, stack.enter_context(managed_job_protocol(runtime, configs=[path]))
     except Exception as exc:

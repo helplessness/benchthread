@@ -1,6 +1,6 @@
 """Exercise the real Streamable HTTP broker and durable echo recovery."""
 import asyncio
-from contextlib import ExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext, suppress
 import json
 import os
 from pathlib import Path
@@ -14,6 +14,36 @@ import uvicorn
 from tcode_agent.server.managed_job_protocol import (
     LOCAL_TOKEN, WORKER_HEADER, WORKER_TOKEN, bridge_worker_environment, managed_job_protocol,
 )
+
+
+@pytest.mark.parametrize("managed,legacy,override,expected", [
+    (True, False, "http://127.0.0.1:10121", "builtin"),
+    (None, True, "http://127.0.0.1:10121/mcp/", "legacy"),
+    (True, True, "http://127.0.0.1:10122", "external"),
+    (None, True, "https://gateway.example", "external"),
+    (False, True, "http://127.0.0.1:10122", "external"),
+])
+def test_desktop_owned_gateway_priority(tmp_path, monkeypatch, managed, legacy, override, expected):
+    from tcode_agent.server import desktop_launcher as launcher
+    from tcode_agent.server import managed_job_protocol as broker
+
+    path = tmp_path / "desktop-mcp.json"
+    url = "http://127.0.0.1:10121/mcp"
+    if legacy:
+        db = tmp_path / ".tcode/job-protocol/jobs.sqlite3"
+        db.parent.mkdir(parents=True)
+        db.touch()
+    path.write_text(json.dumps({"$desktop": {} if managed is None else {"managed_job_protocol": managed},
+                                "job-protocol-mcp": {"url": url}}))
+    monkeypatch.setenv("TCODE_DESKTOP_MCP_CONFIG", str(path))
+    monkeypatch.setenv("TCODE_DESKTOP_PAUSE_REMOTE_SERVICES", "0")
+    monkeypatch.setenv("TCODE_PLUGIN_JOB_PROTOCOL_URL", override)
+    monkeypatch.setattr(launcher, "start_managed_job_protocol", lambda *_: (None, "legacy"))
+    monkeypatch.setattr(broker, "managed_job_protocol", lambda *a, **kw: nullcontext("builtin"))
+    with ExitStack() as stack:
+        assert launcher.start_optional_job_protocol(tmp_path, tmp_path, stack) == (None, "" if expected == "external" else expected)
+    if expected == "external":
+        assert os.environ["TCODE_PLUGIN_JOB_PROTOCOL_URL"] == (url.removesuffix("/mcp") if managed is False else override)
 
 
 @asynccontextmanager
@@ -111,7 +141,12 @@ def test_real_echo_and_remote_job_restart(tmp_path, monkeypatch, launcher_kind):
             with monkeypatch.context() as env, ExitStack() as stack:
                 env.setenv("TCODE_DESKTOP_MCP_CONFIG", str(config))
                 env.setenv("TCODE_DESKTOP_PAUSE_REMOTE_SERVICES", "0")
-                env.delenv("TCODE_PLUGIN_JOB_PROTOCOL_URL", raising=False)
+                # A previous launch may have persisted its address in both places.
+                previous = json.loads(config.read_text()).get("job-protocol-mcp")
+                if previous:
+                    env.setenv("TCODE_PLUGIN_JOB_PROTOCOL_URL", previous["url"].removesuffix("/mcp"))
+                else:
+                    env.delenv("TCODE_PLUGIN_JOB_PROTOCOL_URL", raising=False)
                 worker, url = start_optional_job_protocol(tmp_path, tmp_path, stack)
                 assert worker is None and url
                 yield url
@@ -209,6 +244,9 @@ def test_real_echo_and_remote_job_restart(tmp_path, monkeypatch, launcher_kind):
                 async with httpx.AsyncClient() as http:
                     changed = await http.put(registry + "/" + name, headers=auth, json={**target, "url": new_endpoint})
                     assert changed.is_success and changed.json()["version"] != version
+            if launcher_kind == "desktop":
+                config.write_text(json.dumps({**json.loads(config.read_text()),
+                    "$desktop": {"managed_job_protocol": True}, "job-protocol-mcp": {"url": url}}))
             with start_gateway(config) as url:
                 async with client(url) as mcp:
                     assert (await call(mcp, "collect_job_result", receipt))["target_result"]["text"] == "local echo"
