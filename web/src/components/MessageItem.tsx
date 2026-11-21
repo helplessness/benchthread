@@ -38,7 +38,7 @@ import {
   outcomeVerificationSummary,
   shouldAttemptOutcomeAcceptance,
 } from '../utils/runStatus';
-import { formatAsyncResultSummary } from '../utils/asyncResultSummary';
+import { formatAsyncResultSummary, hasRemoteCatalogOnly, hideTargetId, returnedFilePreview } from '../utils/asyncResultSummary';
 import { latestDeliveredAssistant, verificationFeedback } from '../utils/verificationFeedback';
 import {
   completedWorkflowRunId,
@@ -66,6 +66,8 @@ type AsyncJobCompletionAlert = {
   state: string;
   outputPath: string;
   outputAbsPath: string;
+  returnedFiles: string[];
+  catalogOnly: boolean;
   summary: string;
 };
 
@@ -228,7 +230,9 @@ const parseAsyncJobCompletionAlert = (content: string): AsyncJobCompletionAlert 
   return {
     identifier: idMatch[1],
     status,
-    title,
+    title: hideTargetId(title),
+    returnedFiles: status === 'completed' ? returnedFilePreview(text) : [],
+    catalogOnly: status === 'completed' && hasRemoteCatalogOnly(text),
     state: pickMessageLineValue(text, '任务状态'),
     outputPath: pickMessageLineValue(text, '结果目录'),
     outputAbsPath: pickMessageLineValue(text, '结果目录(绝对路径)'),
@@ -351,7 +355,10 @@ function AsyncJobCompletionCard(props: { alert: AsyncJobCompletionAlert }) {
   };
 
   const displaySummary = createMemo(() =>
-    formatAsyncResultSummary(props.alert.summary).text
+    props.alert.returnedFiles.length
+      ? '文件已回传到当前工作区：\n' + props.alert.returnedFiles.join('\n')
+      : props.alert.catalogOnly ? '已登记远端文件清单，文件尚未自动下载到工作区。'
+      : hideTargetId(formatAsyncResultSummary(props.alert.summary).text)
   );
 
   const continueAsyncJob = async () => {
@@ -424,7 +431,7 @@ function AsyncJobCompletionCard(props: { alert: AsyncJobCompletionAlert }) {
                 状态: <span class="font-mono">{props.alert.state}</span>
               </span>
             </Show>
-            <Show when={props.alert.outputPath || props.alert.outputAbsPath}>
+            <Show when={!props.alert.catalogOnly && !props.alert.returnedFiles.length && (props.alert.outputPath || props.alert.outputAbsPath)}>
               <span class={`min-w-0 rounded-lg border px-2.5 py-1 ${tone().chip}`}>
                 结果目录: <span class="break-all font-mono">{props.alert.outputPath || props.alert.outputAbsPath}</span>
               </span>

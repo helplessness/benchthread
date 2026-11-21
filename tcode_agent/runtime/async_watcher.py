@@ -1884,6 +1884,10 @@ def _build_continuation_payload(
     ]
     materialization = (reg.get("settlement_details") or {}).get("artifact_materialization") or {}
     catalog = workspace.get("artifact_catalog") or materialization.get("remote_catalog")
+    if status == "completed" and workspace.get("transfer_state") == "ready" and not isinstance(catalog, dict):
+        preview = workspace.get("returned_file_preview")
+        if isinstance(preview, list) and preview:
+            lines.append("已回传的工作区文件: " + json.dumps(preview[:5], ensure_ascii=False))
     if isinstance(catalog, dict):
         lines.append(f"远端产物清单已登记：{catalog.get('total_files', 0)} 个文件，共 {catalog.get('total_size', 0)} 字节；"
                      "文件内容未自动下载。使用 artifact_query 的 list 分页查看，再按当前分析需要 resolve 单个引用；清单不代表文件内容已读取或验证。")

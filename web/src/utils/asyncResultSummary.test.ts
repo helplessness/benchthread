@@ -1,8 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatAsyncCompletionNotice, formatAsyncResultSummary, parseAsyncResultSummary } from './asyncResultSummary';
+import { formatAsyncCompletionNotice, formatAsyncResultSummary, hasRemoteCatalogOnly, hideTargetId, parseAsyncResultSummary, returnedFilePreview } from './asyncResultSummary';
 
 describe('async result summary', () => {
+  it('uses the host file receipt even if the following JSON summary is truncated', () => {
+    const path = 'artifacts/jobs/abc/bundle-123/results/echo.dat';
+    const id = 'plugin-' + 'a'.repeat(32);
+    const title = id + '.echo_file 异步任务已完成。';
+    const header = '[Symphony:LOCAL-1]\n' + title + '\n任务编号: LOCAL-1\n任务状态: Done\n';
+    const preview = '已回传的工作区文件: ' + JSON.stringify([path, '/tmp/private', 'artifacts/jobs/../outside']);
+    expect(returnedFilePreview(header + preview + '\n结果摘要: {"content":[')).toEqual([path]);
+    expect(returnedFilePreview(header + '结果摘要: \n' + preview)).toEqual([]);
+    expect(returnedFilePreview(header.replace('已完成', '已失败') + preview)).toEqual([]);
+    expect(returnedFilePreview(header.replace('已完成', '已取消') + preview)).toEqual([]);
+    const legacy = header + '结果目录: /legacy\n相关产物: mcp_result.json';
+    expect(returnedFilePreview(legacy)).toEqual([]);
+    expect(hasRemoteCatalogOnly(legacy)).toBe(false);
+    const catalog = '远端产物清单已登记：2 个文件，共 128 字节；文件内容未自动下载。';
+    expect(hasRemoteCatalogOnly(header + catalog)).toBe(true);
+    expect(formatAsyncCompletionNotice({status: 'completed', message: header + catalog,
+      result_summary: '{"validated":true}'}).body).toContain('尚未自动下载');
+    expect(returnedFilePreview(header + catalog)).toEqual([]);
+    expect(hasRemoteCatalogOnly(legacy + '\n结果摘要: ' + catalog)).toBe(false);
+    expect(hideTargetId(title)).toBe('远程工具 异步任务已完成。');
+    const notice = formatAsyncCompletionNotice({ status: 'completed', target_server: id, result_summary: id });
+    expect(JSON.stringify(notice)).not.toContain(id);
+  });
   it('formats a collected job payload into a concise scientific task summary', () => {
     const raw = JSON.stringify({
       job_id: 'job_gnina-mcp_75d600bda21a',

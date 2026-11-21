@@ -203,6 +203,11 @@ async def reconcile_task(task_id: str, workdir: str) -> None:
                     destination = local_root / "artifacts" / "jobs" / hashlib.sha256(task_id.encode()).hexdigest()[:20]
                     saved = await asyncio.to_thread(materialize_output_bundle, raw, destination, preserve_existing=True, automatic=True)
                     patch.update(output_root=saved["root"], artifacts=[item["path"] for item in saved["files"]])
+                    # Card preview comes from actual materialized files, not the remote manifest.
+                    patch["returned_file_preview"] = [
+                        Path(item["path"]).relative_to(local_root).as_posix() for item in saved["files"][:5]
+                        if Path(item["path"]).is_relative_to(local_root)
+                    ]
                     if saved.get("remote_catalog"):
                         patch["artifact_catalog"] = saved["remote_catalog"]
                 patch["transfer_state"] = "ready"

@@ -6,6 +6,29 @@ export type AsyncResultSummaryView = {
 
 type JsonRecord = Record<string, any>;
 
+// Only opaque registration IDs, not human-readable plugin or software names.
+export const hideTargetId = (text: string) => text.replace(/\bplugin-[0-9a-f]{32}\b(?:\.[\w-]+)?/gi, '远程工具');
+
+const completionHeader = /^\[Symphony:[\w-]+\]\r?\n[^\n]+异步任务已完成。\r?\n任务编号: [^\n]+\n任务状态: [^\n]+\n/;
+
+export function hasRemoteCatalogOnly(message: string): boolean {
+  const header = message.match(completionHeader);
+  return !!header && /^远端产物清单已登记：[^\n]*；文件内容未自动下载。/.test(message.slice(header[0].length));
+}
+
+export function returnedFilePreview(message: string): string[] {
+  // Read the host-generated header, never a line embedded in the remote result text.
+  const header = message.match(completionHeader);
+  const line = header && message.slice(header[0].length).match(/^已回传的工作区文件: ([^\n]+)/);
+  if (!line) return [];
+  try {
+    const paths: unknown = JSON.parse(line[1]);
+    return Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string'
+      && p.startsWith('artifacts/jobs/') && !/[\\\x00-\x1f]/.test(p)
+      && p.split('/').every(part => part && part !== '.' && part !== '..')).slice(0, 5) : [];
+  } catch { return []; }
+}
+
 const asRecord = (value: unknown): JsonRecord | null => (
   value && typeof value === 'object' && !Array.isArray(value)
     ? value as JsonRecord
@@ -169,6 +192,7 @@ export const formatAsyncResultSummary = (
 
 export const formatAsyncCompletionNotice = (event: {
   status: string;
+  message?: string | null;
   target_server?: string | null;
   target_tool?: string | null;
   result_summary?: string | null;
@@ -203,14 +227,16 @@ export const formatAsyncCompletionNotice = (event: {
     ? (formatted.text && !formatted.structured ? formatted.text : '运行失败，请查看原会话中的错误详情。')
     : event.status === 'cancelled'
       ? '任务已取消，可打开原会话查看记录。'
+      : event.status === 'completed' && hasRemoteCatalogOnly(event.message || '')
+        ? '已登记远端文件清单，文件尚未自动下载到工作区。'
       : formatted.text.includes('结果校验未通过')
         ? '计算已结束，但返回产物校验未通过，请查看原会话。'
         : formatted.text.includes('结果校验通过')
           ? '返回产物校验通过，可打开原会话查看结果。'
           : '计算已完成，可打开原会话查看结果与校验状态。';
   return {
-    title: `${software ? `${software} ` : ''}${task}${status}`,
-    body: [`任务：${meaningfulTitle || task}`, software ? `软件：${software}` : '软件：未记录', result].join('\n'),
-    details: formatted.raw,
+    title: hideTargetId(`${software ? `${software} ` : ''}${task}${status}`),
+    body: hideTargetId([`任务：${meaningfulTitle || task}`, software ? `软件：${software}` : '软件：未记录', result].join('\n')),
+    details: hideTargetId(formatted.raw),
   };
 };
