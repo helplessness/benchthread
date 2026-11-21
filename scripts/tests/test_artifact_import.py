@@ -10,6 +10,30 @@ from tcode_agent.tools.base import ToolContext
 from tcode_agent.tools.builtin import artifact_import
 
 
+def test_personal_binding_tracks_owner_removal_and_explicit_routes(tmp_path, monkeypatch):
+    path = tmp_path / 'desktop.json'
+    owner = {'tenant_id':'lab','user_id':'alice'}
+    monkeypatch.setenv('TCODE_DESKTOP_MANAGED','1')
+    monkeypatch.setenv('TCODE_DESKTOP_MCP_CONFIG',str(path))
+    monkeypatch.setenv('TCODE_DESKTOP_PAUSE_REMOTE_SERVICES','0')
+    monkeypatch.setenv('TMCP_ARTIFACT_SERVICES','{}')
+    monkeypatch.setenv('TMCP_ARTIFACT_SERVICE_ID','')
+    monkeypatch.setenv('TCODE_ARTIFACT_IMPORT_ACCESS','{}')
+    path.write_text(json.dumps({'echo':{'personal_artifact_id':'lab-files','personal_artifact_owner':['lab','alice'],
+                                'url':'https://lab.example/mcp','headers':{'Authorization':'Bearer fixture'}}}))
+    assert artifact_import._service_candidates('',owner) == {'lab-files':'echo'}
+    assert not artifact_import._service_candidates('',{**owner,'user_id':'bob'})
+    assert artifact_import._file_endpoint('lab-files',owner) == ('lab-files','https://lab.example/artifact',{'X-Artifact-Token':'fixture'})
+    monkeypatch.setenv('TMCP_ARTIFACT_SERVICES','{"lab-files":{"url":"https://other.example/artifact"}}')
+    assert not artifact_import._service_candidates('',owner)
+    assert artifact_import._file_endpoint('lab-files',owner)[2] == {}
+    monkeypatch.setenv('TMCP_ARTIFACT_SERVICES','{}')
+    path.write_text('{}')
+    assert not artifact_import._service_candidates('',owner)
+    with pytest.raises(ValueError):
+        artifact_import._file_endpoint('lab-files',owner)
+
+
 def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeypatch):
     server = pytest.importorskip("tcode_artifacts.server")
     if artifact_import.os.name != "posix":

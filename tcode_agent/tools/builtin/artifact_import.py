@@ -28,6 +28,53 @@ class ArtifactImportParameters(ParameterSchema):
     artifact_id: str = Field(default="", max_length=128, description="Selected file ID returned by Artifact browsing.")
 
 
+def _personal_services(owner):
+    """Desktop-only explicit settings, read at use time so removal takes effect."""
+    path = os.environ.get("TCODE_DESKTOP_MCP_CONFIG")
+    if not path or not owner or os.environ.get("TCODE_DESKTOP_MANAGED") != "1":
+        return {}
+    from ...server.desktop_config import remote_services_paused
+    if remote_services_paused():
+        return {}
+    try:
+        entries = json.loads(Path(path).read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return {}
+    explicit = json.loads(os.environ.get('TMCP_ARTIFACT_SERVICES') or '{}')
+    result = {}
+    for name, entry in entries.items():
+        if name.startswith('$') or not isinstance(entry, dict) or not entry.get('enabled', True):
+            continue
+        key = entry.get('personal_artifact_id')
+        if not key or key in explicit or entry.get('personal_artifact_owner') != [owner.get('tenant_id'), owner.get('user_id')]:
+            continue
+        if key in result:
+            raise ValueError('ambiguous personal service')
+        result[key] = (name, entry)
+    return result
+
+
+def _file_endpoint(key, owner):
+    binding = _personal_services(owner).get(key)
+    if binding is None:
+        return artifact_service(key)
+    from ...mcp.manager_auto import MCPManager
+    from ...server.desktop_config import remote_url, local_development_services
+    from urllib.parse import urlsplit
+    entry = binding[1]
+    url = entry['url'].rstrip('/')
+    if (not remote_url(url, allow_loopback=local_development_services()) or not url.endswith('/mcp')
+            or (urlsplit(url).scheme != 'https' and urlsplit(url).hostname not in {'127.0.0.1','localhost','::1'})):
+        raise ValueError('invalid personal service URL')
+    values = [v for k,v in entry.get('headers', {}).items() if k.lower() == 'authorization']
+    if len(values) != 1:
+        raise ValueError('personal credential unavailable')
+    value = MCPManager._resolve_header_environment({'Authorization': values[0]})['Authorization']
+    if not re.fullmatch(r'Bearer [!-~]{1,512}', value, re.I):
+        raise ValueError('invalid personal credential')
+    return key, url[:-4] + '/artifact', {'X-Artifact-Token': value[7:]}
+
+
 def _service_candidates(name, owner, access_variable="TCODE_ARTIFACT_IMPORT_ACCESS", *, service_id=""):
     services = json.loads(os.environ.get("TMCP_ARTIFACT_SERVICES") or "{}")
     grants = json.loads(os.environ.get(access_variable) or "{}")
@@ -36,10 +83,14 @@ def _service_candidates(name, owner, access_variable="TCODE_ARTIFACT_IMPORT_ACCE
         users = grants.get(key, {}).get(owner["tenant_id"], [])
         if isinstance(users, list) and owner["user_id"] in users:
             allowed[key] = service.get("name") or key
+    personal = _personal_services(owner)
+    allowed.update({key: binding[0] for key, binding in personal.items()})
     if service_id:
         return {service_id: allowed[service_id]} if service_id in allowed else {}
     if not name.strip():
         default = os.environ.get("TMCP_ARTIFACT_SERVICE_ID", "")
+        if not default and personal:
+            return {key: allowed[key] for key in personal}
         return {default: allowed[default]} if default in allowed else {}
     query = name.strip().casefold()
     exact = {key: label for key, label in allowed.items() if query == label.strip().casefold()}
@@ -73,8 +124,8 @@ class _DownloadValidationError(ValueError):
     """The remote response did not pass file integrity checks."""
 
 
-async def _download(key, path, artifact_id=""):
-    _, base, headers = artifact_service(key)
+async def _download(key, path, artifact_id="", owner=None):
+    _, base, headers = _file_endpoint(key, owner)
     if not headers.get("X-Artifact-Token"):
         raise ValueError("文件服务需要配置认证令牌")
     async with httpx.AsyncClient(headers=headers, follow_redirects=False, timeout=30) as client:
@@ -178,7 +229,7 @@ class ArtifactImportTool(_ArtifactFileTool):
                 or not await context.ask("write", [visible])):
             return ToolResult(title=title, output="", error="文件读取或工作区写入未获授权")
         try:
-            data = await _download(key, params.path, params.artifact_id)
+            data = await _download(key, params.path, params.artifact_id, owner)
             if context.abort is not None and context.abort.is_set():
                 return ToolResult(title=title, output="", error="导入已取消")
             if row:
@@ -245,7 +296,7 @@ class ArtifactBrowseTool(ArtifactImportTool):
         if not await context.ask("read", [f"artifact:{key}/{directory}"]):
             return ToolResult(title=title, output="", error="目录读取未获授权")
         try:
-            _, base, headers = artifact_service(key)
+            _, base, headers = _file_endpoint(key, owner)
             if not headers.get("X-Artifact-Token"):
                 return ToolResult(title=title, output="", error="文件服务需要配置认证令牌")
             async with httpx.AsyncClient(headers=headers, follow_redirects=False, timeout=30) as client:
@@ -350,7 +401,7 @@ class ArtifactUploadTool(_ArtifactFileTool):
             if info.st_nlink != 1 or not path.is_file() or info.st_size > MAX_BYTES:
                 raise ValueError
             identity = file_identity(info)
-            _, base, headers = artifact_service(key)
+            _, base, headers = _file_endpoint(key, owner)
             if not headers.get("X-Artifact-Token"):
                 raise ValueError
         except (ValueError, OSError, HTTPException):
@@ -384,7 +435,7 @@ class ArtifactUploadTool(_ArtifactFileTool):
                     elif source.metadata.get("managed_input") and not project_files.tool_owner(extra):
                         raise ValueError
                     if (not _service_candidates("", owner, "TCODE_ARTIFACT_UPLOAD_ACCESS", service_id=key)
-                            or artifact_service(key) != (key, base, headers)):
+                            or _file_endpoint(key, owner) != (key, base, headers)):
                         raise ValueError
                 except (HTTPException, ValueError, TypeError, AttributeError):
                     return ToolResult(title=title, output="", error="文件或服务授权已变更，未上传；请重新确认")

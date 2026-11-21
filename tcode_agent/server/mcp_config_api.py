@@ -5,12 +5,14 @@ import asyncio
 import json
 import os
 import re
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
 from ..mcp.manager_auto import MCPManager
+from ..mcp.personal_binding import allows_owner, is_personal
 from ..runtime.workspace_registry import registry_workspace
 from .auth import auth_required, require_current_user, workdir_utils
 from .desktop_config import local_development_services, remote_url
@@ -19,6 +21,46 @@ from .state import ServerState
 router = APIRouter(prefix="/api/mcp/config", tags=["mcp-config"])
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _edit_lock = asyncio.Lock()
+
+
+def _check_binding(entry, request):
+    if is_personal(entry):
+        actor = require_current_user(request)
+        if not allows_owner(entry, actor.tenant_id, actor.user_id):
+            raise HTTPException(403, "当前账号或租户不能使用该个人 MCP 绑定")
+
+
+async def _personal_artifact_id(mcp_url, headers):
+    """Verify the sibling Artifact endpoint without accepting a server-provided URL."""
+    import httpx
+    from .desktop_config import remote_services_paused
+
+    parts = urlsplit(mcp_url)
+    if remote_services_paused():
+        raise HTTPException(409, "远端服务已暂停")
+    if not parts.path.rstrip('/').endswith('/mcp') or not remote_url(mcp_url, allow_loopback=local_development_services()):
+        raise HTTPException(400, "个人文件服务需要以 /mcp 结尾的 SDK 地址")
+    if parts.scheme != 'https' and parts.hostname not in {'localhost', '127.0.0.1', '::1'}:
+        raise HTTPException(400, "跨主机个人凭据连接需要 HTTPS")
+    credentials = [v for k, v in headers.items() if k.lower() == 'authorization']
+    if len(credentials) != 1:
+        raise HTTPException(400, "需要一个 Authorization Bearer 个人令牌")
+    resolved = MCPManager._resolve_header_environment({'Authorization': credentials[0]})['Authorization']
+    if not re.fullmatch(r'Bearer [!-~]{1,512}', resolved, re.I):
+        raise HTTPException(400, "需要有效的 Bearer 个人令牌")
+    target = mcp_url.rstrip('/')[:-4] + '/artifact/health'
+    try:
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
+            res = await client.get(target, headers={'Authorization': resolved})
+            res.raise_for_status()
+            data = res.json()
+        if (not isinstance(data, dict) or data.get('auth_mode') != 'personal-tokens'
+                or data.get('status') != 'ok' or not isinstance(data.get('service_id'), str)
+                or not _NAME.fullmatch(data['service_id'])):
+            raise ValueError('invalid service metadata')
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(400, "未验证同源个人文件服务，请检查凭据及服务是否启用了个人令牌模式") from None
+    return data['service_id']
 
 
 def _config_path() -> Path:
@@ -92,6 +134,7 @@ def _public(name: str, entry: dict[str, Any]) -> dict[str, Any]:
         "editable": not web_managed,
         "managed_message": "Web 部署的 Job Protocol 服务由服务器管理员配置" if web_managed else "",
         "file_transfer": entry.get("file_transfer"),
+        "personal_artifact": bool(entry.get("personal_artifact_id")),
     }
 
 
@@ -116,7 +159,8 @@ async def list_mcp_config(request: Request):
     from .managed_job_protocol import effective_config
     config = effective_config(_read())
     return {
-        "servers": [await _public_scoped(name, entry, request) for name, entry in sorted(config.items()) if not name.startswith("$") and isinstance(entry, dict)],
+        "servers": [await _public_scoped(name, entry, request) for name, entry in sorted(config.items())
+                    if not name.startswith("$") and isinstance(entry, dict) and allows_owner(entry, user.tenant_id, user.user_id)],
         "can_edit": not auth_required() or (str(user.role or "").lower() in {"owner", "admin"}
                                            and user.tenant_id == workdir_utils.default_tenant_id()),
         "config_file": str(_config_path()),
@@ -161,6 +205,7 @@ async def discover_mcp_files(request: Request):
     if not remote_url(url, allow_loopback=local_development_services()):
         raise HTTPException(400, "地址必须是有效的 HTTP(S) MCP URL")
     old = _read().get(str(payload.get("name") or ""), {})
+    _check_binding(old, request)
     headers = dict(old.get("headers") or {}) if url == str(old.get("url") or "") else {}
     supplied = payload.get("headers") or {}
     if not isinstance(supplied, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in supplied.items()):
@@ -206,8 +251,11 @@ async def _put_mcp_config(name: str, request: Request):
         raise HTTPException(400, "当前异步任务网关仅支持 job-protocol-mcp")
     config = _read()
     old = config.get(name) if isinstance(config.get(name), dict) else {}
+    _check_binding(old, request)
     same_url = url == str(old.get("url") or "")
-    headers = dict(old.get("headers") or {}) if same_url and isinstance(old.get("headers"), dict) else {}
+    personal_files = payload.get('personal_artifact', bool(same_url and old.get('personal_artifact_id')))
+    inherit = same_url and (not is_personal(old) or personal_files)
+    headers = dict(old.get("headers") or {}) if inherit and isinstance(old.get("headers"), dict) else {}
     supplied = payload.get("headers")
     if supplied is not None:
         if not isinstance(supplied, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in supplied.items()):
@@ -236,6 +284,22 @@ async def _put_mcp_config(name: str, request: Request):
         **({'dynamic_headers': dynamic_headers} if dynamic_headers else {}),
     }
     # Absence preserves older clients' settings; explicit null disables transport.
+    if personal_files:
+        if name.lower() == "job-protocol-mcp":
+            raise HTTPException(400, "实例共用的任务网关不能使用个人 MCP 绑定")
+        if os.environ.get("TCODE_DESKTOP_MANAGED") != "1":
+            raise HTTPException(400, "个人文件服务快捷绑定仅适用于本地桌面端")
+        try:
+            config[name]['personal_artifact_id'] = await _personal_artifact_id(url, headers)
+            actor = require_current_user(request)
+            key = config[name]['personal_artifact_id']
+            if (key in json.loads(os.environ.get('TMCP_ARTIFACT_SERVICES') or '{}') or
+                    any(n != name and isinstance(v, dict) and v.get('personal_artifact_id') == key
+                        for n, v in config.items())):
+                raise HTTPException(409, "文件服务 ID 已被其他绑定使用，请勿重复登记")
+            config[name]['personal_artifact_owner'] = [actor.tenant_id, actor.user_id]
+        except ValueError as exc:
+            raise HTTPException(400, "无法读取个人令牌，请检查后端凭据设置") from exc
     settings = payload.get("file_transfer", old.get("file_transfer"))
     if settings is not None:
         config[name]["file_transfer"] = settings
@@ -269,6 +333,7 @@ async def _delete_mcp_config(name: str, request: Request):
     config = _read()
     if name not in config or name.startswith("$"):
         raise HTTPException(404, "MCP 服务不存在")
+    _check_binding(config[name], request)
     transfer_workdir = None
     if config[name].get("file_transfer"):
         from ..mcp.custom_targets import configure

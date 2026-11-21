@@ -300,7 +300,7 @@ class _Store:
         return self.file(identifier)
 
 
-def _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes):
+def _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes, *, internal=False):
     from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, JSONResponse
     from pydantic import BaseModel, Field
@@ -310,7 +310,7 @@ def _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes):
     token = os.environ.get(TOKEN_ENV, '') if token is None else token
     if not isinstance(token, str) or not re.fullmatch(r'[!-~]{24,512}', token):
         raise ValueError(f'{TOKEN_ENV} must be a secret of at least 24 printable ASCII characters')
-    proxy_token = os.environ.get(PROXY_TOKEN_ENV, '')
+    proxy_token = '' if internal else os.environ.get(PROXY_TOKEN_ENV, '')
     if proxy_token and (not re.fullmatch(r'[!-~]{24,512}', proxy_token)
                         or secrets.compare_digest(proxy_token, token)):
         raise ValueError(f'{PROXY_TOKEN_ENV} must be a distinct secret of at least 24 printable ASCII characters')
@@ -378,7 +378,10 @@ def _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'mode': 'restricted', 'service_id': store.service_id}
+        info = {'status': 'ok', 'mode': 'restricted', 'service_id': store.service_id}
+        if internal:
+            info['auth_mode'] = 'personal-tokens'
+        return info
 
     def bundle_scope(request, workspace_id, owner_id):
         # Workspace alone is allowed as a legacy SDK hint, never as an identity.
@@ -455,8 +458,61 @@ def _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes):
     return app
 
 
+def _personal_artifact_app(data_dir, service_id, max_file_bytes, max_store_bytes):
+    from functools import lru_cache
+    from fastapi import FastAPI
+    from starlette.datastructures import Headers
+    from starlette.responses import JSONResponse
+    from .personal_tokens import PersonalTokens
+
+    root = Path(data_dir).expanduser()
+    tokens = PersonalTokens(root)
+    # Keep legacy artifacts inaccessible. Only reuse the stable identity of the service.
+    identity = _Store(root / '.personal-service', service_id, max_file_bytes, max_store_bytes)
+    internal_key = secrets.token_urlsafe(32)
+
+    @lru_cache(maxsize=64)
+    def owner_app(owner):
+        return _artifact_app(root / '.personal-files' / owner, identity.service_id, internal_key,
+                             max_file_bytes, max_store_bytes, internal=True)
+
+    async def dispatch(scope, receive, send):
+        headers = Headers(scope=scope)
+        scheme, _, bearer = headers.get('authorization', '').partition(' ')
+        credential = bearer if scheme.lower() == 'bearer' else headers.get('x-artifact-token', '')
+        owner = tokens.owner(credential)
+        if not owner and credential.startswith('job.'):
+            grant = tokens.job_grant(credential)
+            if grant:
+                from starlette._utils import get_route_path
+                owner, reads, output = grant
+                path = get_route_path(scope)
+                bundle = '/api/v1/bundles/' + output
+                method = scope['method']
+                # One preallocated output. Never grant listing, arbitrary creation,
+                # personal-token management, or the rest of the owner's store.
+                if method == 'POST' and path == '/api/v1/bundles':
+                    return await JSONResponse({'bundle_id':output})(scope, receive, send)
+                if not ((method == 'GET' and path in reads)
+                        or (method == 'PUT' and path == bundle+'/files')
+                        or (method == 'POST' and path == bundle+'/complete')):
+                    return await JSONResponse({'detail':'Job file scope denied'},403)(scope, receive, send)
+        if not owner:
+            return await JSONResponse({'detail': 'Personal token required'}, 401)(scope, receive, send)
+        forwarded = [(k, v) for k, v in scope['headers'] if k.lower() not in
+                     (b'authorization', b'x-artifact-token')]
+        forwarded.append((b'x-artifact-token', internal_key.encode('ascii')))
+        return await owner_app(owner)({**scope, 'headers': forwarded}, receive, send)
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.mount('/', dispatch)
+    app.state.service_id = identity.service_id
+    return app
+
+
 def run_artifact(*, data_dir, service_id=None, token=None, host='127.0.0.1', port=18081,
-                 max_file_bytes=DEFAULT_FILE_LIMIT, max_store_bytes=DEFAULT_STORE_LIMIT):
+                 max_file_bytes=DEFAULT_FILE_LIMIT, max_store_bytes=DEFAULT_STORE_LIMIT,
+                 auth='shared', shared_dir=None, readers=(), readers_file=None):
     """Serve only Artifact HTTP, under the same /artifact prefix as combined mode."""
     if not 1 <= port <= 65535:
         raise ValueError('port must be between 1 and 65535')
@@ -464,7 +520,20 @@ def run_artifact(*, data_dir, service_id=None, token=None, host='127.0.0.1', por
     import uvicorn
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    files = _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes)
+    if shared_dir is not None:
+        if auth != 'personal-tokens' or token is not None:
+            raise ValueError('--shared-dir requires --auth personal-tokens')
+        from .shared_directory import shared_directory_app
+        files = shared_directory_app(data_dir, service_id, shared_dir, readers, max_file_bytes,
+                                     readers_file=readers_file)
+    elif readers or readers_file is not None:
+        raise ValueError('--reader and --readers-file require --shared-dir')
+    elif auth == 'personal-tokens' and token is None:
+        files = _personal_artifact_app(data_dir, service_id, max_file_bytes, max_store_bytes)
+    elif auth == 'shared':
+        files = _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes)
+    else:
+        raise ValueError('unsupported auth mode or shared token in personal mode')
     app.mount(PREFIX, files)
 
     class ArtifactServer(uvicorn.Server):
@@ -481,6 +550,44 @@ def run_artifact(*, data_dir, service_id=None, token=None, host='127.0.0.1', por
                       flush=True)
 
     ArtifactServer(uvicorn.Config(app, host=host, port=port, workers=1)).run()
+
+
+def run_personal_mcp(mcp, *, data_dir, files=False, service_id=None, host='127.0.0.1', port=10240,
+                     max_file_bytes=DEFAULT_FILE_LIMIT, max_store_bytes=DEFAULT_STORE_LIMIT):
+    """Serve stateless MCP with per-request personal auth and optional same-origin files."""
+    from fastapi import FastAPI
+    from starlette.datastructures import Headers
+    from starlette.responses import JSONResponse
+    import uvicorn
+    from .personal_tokens import PersonalTokens, request_identity
+
+    if not 1 <= port <= 65535:
+        raise ValueError('invalid port')
+    tokens = PersonalTokens(data_dir)
+    mcp_http = mcp.http_app(path='/mcp', stateless_http=True)
+    app = FastAPI(lifespan=mcp_http.lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    local_url = None
+    if files:
+        artifact = _personal_artifact_app(data_dir, service_id, max_file_bytes, max_store_bytes)
+        service_id = artifact.state.service_id
+        client_host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(host, host)
+        url_host = f'[{client_host}]' if ':' in client_host else client_host
+        local_url = f'http://{url_host}:{port}{PREFIX}'
+        app.mount(PREFIX, artifact)
+
+    async def authenticated(scope, receive, send):
+        scheme, _, credential = Headers(scope=scope).get('authorization', '').partition(' ')
+        owner = tokens.owner(credential) if scheme.lower() == 'bearer' else None
+        if not owner:
+            return await JSONResponse({'detail': 'Personal token required'}, 401)(scope, receive, send)
+        binding = request_identity.set((owner, credential, local_url, service_id))
+        try:
+            return await mcp_http(scope, receive, send)
+        finally:
+            request_identity.reset(binding)
+
+    app.mount('/', authenticated)
+    uvicorn.run(app, host=host, port=port, workers=1)
 
 
 def run_with_artifact(mcp, *, data_dir, service_id=None, token=None, host='127.0.0.1', port=10240,
@@ -531,16 +638,38 @@ def run_with_artifact(mcp, *, data_dir, service_id=None, token=None, host='127.0
 def main():
     parser = argparse.ArgumentParser(prog='tcode-artifact', description='Standalone Artifact HTTP file service')
     commands = parser.add_subparsers(dest='command', required=True)
+    users = commands.add_parser('users', help='manage personal credentials locally')
+    operations = users.add_subparsers(dest='action', required=True)
+    for operation in ('issue', 'rotate', 'revoke', 'list'):
+        sub = operations.add_parser(operation)
+        sub.add_argument('--data-dir', type=Path, required=True)
+        if operation != 'list':
+            sub.add_argument('name')
     serve = commands.add_parser('serve')
     serve.add_argument('--host', default='127.0.0.1')
     serve.add_argument('--port', type=int, default=18081)
     serve.add_argument('--data-dir', type=Path, required=True)
     serve.add_argument('--service-id')
+    serve.add_argument('--auth', choices=('shared', 'personal-tokens'), default='shared')
+    serve.add_argument('--shared-dir', type=Path, help='serve this existing directory read-only (POSIX)')
+    serve.add_argument('--reader', dest='readers', action='append', default=[],
+                       help='personal account allowed to read the shared directory; repeat for each reader')
+    serve.add_argument('--readers-file', type=Path,
+                       help='UTF-8 reader names, one per line; checked on every shared-directory request')
     serve.add_argument('--max-file-bytes', type=int, default=DEFAULT_FILE_LIMIT)
     serve.add_argument('--max-store-bytes', type=int, default=DEFAULT_STORE_LIMIT)
     options = vars(parser.parse_args())
-    options.pop('command')
+    command = options.pop('command')
     try:
+        if command == 'users':
+            from .personal_tokens import PersonalTokens
+            result = PersonalTokens(options.pop('data_dir')).manage(**options)
+            if isinstance(result, list):
+                for name, active in result:
+                    print(name, 'active' if active else 'revoked', sep='\t')
+            elif result:
+                print(result)
+            return
         run_artifact(**options)
     except ModuleNotFoundError as exc:
         if exc.name not in {'fastapi', 'uvicorn', 'python_multipart'}:

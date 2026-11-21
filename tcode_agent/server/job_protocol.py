@@ -228,6 +228,9 @@ class JobProtocol:
             target = self.static_targets().get(server)
             tool = None
             if target:
+                from ..mcp.personal_binding import allows_owner
+                if not allows_owner(target, *self.scope(data)[:2]):
+                    raise ValueError("目标不属于当前用户或租户")
                 self.check_version(data, target, submitting)
                 async with _client(target) as client:
                     tools = await client.list_tools()

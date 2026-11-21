@@ -209,6 +209,8 @@ curl -fsS http://127.0.0.1:19092/health
 
 #### 不绑定 MCP 使用 Artifact
 
+如果服务器上**已经有一批文件**，不想重新上传，请用[只读共享已有目录](../packages/artifact-sdk/README.md#只读共享已有目录不需要-mcp-或重新上传)：管理员指定目录和读者名单，再按本节给 BenchThread 用户授权。它不是个人文件或任务产物的存储端点。
+
 在与 BenchThread Web 同机的终端启动独立服务。先通过部署环境为服务进程注入 `TMCP_ARTIFACT_API_TOKEN`，使用至少 24 位的随机密钥。
 
 ```sh

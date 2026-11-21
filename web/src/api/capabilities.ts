@@ -51,6 +51,7 @@ export type MCPConfigServer = {
   editable?: boolean;
   managed_message?: string;
   file_transfer?: MCPFileTransfer | null;
+  personal_artifact?: boolean;
   file_transfer_status?: 'adapter_required' | 'disabled' | 'registered' | 'activation_required';
 };
 

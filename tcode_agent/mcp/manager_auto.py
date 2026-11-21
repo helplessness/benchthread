@@ -20,6 +20,7 @@ from .apps import (
     tool_is_visible_to_model,
 )
 from .sandbox_boundary import mcp_sandbox_boundary_error
+from .personal_binding import allows_workspace
 
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
@@ -528,7 +529,7 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
         configured_servers = {
             name: cfg
             for name, cfg in mcp_config.items()
-            if isinstance(name, str) and not name.startswith("$") and isinstance(cfg, dict)
+            if isinstance(name, str) and not name.startswith("$") and isinstance(cfg, dict) and allows_workspace(cfg)
         }
 
         cls._console_log(f"Found {len(configured_servers)} MCP server(s) in mcp.json")
@@ -559,7 +560,7 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
         if not isinstance(config, dict):
             raise ValueError("MCP 配置必须是对象")
         servers = {name: entry for name, entry in config.items()
-                   if not name.startswith("$") and isinstance(entry, dict)}
+                   if not name.startswith("$") and isinstance(entry, dict) and allows_workspace(entry)}
         for name in list(cls._server_sources):
             if cls._server_sources[name] != source or name in servers:
                 continue
@@ -589,6 +590,8 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
     @classmethod
     async def _connect_server_locked(cls, name: str, config: dict, source: str = "", *, only_if_missing=False):
         from ..server.desktop_config import remote_services_paused
+        if not allows_workspace(config):
+            raise PermissionError("当前账号或租户不能使用该个人 MCP 绑定")
         if remote_services_paused():
             cls._status[name] = MCPStatus(status='disabled', error='桌面远端服务已暂停')
             return
@@ -668,6 +671,7 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
                 (MCP_LEGACY_PROTOCOL_VERSION, {}),
             )
             session_id = ""
+            initialized = False
             server_info: dict[str, Any] = {}
             server_capabilities: dict[str, Any] = {}
             protocol_version = MCP_PROTOCOL_VERSION
@@ -702,12 +706,10 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
                     initialize_error = "Initialize returned a JSON-RPC error"
                     continue
                 initialize_result = result.get("result", {})
-                if not isinstance(initialize_result, dict):
+                if not isinstance(initialize_result, dict) or not initialize_result.get("protocolVersion"):
                     initialize_error = "Initialize returned an invalid result"
                     continue
-                if not candidate_session_id:
-                    initialize_error = "No session ID in response"
-                    continue
+                initialized = True
                 session_id = candidate_session_id
                 server_info = dict(initialize_result.get("serverInfo") or {})
                 server_capabilities = dict(
@@ -723,7 +725,7 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
                 )
                 break
 
-            if not session_id:
+            if not initialized:
                 cls._status[name] = MCPStatus(
                     status="failed",
                     error=initialize_error,
@@ -731,13 +733,13 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
                 await session.close()
                 return
 
-            cls._console_log(f"  Session ID: {session_id}")
+            cls._console_log("  Stateful session" if session_id else "  Stateless connection")
             cls._console_log(f"  Connected to: {server_info.get('name', 'Unknown')}")
 
             # 2. Send initialized notification (with session ID in header)
             init_headers = {
                 **base_headers,
-                "mcp-session-id": session_id,
+                **({"mcp-session-id": session_id} if session_id else {}),
                 "MCP-Protocol-Version": protocol_version,
             }
             resp2 = await session.post(
@@ -877,7 +879,7 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
             client.url,
             json={"jsonrpc": "2.0", "method": "ping", "id": 1},
             headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-                     "mcp-session-id": client.session_id, "MCP-Protocol-Version": client.protocol_version,
+                     **({"mcp-session-id": client.session_id} if client.session_id else {}), "MCP-Protocol-Version": client.protocol_version,
                      **client.extra_headers},
             timeout=aiohttp.ClientTimeout(total=30),
         )
@@ -1262,7 +1264,7 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "mcp-session-id": client.session_id,
+            **({"mcp-session-id": client.session_id} if client.session_id else {}),
             "MCP-Protocol-Version": client.protocol_version,
             **client.extra_headers,
         }
@@ -1343,7 +1345,7 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "mcp-session-id": client.session_id,
+            **({"mcp-session-id": client.session_id} if client.session_id else {}),
             "MCP-Protocol-Version": client.protocol_version,
         }
         if client.extra_headers:
@@ -1479,6 +1481,8 @@ class MCPManager(metaclass=WorkspaceRegistryMeta):
     def _is_server_published(cls, name: str) -> bool:
         """Hide instance-scoped plugin MCP servers until PluginRegistry commit."""
 
+        if not allows_workspace(cls._server_configs.get(name, {})):
+            return False
         source = str(cls._server_sources.get(name) or "")
         if not source.startswith("plugin:"):
             return True

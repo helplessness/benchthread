@@ -1,6 +1,6 @@
 """Standalone contracts against the existing Artifact HTTP routes; no TCode imports."""
 import hashlib
-import importlib.util
+import subprocess
 import json
 import sys
 from email.parser import BytesParser
@@ -236,10 +236,16 @@ def test_unfinalized_output_and_ambiguous_upload_fail_closed(store, tmp_path):
 
 def test_old_example_import_is_the_same_sdk_class():
     root = Path(__file__).resolve().parents[3]
-    if root.name == 'tcode':
-        path = root / 'examples/third_party_mcp/artifact_io.py'
-        spec = importlib.util.spec_from_file_location('old_example_artifact_io', path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        assert module.ArtifactIO is ArtifactIO
-    assert 'tcode_agent' not in sys.modules and 'tmcp' not in sys.modules
+    # A host test may already have imported TCode during pytest collection.
+    # Check import independence in a clean interpreter, not pytest's shared state.
+    subprocess.run([sys.executable, '-I', '-c', """
+import runpy, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / 'packages/artifact-sdk/src'))
+from tcode_artifacts import ArtifactIO
+example = root / 'examples/third_party_mcp/artifact_io.py'
+if example.exists():
+    assert runpy.run_path(str(example))['ArtifactIO'] is ArtifactIO
+assert 'tcode_agent' not in sys.modules and 'tmcp' not in sys.modules
+""", str(root)], check=True)

@@ -6,6 +6,86 @@
 
 基础客户端只依赖 `httpx`；安装基础包或导入 `ArtifactIO` 不会启动服务，也不导入 `tcode_agent` 或 `tmcp`。客户端和可选服务端沿用 Artifact HTTP v1 接口和 `ArtifactRef`／`BundleRef`，不实现计算、队列、审核或轮询。Python 3.10+。客户端在 Linux／macOS 保留安全目录描述符实现；**Windows 10+ 本地 NTFS 客户端为实验性支持（原生验收尚未完成）**，使用系统句柄，不提供关闭路径保护的降级方式。
 
+## 一份服务供多人使用：每人一个 Token
+
+无需公共登录服务器。下面从仓库根目录、在自己的 Python 虚拟环境中执行。服务进程与管理命令必须使用**同一私有持久数据目录**；不要使用共享盘上的公共可写目录。
+
+```sh
+python -m pip install -e './packages/artifact-sdk[server,example]'
+mkdir -m 700 ./personal-service-data
+tcode-artifact users issue alice --data-dir ./personal-service-data
+tcode-artifact users issue bob --data-dir ./personal-service-data
+```
+
+签发命令只显示一次新 Token，请通过私密渠道交给对应用户，不要贴进聊天、日志或 Git。任选一种启动方式：
+
+| 服务形态 | 启动命令（示例默认仅监听本机） | 客户端入口 |
+| --- | --- | --- |
+| 纯文件服务 | `tcode-artifact serve --auth personal-tokens --service-id lab --data-dir ./personal-service-data` | `http://127.0.0.1:18081/artifact` |
+| 仅 MCP | `python packages/artifact-sdk/examples/mcp_server.py --auth personal-tokens --data-dir ./personal-service-data` | `http://127.0.0.1:10240/mcp`，使用文字工具 echo_text，无文件路由 |
+| MCP 与文件服务一体 | `python packages/artifact-sdk/examples/mcp_server.py --auth personal-tokens --with-artifact --service-id lab --data-dir ./personal-service-data` | 同一主机端口上的 `/mcp` 和 `/artifact` |
+
+运行过程中可在另一个终端添加用户、列出凭据状态、换发或撤销，无需重启：
+
+```sh
+tcode-artifact users list --data-dir ./personal-service-data
+tcode-artifact users rotate alice --data-dir ./personal-service-data
+tcode-artifact users revoke bob --data-dir ./personal-service-data
+```
+
+轮换保留用户编号、文件和历史任务；撤销阻止后续认证，不回收已下载内容，也不删除文件。不设置个人令牌模式时，原来的共享凭据模式不变。旧共享数据不会自动展示给新用户。
+
+### 只读共享已有目录（不需要 MCP 或重新上传）
+
+例如管理员要把服务器上已有的 `/srv/lab/published` 给 Alice 和 Bob 看：在 Linux/macOS 文件主机上运行下面的命令。可复用上面已签发个人令牌的凭据目录；名单填写**文件服务的账号名**，不是显示名称。共享区使用独立端口和服务 ID，原个人服务继续照常运行。
+
+```sh
+tcode-artifact serve --auth personal-tokens --service-id lab-library --port 18082 \
+  --data-dir ./personal-service-data --shared-dir /srv/lab/published \
+  --reader alice --reader bob
+```
+
+**多人使用时**，把最后一行换成 `--readers-file ./lab-readers.txt`。文件用 UTF-8，每行一个准确的账号名，可留空行，不写注释或令牌，最大 1 MiB。名单放在共享目录以外，由管理员维护；用同目录临时文件编辑后再重命名替换，避免读到保存一半的名单。增删用户从**下一个请求**生效，无需重启，不会撤销个人令牌、已完成的下载或正在传输的响应。
+
+原来的 `--reader` 仍可单用或与文件合用。合用时取并集：文件删掉的人如果仍在固定参数中，仍有权限。**名单丢失、不可读或格式损坏时，所有共享区请求都被拒绝，包括固定读者**；恢复有效名单后自动恢复。空名单是有效的，仅保留显式固定读者。只想用文件统一撤权，就不要额外传 `--reader`。
+
+**批量签发新用户令牌（可选）**：已有账号直接加入读者名单即可。首次创建一批新账号时，可在不对外共享的管理员目录中执行下面的 Bash 示例。`new-users.txt` 只放新账号；如果所有人都是新用户，可以直接使用同一份 `lab-readers.txt`。示例为每人保存一个独立文件，为避免把用户名解释成路径，仅接受字母、数字、下划线和连字符开头或组成的简单账号（中间也可有点）。
+
+```bash
+(
+  set -eu
+  umask 077
+  out=$(mktemp -d ./issued-tokens.XXXXXXXX)
+  printf '私密交付目录：%s\n' "$out"
+  while IFS= read -r name || [[ -n "$name" ]]; do
+    name=${name%$'\r'}
+    [[ -n "$name" ]] || continue
+    [[ "$name" =~ ^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$ ]] || { echo '账号格式不适用，停止签发' >&2; exit 1; }
+    [[ ! -e "$out/$name.token" ]] || { echo '交付文件重名，停止签发' >&2; exit 1; }
+    token=$(tcode-artifact users issue --data-dir ./personal-service-data -- "$name")
+    printf '%s\n' "$token" > "$out/$name.token"
+  done < new-users.txt
+)
+```
+
+通过私密渠道分别交付令牌，不要开启 shell 跟踪（`set -x`）、提交到 Git 或把交付目录放进共享区。如果遇到已存在的账号，签发会停止，不会轮换其令牌；之前成功生成的文件仍在交付目录。核对剩余新用户名后再继续。
+
+默认只监听本机。跨主机建议通过 HTTPS 反向代理开放 `/artifact`。只指定专门用于发布的目录，不要指向家目录、配置目录或任务存储；只有可信管理员可以在本机写入它。不展示隐藏文件、符号链接、硬链接、特殊文件和超出单文件限额的文件。文件由管理员在原目录更新；旧引用不会下载到新版本，重新浏览即可。撤销个人令牌立即阻止后续请求；只想取消共享区资格而保留个人文件权限时，从启动参数去掉对应的 `--reader` 后重启共享服务。
+
+BenchThread 中把这个端点单独添加为「实验室共享资料」，**不绑定 MCP，不用作任务输出或默认上传服务**。单用户使用自己的读者令牌；多人 Web 后端可为共享区单独签发一个服务账号，将它加入 `--reader`，仅后端保存令牌，再按[文件服务授权步骤](../../docs/RUNNING.md#不绑定-mcp-使用-artifact)用 `TCODE_ARTIFACT_IMPORT_ACCESS` 限定哪些租户和用户可以读取；不要授予上传权限。例如在聊天中说「从实验室共享资料列出 results 目录，再下载 report.csv 到当前工作区」。共享服务本身也拒绝写入，即使是名单内的读者也不能覆盖服务器上的文件。
+
+**接入其他 Harness：** 远程 MCP 使用 `Authorization: Bearer <个人令牌>`；文件 HTTP 接口支持相同的 Bearer，也兼容 SDK 的 `X-Artifact-Token`。无文件工具不用安装客户端 SDK。有文件工具先上传取得引用、调用 MCP、再按引用下载。列根目录请求 `GET /artifact/api/v1/files`；按列表返回的 artifact_id 下载 `GET /artifact/api/v1/artifacts/{artifact_id}/content`。客户端不要把令牌转发给引用中出现的其他主机。跨主机部署使用 HTTPS。
+
+**接入 TCode：** 在 MCP 连接设置中配置 Bearer 认证头；纯文件服务不需要添加 MCP。文件服务的地址、服务 ID、凭据环境变量名及 MCP 绑定见[文件服务设置步骤](#配置-benchthread-和验证)。让后端从环境读取该用户的个人 Token。聊天里能否列目录、导入文件，还受 TCode 的工作区授权控制，不能以“测试连接”通过代替实际读写验收。不要把同一个人的 Token 设为多人共用后端的全局凭据。
+
+**第三方作者：** 用 `run_personal_mcp(mcp, data_dir=..., files=True, service_id="lab")` 启动；同步工具内部继续使用 `ArtifactIO()`，自动选择经过认证的当前请求，不必自己传 owner_id。持久任务必须另外记录归属、校验查询和取消；SDK 不会自动保护自定义的 HTTP 接口或业务数据库。可参考[异步示例](../../examples/third_party_mcp/remote_server.py)：设置 `EXAMPLE_AUTH_MODE=personal-tokens`，用 `EXAMPLE_DATA_ROOT` 指向签发凭据的目录；个人模式下，示例用 ArtifactIO.delegate_job 为后台 worker 授权指定输入和一个输出包。用户断开后 worker 仍会发布文件；重启会继续处理尚未开始的任务，不会盲目重传已中断的发布。领取结果只读已持久化的引用，不启动计算。取消排队任务或发布结束后回收任务凭据。
+
+单人桌面端接入同源一体化服务时，无需单独登记文件端点：在「设置 → MCP 服务」添加服务名称和以 `/mcp` 结尾的地址，勾选「使用此 MCP 自带的个人文件服务」，填提供者发给你的个人 Token，再点「保存并连接」。如果此连接已有 Bearer 认证头，可以留空沿用。保存时会验证同源的 `/artifact/health`，不会跟随重定向，不接受服务返回的其他文件主机；已手工登记的相同服务 ID 不会被覆盖。保存后可在聊天里按 MCP 名称要求列文件并下载到工作区。
+
+桌面的个人绑定只属于保存时的账号和租户。切换身份后不能连接或沿用这份凭据；切回原身份，在自己的工作区即可继续使用。原用户取消勾选、改为普通 MCP 时，不会自动把旧个人认证头变成共享凭据；如需认证，请重新填写。
+
+旧的手动配置仍可使用一份秘密：例如向自己的 TCode 后端注入环境变量 `LAB_PERSONAL_TOKEN`，MCP 认证头的值填写字面量 `Bearer ${LAB_PERSONAL_TOKEN}`，文件服务的「凭据环境变量名」填写 `LAB_PERSONAL_TOKEN`。不要把该变量用于其他提供者。
+
 ## Windows：手动安装与验证，不依赖 CI
 
 在仓库根目录的 PowerShell 中执行，使用独立环境，不要求修改执行策略：

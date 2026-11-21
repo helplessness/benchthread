@@ -129,6 +129,16 @@ class ArtifactIO:
 
     def __init__(self, base_url=None, *, token=None, service_id=None, services=None,
                  max_bytes=None, max_files=None, timeout=300, transport=None):
+        from .personal_tokens import request_identity
+        identity = request_identity.get()
+        self._personal = identity is not None
+        if identity is not None:
+            _, credential, local_url, local_id = identity
+            if not local_url:
+                raise ValueError('this personal MCP has no file service')
+            if any(v is not None for v in (base_url, token, services, service_id, transport)):
+                raise ValueError('personal file service is fixed by the authenticated request')
+            base_url, token, service_id, services = local_url, credential, local_id, {}
         self._explicit_url = base_url is not None
         self.url = base_url if base_url is not None else os.environ.get('TMCP_ARTIFACT_SERVICE_URL', '')
         self.token = token if token is not None else os.environ.get('TMCP_ARTIFACT_API_TOKEN', '')
@@ -172,7 +182,8 @@ class ArtifactIO:
     def _client(self, service_id):
         url, headers = self._endpoint(service_id)
         return httpx.Client(base_url=url + '/', headers=headers, timeout=self.timeout,
-                            follow_redirects=False, transport=self.transport)
+                            follow_redirects=False, transport=self.transport,
+                            trust_env=not (self._personal or str(self.token).startswith('job.')))
 
     def _request(self, method, path, *, service_id, **kwargs):
         with self._client(service_id) as client:
@@ -214,6 +225,37 @@ class ArtifactIO:
             if count != size or checksum.hexdigest() != digest.lower():
                 raise ValueError('artifact integrity mismatch')
         return target
+
+    def check_input(self, ref):
+        """Validate access to an input before admitting an asynchronous job."""
+        kinds = {'artifact': ('artifacts', 'artifact_id'), 'artifact_bundle': ('bundles', 'bundle_id')}
+        if not isinstance(ref, dict) or ref.get('kind') not in kinds:
+            raise ValueError('expected ArtifactRef or BundleRef')
+        collection, field = kinds[ref['kind']]
+        return self._request('GET', f'/api/v1/{collection}/{_identifier(ref.get(field))}',
+                             service_id=ref.get('service_id') or self.service_id)
+
+    def delegate_job(self, data_dir, inputs):
+        """Local combined-service worker only. Keep returned credential out of MCP results."""
+        from .personal_tokens import PersonalTokens, current_owner
+        current_owner()
+        if not self._personal:
+            raise ValueError('personal request required')
+        reads = set()
+        for ref in inputs:
+            metadata = self.check_input(ref)
+            if ref['kind'] == 'artifact_bundle':
+                if metadata.get('state') != 'ready':
+                    raise ValueError('input bundle is not complete')
+                reads.add('/api/v1/bundles/' + _identifier(ref['bundle_id']))
+                ids = [item['artifact_id'] for item in metadata['files']]
+            else:
+                ids = [ref['artifact_id']]
+            for key in ids:
+                path = '/api/v1/artifacts/' + _identifier(key)
+                reads.update((path, path+'/content'))
+        bundle = self.request('POST', '/api/v1/bundles', json={})
+        return PersonalTokens(data_dir).delegate_files(reads, _identifier(bundle['bundle_id']))
 
     def materialize(self, ref, destination):
         if not isinstance(ref, dict):

@@ -12,6 +12,12 @@ mcp = FastMCP('Artifact SDK file echo')
 
 
 @mcp.tool
+def echo_text(text: str) -> str:
+    """Return the supplied text without computation."""
+    return text
+
+
+@mcp.tool
 def echo_file(input_file: dict) -> dict:
     """Download one ArtifactRef and return the exact bytes in an output BundleRef."""
     if input_file.get('kind') != 'artifact':
@@ -35,9 +41,14 @@ if __name__ == '__main__':
     parser.add_argument('--with-artifact', action='store_true', help='Also serve files unless an external Artifact is configured')
     parser.add_argument('--data-dir', type=Path, default=Path('./artifact-data'))
     parser.add_argument('--service-id')
+    parser.add_argument('--auth', choices=('shared', 'personal-tokens'), default='shared')
     args = parser.parse_args()
     # Loopback example only; use independent MCP authentication and TLS remotely.
-    if args.with_artifact:
+    if args.auth == 'personal-tokens':
+        from tcode_artifacts.server import run_personal_mcp
+        run_personal_mcp(mcp, port=args.port, data_dir=args.data_dir, files=args.with_artifact,
+                         service_id=args.service_id)
+    elif args.with_artifact:
         from tcode_artifacts.server import run_with_artifact
 
         try:
