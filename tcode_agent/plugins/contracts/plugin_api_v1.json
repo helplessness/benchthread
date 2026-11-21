@@ -2,7 +2,7 @@
   "schema_version": 1,
   "contract_id": "tcode.plugin-api.v1",
   "api_version": "1.0",
-  "sdk_version": "1.6.0",
+  "sdk_version": "1.7.0",
   "status": "stable",
   "owner": "TCode Plugin Platform",
   "compatibility": ">=1.0.0,<2.0.0",
@@ -50,7 +50,11 @@
     "legacy_adapter": false,
     "validation_phase": "before-python-entry-import",
     "supported_scope": "workspace",
-    "requires_sdk_and_python_ranges": true
+    "requires_sdk_and_python_ranges": false,
+    "requires_sdk_range": true,
+    "python_range_required_for": ["python"],
+    "runtimes": ["python", "declarative"],
+    "panel_protocol": "tcode.panel.v1"
   },
   "admission": {
     "host_trust_source": "official-package-or-exact-host-allowlist",

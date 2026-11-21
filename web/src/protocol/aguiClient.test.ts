@@ -2,12 +2,11 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  EventSchemas,
   EventType,
-  RunAgentInputSchema,
   type BaseEvent,
   type RunAgentInput,
 } from '@ag-ui/core';
+import { EventSchemas, RunAgentInputSchema } from '@ag-ui/core/schemas';
 import { createTCodeAGUIAgent } from './aguiClient';
 
 const repoRoot = path.resolve(process.cwd(), '..');
@@ -25,7 +24,7 @@ function mappedProtocolExamples(): unknown[] {
   }));
 }
 
-describe('AG-UI 0.0.59 interoperability', () => {
+describe('AG-UI client interoperability', () => {
   it('validates every TCode v2 mapping with the official event schemas', () => {
     const events = mappedProtocolExamples();
     expect(events.length).toBeGreaterThan(20);

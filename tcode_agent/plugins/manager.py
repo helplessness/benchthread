@@ -191,17 +191,20 @@ class PluginManager:
         name: str,
         enabled: bool,
         path: Optional[str] = None,
+        panel_grants: Optional[list[str]] = None,
+        permissions: Optional[dict] = None,
         config: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         from ..atomic_storage import file_transaction
         with file_transaction(self.config_path):
             return self._persist_plugin_enabled_state(
-                name=name, enabled=enabled, path=path, config=config,
+                name=name, enabled=enabled, path=path, config=config, panel_grants=panel_grants, permissions=permissions,
             )
 
     def _persist_plugin_enabled_state(
         self, *, name: str, enabled: bool,
-        path: Optional[str] = None, config: Optional[dict[str, Any]] = None,
+        path: Optional[str] = None, config: Optional[dict[str, Any]] = None, panel_grants: Optional[list[str]] = None,
+        permissions: Optional[dict] = None,
     ) -> dict[str, Any]:
         raw = self._read_json_file(self.config_path)
         if not isinstance(raw, dict):
@@ -244,6 +247,10 @@ class PluginManager:
         if wanted_path or not merged.get("path"):
             merged["path"] = wanted_path or str(existing_entry.get("path") or "").strip()
         merged["enabled"] = bool(enabled)
+        if permissions is not None:
+            merged["permissions"] = dict(permissions)
+        if panel_grants is not None:
+            merged["panel_grants"] = sorted(set(panel_grants))
         merged["source"] = "plugins.json"
         if config is not None:
             merged["config"] = dict(config)
@@ -439,6 +446,7 @@ class PluginManager:
                     "enabled": bool(item.get("enabled", True)),
                     "config": dict(item.get("config") or {}),
                     "permissions": dict(item.get("permissions") or {}),
+                    "panel_grants": list(item.get("panel_grants") or []),
                     "source": str(item.get("source") or "config"),
                     "_source_root": str(source_root or Path(self.workdir)),
                 }
@@ -560,6 +568,7 @@ class PluginManager:
             if not name:
                 continue
             key = name.lower()
+            manifest = None
             desktop_delivery = "local"
             try:
                 plugin_root = self._resolve_plugin_root(item)
@@ -584,6 +593,10 @@ class PluginManager:
                 "loaded": name in loaded_names,
                 "loadable": desktop_delivery == "local",
                 "desktop_delivery": desktop_delivery,
+                "requested_permissions": [p.to_dict() for p in manifest.permissions] if manifest else [],
+                "approved_permissions": dict(item.get("permissions") or {}),
+                "panel_capabilities": sorted({cap for panel in manifest.panels for cap in panel.get("capabilities", [])}) if manifest else [],
+                "panel_grants": item.get("panel_grants", []),
                 "availability_message": (
                     "由远程计算服务提供"
                     if desktop_delivery == "remote" and remote_state == "configured"
@@ -1212,6 +1225,10 @@ class PluginManager:
                 f"plugin {manifest.name!r} is quarantined and cannot execute",
                 path=manifest.manifest_path,
             )
+        if manifest.runtime == "declarative":
+            execution_mode = "isolated-worker"
+            if manifest.contributes or manifest.permissions or manifest.async_targets:
+                raise PluginManifestPermissionError("declarative plugins cannot register executable capabilities", path=manifest.manifest_path)
         validated_config = manifest.validate_config(
             dict(plugin_config.get("config") or {})
         )
@@ -1263,7 +1280,7 @@ class PluginManager:
                 (
                     manifest.commands,
                     manifest.skills if not manifest.async_targets else (),
-                    manifest.agents,
+                    manifest.agents if manifest.runtime != "declarative" and not manifest.panels else (),
                     manifest.mcp_servers,
                     manifest.requires,
                     manifest.optional,
@@ -1279,7 +1296,7 @@ class PluginManager:
                     for child in (plugin_root / component).rglob('*'):
                         if child.is_symlink() or (child.is_file() and child.name != 'SKILL.md'):
                             raise PluginManifestPermissionError('isolated async plugins may contribute Markdown-only runner skills', path=manifest.manifest_path)
-            if isolation_backend() == "unavailable":
+            if manifest.runtime != "declarative" and isolation_backend() == "unavailable":
                 raise PluginManifestPermissionError(
                     "unknown plugin requires a strong isolated worker backend",
                     path=manifest.manifest_path,
@@ -1982,7 +1999,7 @@ class PluginManager:
         if status.state is PluginInstanceState.DISCOVERED:
             self._transition(status, PluginInstanceState.RESOLVED)
         self._transition(status, PluginInstanceState.LOADING)
-        worker = IsolatedPluginWorker(
+        worker = None if manifest.runtime == "declarative" else IsolatedPluginWorker(
             manifest=manifest,
             config=prepared.validated_config,
             instance_id=status.instance_id,
@@ -1996,8 +2013,9 @@ class PluginManager:
         )
         try:
             self._transition(status, PluginInstanceState.STARTING)
-            await worker.start()
-            info_data = worker.plugin_info
+            if worker:
+                await worker.start()
+            info_data = worker.plugin_info if worker else {}
             info = PluginInfo(
                 name=manifest.name,
                 version=manifest.version,
@@ -2021,9 +2039,11 @@ class PluginManager:
             agent_paths = self._resolve_component_paths(
                 prepared.plugin_root, list(manifest.agents)
             )
-            loaded_agents, component_errors = self._load_plugin_agents(
-                agent_paths, info.name
-            )
+            if manifest.runtime == "declarative" or (prepared.execution_mode == "isolated-worker" and manifest.panels):
+                from .declarative_agents import read_agents
+                loaded_agents, component_errors = read_agents(prepared.plugin_root, manifest), []
+            else:
+                loaded_agents, component_errors = self._load_plugin_agents(agent_paths, info.name)
             contribution_buffer = ContributionBuffer(
                 allowed=tuple({*manifest.contributes, "tools"}),
                 source=manifest.name,
@@ -2062,14 +2082,14 @@ class PluginManager:
                     prepared.plugin_config.get("_source_root") or self.workdir
                 ),
             )
-            for definition in worker.tool_definitions():
+            for definition in (worker.tool_definitions() if worker else ()):
                 contribution_buffer.add_tool(definition)
-            for contribution in worker.prompt_contributions():
+            for contribution in (worker.prompt_contributions() if worker else ()):
                 contribution_buffer.add_prompt(contribution)
             contribution_buffer.seal()
             tools = contribution_buffer.tool_adapters()
             self._transition(status, PluginInstanceState.WARMING)
-            initial_health = await self._check_health_handler(worker.health)
+            initial_health = await self._check_health_handler(worker.health if worker else None)
             status.set_health(initial_health)
             if initial_health.status is PluginHealthStatus.UNHEALTHY:
                 raise RuntimeError(
@@ -2173,11 +2193,11 @@ class PluginManager:
                     component_errors=component_errors,
                     granted_permissions=list(prepared.granted_permissions),
                     raw_instance=worker,
-                    shutdown_handler=worker.stop,
+                    shutdown_handler=worker.stop if worker else None,
                     prompt_contributions=[item.name for item in contribution_buffer.prompts],
                     effect_scope=effect_scope,
                     instance_status=status,
-                    health_handler=worker.health,
+                    health_handler=worker.health if worker else None,
                 )
                 registry_disposer = PluginRegistry.register(
                     loaded,
@@ -2216,7 +2236,8 @@ class PluginManager:
             except BaseException as exc:
                 cleanup_errors.append(exc)
             try:
-                await worker.stop("load_failed")
+                if worker:
+                    await worker.stop("load_failed")
             except BaseException as exc:
                 cleanup_errors.append(exc)
             self._transition(

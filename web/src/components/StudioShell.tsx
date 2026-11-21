@@ -13,6 +13,7 @@ export type StudioShellProps = {
   workspace: string; sessionTitle: string; status: string;
   sidebar: JSX.Element; inspector: JSX.Element; dock: JSX.Element; children: JSX.Element;
   actions: JSX.Element; sidebarRequest: number; onNewSession: () => void; onCommandPalette: () => void;
+  pluginNavigation?: JSX.Element;
   onOpenSkillCenter: () => void; skillCount: number;
   onOpenServiceSettings: (section: 'mcp' | 'desktop') => void;
   browserActive?: boolean;
@@ -320,7 +321,7 @@ export default function StudioShell(props: StudioShellProps) {
         <For each={[activity()]}>{group=><div class="studio-nav-group"><For each={navigationPages().filter(item=>item.group===group)}>{item=>{
           const count=()=>props.noticeCounts[item.id as keyof StudioShellProps['noticeCounts']] || 0;
           return <button aria-current={selectedFeature()===item.id?'page':undefined} aria-label={`${item.label}${count()?`，${count()} 项提醒`:''}`} onClick={()=>{setSelectedFeature(item.id);props.onNavigate(item.id);}}><span>{item.mark}</span>{item.label}<Show when={count()>0}><strong class="studio-nav-count">{count()}</strong></Show></button>;
-        }}</For><Show when={group==='扩展'}><button data-testid="skill-center-trigger" aria-label={`Skill Center，${props.skillCount} 个 Skill`} onClick={props.onOpenSkillCenter}><span>技</span>Skill Center<strong class="studio-nav-count">{props.skillCount}</strong></button></Show></div>}</For>
+        }}</For><Show when={group==='扩展'}>{props.pluginNavigation}<button data-testid="skill-center-trigger" aria-label={`Skill Center，${props.skillCount} 个 Skill`} onClick={props.onOpenSkillCenter}><span>技</span>Skill Center<strong class="studio-nav-count">{props.skillCount}</strong></button></Show></div>}</For>
       </details></nav>
       <Show when={isDesktop()}><div class="studio-sidebar-split" role="separator" tabindex="0" aria-label="调整功能导航与会话列表高度" aria-orientation="horizontal" aria-valuemin={10} aria-valuemax={55} aria-valuenow={Math.round(layout().navigationShare*100)} title="上下拖动；方向键调整；双击恢复"
         onPointerDown={event=>{if(event.button!==0)return;event.preventDefault();event.currentTarget.focus();sidebarSplit={start:event.clientY,share:layout().navigationShare,height:event.currentTarget.parentElement!.clientHeight,pointerId:event.pointerId};event.currentTarget.setPointerCapture(event.pointerId);}}

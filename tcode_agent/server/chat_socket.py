@@ -695,6 +695,9 @@ async def websocket_chat(websocket: WebSocket):
                 "request": message, "message_id": str(uuid.uuid4())})
 
             if requested_runtime_id != "tcode-native":
+                from ..plugins.registry import PluginRegistry
+                if requested_agent_name in PluginRegistry.agent_names():
+                    raise RuntimeError("插件 Agent 仅在 TCode harness 中可用")
                 if selected_skills:
                     raise RuntimeError('当前 Harness 不支持 TCode Skill 选择')
                 if not use_protocol_v2 or transport.adapter is None:

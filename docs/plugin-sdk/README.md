@@ -1,5 +1,7 @@
 # BenchThread Python Plugin SDK v1 开发文档
 
+[React / Vue 侧栏前端 SDK、本地调试与导入示例](../../packages/tcode-panel-sdk/README.md)
+
 本目录面向准备为 BenchThread 开发插件的 Python 开发者。它只描述当前可用的 Plugin SDK v1，不包含 DSH 改造历史，也不兼容 DeepSeek Harness 的 Manifest、SDK 或社区插件。
 
 ## 当前版本
@@ -7,7 +9,7 @@
 | 项目 | 当前值 |
 | --- | --- |
 | Plugin API | `1.0` |
-| Python SDK | `1.4.0` |
+| Plugin SDK | `1.7.0` |
 | Python | `>=3.11` |
 | Manifest | v2，文件名固定为 `plugin.json` |
 | 包格式 | `.tcode-plugin` |
@@ -27,6 +29,7 @@
 8. [插件声明式 Workflow](./08-插件声明式Workflow.md)：让插件携带由宿主校验、执行和回收的流程模板。
 9. [记忆能力与生命周期钩子](./09-记忆能力与生命周期钩子.md)：在压缩、删除和日常读写时安全操作 Scope 化记忆。
 10. [MCP 接入](../../tcode_agent/MCP_QUICKSTART.md)与 [Python 文件传输 SDK](12-Python文件传输SDK.md)。
+11. [第三方侧栏与团队插件](13-第三方侧栏与团队插件.md)：从本地 ZIP 安装、自定义面板驱动 Agent 团队、撤权与卸载。
 
 ## 最重要的开发规则
 

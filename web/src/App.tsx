@@ -17,10 +17,12 @@ import {
   createMemo,
   createResource,
   lazy,
+  untrack,
   type Component,
   type JSX,
 } from 'solid-js';
 import type { StudioShellProps } from './components/StudioShell';
+import PluginWorkspacePanel, {type PanelDescriptor} from './components/PluginWorkspacePanel';
 import RunDirectory from './components/RunDirectory';
 import { presentChatTurns } from './utils/chatPresentation';
 import { isCollaborationPage, isPageAvailableOnSurface, studioPageFromHash, studioPages, type StudioPage } from './utils/studioLayout';
@@ -155,6 +157,7 @@ export default function App(props: AppProps) {
     try { return JSON.parse(decodeURIComponent(view.slice('paper:'.length))); } catch { return {id:'',title:'文献'}; }
   };
   const companionLabel = (view: CompanionView) => {
+    if (view.startsWith('plugin:')) return pluginPanels().find(item => panelView(item) === view)?.title || '插件面板';
     if (view.startsWith('browser:')) return browserTitles()[view.slice(8)] || '浏览器';
     if (view === 'collaboration') return '协作';
     if (isSideChatView(view)) {
@@ -1011,6 +1014,50 @@ export default function App(props: AppProps) {
   });
 
   const currentSession = createMemo(() => sessionStore.currentSession());
+  const [pluginPanels, setPluginPanels] = createSignal<PanelDescriptor[]>([]);
+  const [panelRevision, setPanelRevision] = createSignal(0);
+  const panelView = (item: PanelDescriptor): CompanionView => `plugin:${item.plugin}:${item.id}`;
+  const panelQuery = createMemo(() => {
+    const session = currentSession();
+    if (!session?.workdir || !session.session_id || (session.metadata?.harness?.runtime_id || 'tcode-native') !== 'tcode-native') return '';
+    return new URLSearchParams({session_id:session.session_id, workdir:session.workdir}).toString();
+  });
+  onMount(() => {
+    const refresh = () => setPanelRevision(value => value + 1);
+    window.addEventListener('tcode:plugins-changed', refresh);
+    onCleanup(() => window.removeEventListener('tcode:plugins-changed', refresh));
+  });
+  const removeUnavailablePluginTabs = (items:PanelDescriptor[]) => {
+    const available = new Set(items.map(panelView));
+    const keep = (view:CompanionView) => !view.startsWith('plugin:') || available.has(view);
+    const remaining = companionTabs().filter(keep);
+    if (remaining.length !== companionTabs().length) {
+      const tabs:CompanionView[] = remaining.length ? remaining : ['collaboration'];
+      setCompanionTabs(tabs);
+      if (!keep(companionView())) setCompanionView(tabs[tabs.length-1]);
+    }
+    setClosedCompanionTabs(previous=>previous.filter(keep));
+  };
+  createEffect(() => {
+    panelRevision();
+    const query = panelQuery();
+    setPluginPanels([]);
+    if (!query) {
+      if (currentSession()?.metadata?.harness?.runtime_id && currentSession()?.metadata?.harness?.runtime_id !== 'tcode-native') untrack(() => removeUnavailablePluginTabs([]));
+      return;
+    }
+    const controller = new AbortController();
+    onCleanup(() => controller.abort());
+    void fetch('/api/plugins/panels?' + query, {signal:controller.signal})
+      .then(async response => { if (!response.ok) throw new Error('插件目录不可用'); return (await response.json()).panels; })
+      .then((items:PanelDescriptor[]) => {
+        if (controller.signal.aborted) return;
+        setPluginPanels(items);
+        removeUnavailablePluginTabs(items);
+      })
+      .catch(() => {});
+  });
+
   const isResearchSession = createMemo(() => (
     currentSession()?.mode === 'research'
     || currentSession()?.metadata?.mode === 'research'
@@ -1348,7 +1395,7 @@ export default function App(props: AppProps) {
     <Show when={!authChecking()} fallback={<AppLoading label={isDesktop ? "正在打开本机工作区…" : "正在确认登录状态…"} />}>
       <Show when={identity()} keyed fallback={desktopIdentityFailed() ? <div role="alert" class="settings-page"><h2>暂时无法打开本机工作区</h2><button class="settings-save" onClick={()=>window.location.reload()}>重新连接</button></div> : loginView}>
         <Show when={!workspaceInitializing()} fallback={<AppLoading label={workspaceInitStage()} />}>
-        <StudioShell page={mainSection()} onNavigate={navigate}
+        <StudioShell pluginNavigation={<For each={pluginPanels()}>{panel => <button aria-label={panel.title} onClick={() => openCompanion(panelView(panel))}><span>插</span>{panel.title}</button>}</For>} page={mainSection()} onNavigate={navigate}
           mergedMainActive={mergedMainActive()} onMergedChange={setWorkspaceMerged} splitRequest={splitRequest()}
           identity={`${currentUser()?.user_id}:${currentUser()?.tenant_id}`}
           workspace={currentWorkspaceId()} sessionTitle={currentSessionTitle()} status={currentStatusLabel()}
@@ -1408,6 +1455,7 @@ export default function App(props: AppProps) {
                     <span>打开标签</span>
                   </button>
                   <Show when={showCompanionMenu()}><div class="companion-new-menu" id="companion-new-menu" role="group" aria-label="选择标签类型">
+                    <For each={pluginPanels()}>{panel => <button type="button" onClick={() => {setShowCompanionMenu(false);openCompanion(panelView(panel));}}>{panel.title}</button>}</For>
                     <Show when={isDesktop}><button type="button" onClick={()=>{setShowCompanionMenu(false);window.dispatchEvent(new CustomEvent('tcode:open-browser'));}}>打开浏览器</button></Show>
                     <button type="button" disabled={!sessionStore.currentSessionId() || creatingSideChat()} onClick={()=>void createSideChat()}>{creatingSideChat() ? '创建中…' : '新建侧边聊天'}</button>
                   </div></Show>
@@ -1417,6 +1465,15 @@ export default function App(props: AppProps) {
             </div>
             <Show when={sideChatError()}><div class="side-chat-error" role="alert">{sideChatError()}<button onClick={()=>{setSideChatError('');const id=sessionStore.currentSessionId();if(id)void syncSideChats(id);}}>重试</button></div></Show>
             <Show when={isDesktop}><div id="studio-browser-host" hidden={!companionView().startsWith('browser:')} /></Show>
+            <For each={pluginPanels().filter(panel => companionView() === panelView(panel))}>{panel =>
+              <PluginWorkspacePanel panel={panel} query={panelQuery()} onShare={(text,file) => {
+                const key = composerKey(sessionStore.currentSessionId());
+                const previous = composerDrafts.get(key);
+                composerDrafts.update(key,{text:[previous.text,text].filter(Boolean).join('\n\n'),
+                  files:file ? [...previous.files,{...file,id:crypto.randomUUID(),source:'upload',mode:'path',sessionId:sessionStore.currentSessionId() || undefined}] : previous.files});
+                navigate('console'); window.dispatchEvent(new CustomEvent('tcode-focus-composer'));
+              }}/>
+            }</For>
             <div class="studio-page" hidden={companionView()!=='structure'}><Suspense fallback={<LazyPanelFallback/>}><StructureWorkspace
               workspaceId={currentWorkspaceId()} workdir={currentSession()?.workdir} request={structureRequest()}
               active={inspectorVisible() && companionView()==='structure'}

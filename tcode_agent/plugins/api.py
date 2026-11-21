@@ -6,6 +6,7 @@ from pathlib import Path
 import asyncio
 import tempfile
 import zipfile
+from uuid import UUID
 from typing import Any, Optional
 
 from fastapi import APIRouter, Query, Request, Depends, HTTPException
@@ -26,6 +27,8 @@ from .command_registry import PluginCommandRegistry
 from .hooks import HookRegistry
 from .manager import PluginManager
 from .registry import PluginRegistry
+from . import panel_runs
+from .manifest import load_manifest
 
 
 def _get_server_state():
@@ -42,15 +45,16 @@ async def _authorize_plugin_request(request: Request):
     from ..server.auth import auth_required
     user = getattr(request.state, "current_user", None)
     supplied = str(request.query_params.get("workdir") or "").strip()
+    panel_call = request.url.path.startswith("/api/plugins/panels/")
     importing = request.url.path == '/api/plugins/install'
-    body = await request.json() if request.method == "POST" and not importing and await request.body() else {}
+    body = await request.json() if request.method == "POST" and not importing and not panel_call and await request.body() else {}
     if not isinstance(body, dict):
         raise HTTPException(400, "Expected a JSON object")
     supplied = str(body.get("workdir") or supplied).strip()
     if auth_required():
         if user is None:
             raise HTTPException(401, "Authentication required")
-        if request.method == "POST" and user.role not in {"admin", "owner"}:
+        if request.method == "POST" and not panel_call and user.role not in {"admin", "owner"}:
             raise HTTPException(403, "Plugin changes require an administrator")
         context = _shared._workspace_context_from_request(request)
         owner_root = _shared._user_workdirs_root(context).resolve()
@@ -75,6 +79,8 @@ class PluginLoadRequest(BaseModel):
     enabled: bool = True
     config: Optional[dict[str, Any]] = None
     workdir: Optional[str] = None
+    panel_grants: Optional[list[str]] = None
+    approved_permissions: Optional[dict[str,list[str]]] = None
 
 
 class PluginUnloadRequest(BaseModel):
@@ -120,12 +126,132 @@ async def list_available_plugins(workdir: Optional[str] = Query(default=None)):
     return {"success": True, "plugins": manager.list_available_plugins(), "workdir": manager.workdir}
 
 
+async def _panel_session(request: Request, session_id: str):
+    from ..server.workspace_scope import _session_owner_kwargs, _workspace_context_from_request, _resolve_session_workdir
+    from ..session.manager import SessionManager
+
+    context = _workspace_context_from_request(request)
+    session = await SessionManager.get(session_id, **_session_owner_kwargs(context))
+    if not session:
+        raise HTTPException(404, "会话不存在")
+    from ..server.harness_api import harness_projection_for_session
+    harness = harness_projection_for_session(session)
+    if harness["runtime_id"] != "tcode-native":
+        raise HTTPException(409, "插件面板仅在 TCode harness 中可用")
+    manager = await _get_plugin_manager()
+    if Path(await _resolve_session_workdir(session_id, context)).resolve() != Path(manager.workdir).resolve():
+        raise HTTPException(403, "插件工作区与会话不符")
+    return session, manager, harness["model_id"]
+
+
+def _active_panel_plugins(manager):
+    for item in manager._load_configured_plugins():
+        if not item.get("enabled", True):
+            continue
+        plugin = PluginRegistry.get(item.get("name", ""))
+        root = manager._resolve_plugin_root(item)
+        if plugin and root and Path(plugin.source).resolve() == root.resolve():
+            for panel in (plugin.manifest or {}).get("panels", []):
+                yield plugin, root.resolve(), {**panel, "grants": sorted(set(panel.get("capabilities", [])) & set(item.get("panel_grants", [])))}
+
+
+@router.get("/panels")
+async def list_panels(request: Request, session_id: str):
+    session, manager, _ = await _panel_session(request, session_id)
+    return {"panels": [{"plugin": plugin.name, "id": panel["id"], "title": panel["title"],
+                        "instance": plugin.instance_id, "running": sum(not task.done() and path.parent == panel_runs.record_directory(manager,session,plugin,panel) for path, task in panel_runs._tasks.items())}
+                       for plugin, _, panel in _active_panel_plugins(manager)]}
+
+
+@router.get("/panels/{plugin_name}/{panel_id}")
+async def read_panel(request: Request, session_id: str, plugin_name: str, panel_id: str):
+    _, _, plugin, root, panel = await _bound_panel(request, session_id, plugin_name, panel_id)
+    entry = (root / panel["entry"]).resolve()
+    if not entry.is_relative_to(root) or not entry.is_file():
+        raise HTTPException(404, "面板文件不可用")
+    if entry.stat().st_size > 4 * 1024 * 1024:
+        raise HTTPException(413, "面板文件超过 4 MiB")
+    return {"html": entry.read_text(encoding="utf-8"), "instance": plugin.instance_id}
+
+
+async def _bound_panel(request, session_id, plugin_name, panel_id):
+    session, manager, model_id = await _panel_session(request, session_id)
+    for plugin, root, panel in _active_panel_plugins(manager):
+        if plugin.name == plugin_name and panel["id"] == panel_id:
+            instance = request.query_params.get("instance")
+            if instance and instance != plugin.instance_id:
+                raise HTTPException(409, "插件已重新加载，请重新打开面板")
+            return session, manager, plugin, root, {**panel, "model_id": model_id}
+    raise HTTPException(404, "插件面板未加载")
+
+
+@router.get("/panels/{plugin_name}/{panel_id}/runs")
+async def panel_history(request: Request, session_id: str, plugin_name: str, panel_id: str):
+    session, manager, plugin, _, panel = await _bound_panel(request, session_id, plugin_name, panel_id)
+    return {"runs": panel_runs.history(manager, session, plugin, panel), "grants": panel["grants"]}
+
+
+@router.post("/panels/{plugin_name}/{panel_id}/runs")
+async def panel_submit(request: Request, session_id: str, plugin_name: str, panel_id: str, turn: panel_runs.PanelTurn):
+    session, manager, plugin, root, panel = await _bound_panel(request, session_id, plugin_name, panel_id)
+    needed = {"team.run"}
+    if turn.pdf or turn.source_run:
+        needed.add("document.read")
+    if not needed.issubset(panel["grants"]):
+        raise HTTPException(403, "请先在插件列表授权团队运行及所选文档读取")
+    return await panel_runs.start(manager, session, plugin, panel, turn)
+
+
+class PanelSelection(BaseModel):
+    run: UUID
+    item_id: str
+    text: str
+
+
+@router.post("/panels/{plugin_name}/{panel_id}/share")
+async def share_panel_item(request: Request, session_id: str, plugin_name: str, panel_id: str, selection: PanelSelection):
+    session, manager, plugin, _, panel = await _bound_panel(request, session_id, plugin_name, panel_id)
+    if "selection.share" not in panel["grants"]:
+        raise HTTPException(403, "未授权带入对话")
+    if not selection.text.strip() or len(selection.text) > 12000 or not 0 < len(selection.item_id) <= 160:
+        raise HTTPException(422, "无效的选中项")
+    directory = panel_runs.record_directory(manager, session, plugin, panel)
+    record = panel_runs.read_record(directory / f"{selection.run}.json")
+    if record["status"] != "completed":
+        raise HTTPException(409, "运行尚未完成")
+    file = None
+    ref = record.get("document_ref")
+    if ref and "document.read" in panel["grants"]:
+        from ..server import managed_files
+        root = Path(manager.workdir).resolve()
+        source = directory / f"{UUID(ref)}.pdf"
+        if source.is_symlink() or not source.is_file():
+            raise HTTPException(404, "原始文档不可用")
+        target = root / "upload" / "plugin-evidence" / ref / Path(record["document_name"]).name
+        with managed_files.publish(root, target, source) as published:
+            file = {"name": target.name, "path": str(published.relative_to(root))}
+    return {"text": "\n".join([panel["title"], record["document_name"], selection.text, f"来源 {selection.run}/{selection.item_id}"]), "file": file}
+
+
+@router.post("/panels/{plugin_name}/{panel_id}/runs/{run_id}/cancel")
+async def cancel_panel_run(request: Request, session_id: str, plugin_name: str, panel_id: str, run_id: UUID):
+    session, manager, plugin, _, panel = await _bound_panel(request, session_id, plugin_name, panel_id)
+    path = panel_runs.record_directory(manager, session, plugin, panel) / f"{run_id}.json"
+    item = panel_runs.read_record(path)
+    task = panel_runs._tasks.get(path)
+    if task and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        item = panel_runs.read_record(path)
+    return panel_runs.public(item)
+
+
 @router.post('/install')
 async def import_plugin_package(request: Request, filename: str = Query(...)):
     """以有界流接收插件包，静态安装和登记；不隐式加载代码。"""
     from .package_install import MAX_PACKAGE_BYTES, install_package
-    if not filename.lower().endswith('.tcode-plugin'):
-        raise HTTPException(400, '请选择 .tcode-plugin 文件')
+    if not filename.lower().endswith(('.tcode-plugin', '.zip')):
+        raise HTTPException(400, '请选择 .zip 或 .tcode-plugin 插件包')
     if request.headers.get('content-type', '').split(';')[0] != 'application/octet-stream':
         raise HTTPException(415, '插件包须以 application/octet-stream 上传')
     manager = await _get_plugin_manager()
@@ -145,6 +271,30 @@ async def import_plugin_package(request: Request, filename: str = Query(...)):
         raise HTTPException(409, str(exc)) from exc
     except (ValueError, zipfile.BadZipFile, KeyError, TypeError) as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+class DevelopmentDirectory(BaseModel):
+    path: str
+
+
+@router.post("/development-directory")
+async def register_development_directory(payload: DevelopmentDirectory):
+    manager = await _get_plugin_manager()
+    workspace = Path(manager.workdir).resolve()
+    root = (workspace / payload.path).resolve()
+    if not root.is_relative_to(workspace) or not root.is_dir():
+        raise HTTPException(422, "请选择当前工作区中的插件源码目录")
+    try:
+        manifest = load_manifest(root)
+        if manifest.requested_trust != "isolated":
+            raise ValueError("本地开发插件必须声明 isolated 信任级别")
+        if any(item.get("name") == manifest.name for item in manager._load_configured_plugins()):
+            raise HTTPException(409, "插件已登记，可从列表加载")
+        manager.persist_plugin_enabled_state(name=manifest.name, path=str(root), enabled=False)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"success": True, "installation":{"name":manifest.name, "version":manifest.version,
+                                              "path":str(root), "async_targets":bool(manifest.async_targets)}}
 
 
 @router.post("/load")
@@ -170,6 +320,7 @@ async def load_plugin(request: PluginLoadRequest):
         "enabled": request.enabled,
         "config": effective_config,
         "source": "api.load",
+        "permissions": dict(configured.get("permissions") or {}),
         "_source_root": str(configured.get("_source_root") or manager.workdir),
     }
     plugin_root = manager._resolve_plugin_root(plugin_config)
@@ -177,6 +328,18 @@ async def load_plugin(request: PluginLoadRequest):
         bundled = (Path(__file__).resolve().parents[2] / "plugins").resolve()
         if not plugin_root.is_relative_to(Path(manager.workdir).resolve()) and not plugin_root.is_relative_to(bundled):
             raise HTTPException(403, "Plugin package must belong to this workspace or the bundled catalog")
+    if request.approved_permissions is not None:
+        manifest = load_manifest(plugin_root)
+        declared_permissions = {item.scope:set(item.patterns) for item in manifest.permissions}
+        for scope, patterns in request.approved_permissions.items():
+            if scope not in declared_permissions or not set(patterns) <= declared_permissions[scope]:
+                raise HTTPException(422, "授权超出插件声明")
+        plugin_config["permissions"] = {scope: request.approved_permissions.get(scope, False) for scope in declared_permissions}
+    if request.panel_grants is not None:
+        manifest = load_manifest(plugin_root)
+        declared = {cap for panel in manifest.panels for cap in panel.get("capabilities", [])}
+        if not set(request.panel_grants) <= declared:
+            raise HTTPException(422, "权限超出插件声明")
     try:
         plugin = await manager.load_plugin(plugin_config)
     except Exception as exc:
@@ -196,7 +359,7 @@ async def load_plugin(request: PluginLoadRequest):
         name=request.name,
         path=str(plugin_root) if plugin_root else plugin_config["path"],
         enabled=True,
-        config=effective_config,
+        config=effective_config, panel_grants=request.panel_grants, permissions=plugin_config["permissions"] if request.approved_permissions is not None else None,
     )
     return {
         "success": True,
@@ -204,6 +367,54 @@ async def load_plugin(request: PluginLoadRequest):
         "message": f"Plugin {request.name} loaded successfully",
         "workdir": manager.workdir,
     }
+
+
+class ToolPermission(PluginUnloadRequest):
+    scope: str
+    granted: bool
+
+
+@router.post("/tool-permission")
+async def set_tool_permission(payload: ToolPermission):
+    manager = await _get_plugin_manager(payload.workdir)
+    for item in manager._load_configured_plugins():
+        if item["name"] != payload.name:
+            continue
+        manifest = load_manifest(manager._resolve_plugin_root(item))
+        permission = next((p for p in manifest.permissions if p.scope == payload.scope), None)
+        if permission is None:
+            raise HTTPException(422, "权限超出插件声明")
+        if PluginRegistry.get(payload.name) and not await manager.unload_plugin(payload.name):
+            raise HTTPException(409, "请先停用插件")
+        grants = {**item.get("permissions", {}), permission.scope:list(permission.patterns) if payload.granted else False}
+        manager.persist_plugin_enabled_state(name=payload.name, enabled=False, permissions=grants)
+        return {"success":True}
+    raise HTTPException(404, "插件未登记")
+
+
+class PanelGrants(PluginUnloadRequest):
+    grants: list[str]
+
+
+@router.post("/panel-grants")
+async def update_panel_grants(payload: PanelGrants):
+    manager = await _get_plugin_manager(payload.workdir)
+    for item in manager._load_configured_plugins():
+        if item["name"] != payload.name:
+            continue
+        manifest = load_manifest(manager._resolve_plugin_root(item))
+        declared = {cap for panel in manifest.panels for cap in panel.get("capabilities", [])}
+        if not set(payload.grants) <= declared:
+            raise HTTPException(422, "权限超出插件声明")
+        manager.persist_plugin_enabled_state(name=payload.name, enabled=item["enabled"], panel_grants=payload.grants)
+        return {"success": True}
+    raise HTTPException(404, "插件未安装")
+
+
+@router.get("/activity/{name}")
+async def plugin_activity(name: str):
+    manager = await _get_plugin_manager()
+    return {"running": panel_runs.active_count(manager.workdir, name)}
 
 
 @router.post("/unload")

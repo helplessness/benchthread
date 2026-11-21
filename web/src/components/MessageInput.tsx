@@ -1,3 +1,4 @@
+import {confirmAction} from './FeedbackDialog';
 import { createGuidanceQueue } from './composer/createGuidanceQueue';
 import { recordModelSwitch, confirmModelSwitch } from '../utils/modelSwitchNotice';
 import { createFileMentions } from './composer/createFileMentions';
@@ -18,7 +19,7 @@ import { builtinCommands, filterCommands, findCommandTrigger, parseBuiltinComman
 import { compactSession, getSkillCatalog, type SkillCatalogItem } from '../api/client';
 import { createSignal, createUniqueId, Show, For, onMount, createEffect, onCleanup, createMemo, on, untrack } from 'solid-js';
 import { sendMessage, cancelMessage, getAgents, getModels, getChatRuntimes, selectModel, getPluginCommands, bootstrapSession, closeSessionSubagents, guideRunningSession, askSideQuestion, chatWithSubagent, getTeamCatalog, type ChatRuntimeOption, type PluginCommand } from '../api/client';
-import { HarnessSwitchApiError, switchHarness, type HarnessStateProjection } from '../api/harness';
+import { getHarnessState, HarnessSwitchApiError, switchHarness, type HarnessStateProjection } from '../api/harness';
 import { sessionStore } from '../stores/session';
 import { composerDrafts, composerKey, composerIdentity, type AttachedFile, type ComposerDraft, type StagedGuidance, type StructureRef } from '../stores/composer';
 import FileUpload, { type UploadedFile } from './FileUpload';
@@ -888,9 +889,15 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     }
   });
 
+  const [pluginCatalogRevision, setPluginCatalogRevision] = createSignal(0);
+  onMount(() => {
+    const refresh = () => setPluginCatalogRevision(value => value + 1);
+    window.addEventListener('tcode:plugins-changed', refresh);
+    onCleanup(() => window.removeEventListener('tcode:plugins-changed', refresh));
+  });
   const catalogSessionKey = createMemo(() => {
     const session = sessionStore.currentSession();
-    return JSON.stringify([session?.session_id, session?.workdir, session?.workdir_name]);
+    return JSON.stringify([session?.session_id, session?.workdir, session?.workdir_name, session?.metadata?.harness?.runtime_id, pluginCatalogRevision()]);
   });
   createEffect(on(catalogSessionKey, (key) => {
     const [sessionId, workdir, workdirName] = JSON.parse(key);
@@ -1010,15 +1017,25 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
       setRuntimeLoadError('请先创建会话再切换 Harness');
       return;
     }
+    if (previousRuntime === 'tcode-native' && runtimeId !== 'tcode-native') {
+      const query = new URLSearchParams({session_id:sessionId, workdir:sessionStore.currentSession()?.workdir || ''});
+      const panels = await fetch('/api/plugins/panels?' + query).then(r=>r.ok ? r.json() : null).catch(()=>null);
+      const count = panels?.panels.reduce((n:number,p:{running:number}) => n+p.running, 0);
+      const notice = typeof count === 'number' ? `当前有 ${count} 项插件任务运行中。` : '';
+      if (!await confirmAction('切换后，此会话的 TCode 插件和 Agent 团队入口将停用。'+notice+'已提交的任务继续运行，切回 TCode 可查看结果。', {title:'切换 Harness',confirmLabel:'继续切换'})) return;
+      if (sessionId !== sessionStore.currentSessionId()) return;
+    }
     sessionStore.setHarnessSwitchPending(sessionId, true);
     setRuntimeChangePending(true);
     setRuntimeLoadError('');
     sessionStore.setStatus('正在准备 Harness 交接上下文');
     try {
+      const state = await getHarnessState(sessionId);
+      if (sessionId !== sessionStore.currentSessionId()) return;
       const preferred = preferredHarnessModel();
-      const rememberedModel = String(currentHarnessState().models?.[runtimeId] || '').trim();
+      const rememberedModel = String(state.models?.[runtimeId] || '').trim();
       const targetModel = runtimeId === 'tcode-native'
-        ? rememberedModel || preferred
+        ? (target.models.includes(rememberedModel) ? rememberedModel : '')
         : rememberedModel && target.models.includes(rememberedModel)
           ? rememberedModel
           : target.models.includes(preferred)
@@ -1029,15 +1046,15 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
         {
           target_runtime_id: runtimeId,
           model_id: targetModel,
-          expected_current_runtime_id: currentHarnessState().runtime_id,
-          expected_switch_version: currentHarnessState().switch_version,
+          expected_current_runtime_id: state.runtime_id,
+          expected_switch_version: state.switch_version,
         },
         `switch-${generateId()}`,
       );
       sessionStore.applyServerHarnessState(sessionId, response);
       setSelectedRuntimeId(response.current_runtime_id);
       setDismissedHandoffNoticeId('');
-      setSelectedModel(targetModel);
+      setSelectedModel(response.model_id || targetModel);
       await loadAvailableModels(sessionId);
       sessionStore.setStatus(
         response.handoff?.summary_status === 'fallback'

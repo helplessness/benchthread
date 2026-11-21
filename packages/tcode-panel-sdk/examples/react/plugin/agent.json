@@ -1,0 +1,5 @@
+{
+  "name": "react_sidebar_demo_assistant",
+  "display_name": "问题助手",
+  "prompt": "用简短的中文回答用户的问题。"
+}

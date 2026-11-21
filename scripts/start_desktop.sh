@@ -65,7 +65,7 @@ fi
 if [ ! -d "$PROJECT_DIR/web/node_modules" ]; then
     npm --prefix web ci
 fi
-if [ ! -f web/dist/desktop.html ] || [ -n "$(find web/src web/scripts web/public web/index.html web/desktop.html web/molstar.html web/package.json web/package-lock.json web/tsconfig.json web/vite.config.ts -newer web/dist/desktop.html -print -quit 2>/dev/null)" ]; then
+if [ ! -f web/dist/desktop.html ] || [ -n "$(find packages/tcode-panel-sdk/index.js web/src web/scripts web/public web/index.html web/desktop.html web/molstar.html web/package.json web/package-lock.json web/tsconfig.json web/vite.config.ts -newer web/dist/desktop.html -print -quit 2>/dev/null)" ]; then
     npm --prefix web run build
 fi
 if [ "$MANAGED_E2E" = 1 ]; then

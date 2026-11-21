@@ -178,7 +178,7 @@ frontend_needs_build() {
         return 0
     fi
 
-    if [ -n "$(find web/src web/scripts web/index.html web/desktop.html web/molstar.html web/package.json web/package-lock.json web/tsconfig.json web/vite.config.ts -newer web/dist/index.html -print -quit)" ]; then
+    if [ -n "$(find packages/tcode-panel-sdk/index.js web/src web/scripts web/index.html web/desktop.html web/molstar.html web/package.json web/package-lock.json web/tsconfig.json web/vite.config.ts -newer web/dist/index.html -print -quit)" ]; then
         return 0
     fi
 

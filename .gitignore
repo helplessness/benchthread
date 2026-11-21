@@ -90,7 +90,8 @@ mcp.*.local.json
 # 本机模型、MCP、插件和运行环境配置；公开仓库只提交 *.example.* 模板。
 .tcode-local/
 /.tcode-local copy/
-/tests/
+/tests/*
+!/tests/test_plugin_panels.py
 # 生产运行配置可能包含密码、Token 和代理凭据，只提交 examples 下的模板。
 config/sandbox_production.env
 

@@ -1,6 +1,6 @@
 import { isStudioPage, type StudioPage } from './studioLayout';
 
-export type CompanionView = `browser:${string}` | `sidechat:${string}` | 'collaboration' | 'assets' | 'changes' | 'structure' | 'evidence' | `page:${StudioPage}` | `preview:${string}` | `paper:${string}`;
+export type CompanionView = `plugin:${string}:${string}` | `browser:${string}` | `sidechat:${string}` | 'collaboration' | 'assets' | 'changes' | 'structure' | 'evidence' | `page:${StudioPage}` | `preview:${string}` | `paper:${string}`;
 export type CompanionState = { tabs: CompanionView[]; active: CompanionView; closed: CompanionView[] };
 
 const fixed = new Set<CompanionView>(['collaboration', 'assets', 'changes', 'structure', 'evidence']);
@@ -18,6 +18,7 @@ export function restoreSideChatTabs(state: CompanionState, ids: string[], prefer
 
 export function isCompanionView(value: unknown): value is CompanionView {
   if (typeof value !== 'string') return false;
+  if (/^plugin:[a-z0-9._-]+:[a-z0-9_-]+$/.test(value)) return true;
   if (fixed.has(value as CompanionView)) return true;
   if (isSideChatView(value)) return true;
   if (value.startsWith('page:')) return isStudioPage(value.slice(5));

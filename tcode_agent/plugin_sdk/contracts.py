@@ -9,7 +9,7 @@ from typing import Any, Literal, Protocol
 
 
 PLUGIN_API_VERSION = "1.0"
-PLUGIN_SDK_VERSION = "1.6.0"
+PLUGIN_SDK_VERSION = "1.7.0"
 PLUGIN_SDK_COMPATIBILITY = ">=1.0.0,<2.0.0"
 
 ToolHandler = Callable[

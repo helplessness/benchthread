@@ -1,0 +1,89 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><style>
+:root{color-scheme:light dark;font:15px system-ui}body{margin:16px}label{display:block;margin:16px 0 6px}button,textarea,input{font:inherit}textarea{width:100%;box-sizing:border-box}button{padding:.5em 1em;margin-block:8px}article{border-block-start:1px solid #888;padding-block:10px}blockquote{white-space:pre-wrap;margin-inline:0}
+</style><h2>文献证据助手</h2><label for="paper">选择本地 PDF</label><input type="file" id="paper" accept=".pdf,application/pdf">
+<label for="question">要核对什么问题？</label><textarea id="question" rows="3"></textarea>
+<button type="button" id="search">查找证据</button><p role="status" id="status"></p><section id="results"></section>
+<script>
+const paper = document.querySelector('#paper'), question = document.querySelector('#question');
+const statusLine = document.querySelector('#status'), results = document.querySelector('#results');
+const search = document.querySelector('#search');
+const sdk = window.tcodePanel;
+let timer;
+function action(label, fn) {
+  const button = document.createElement('button');
+  button.textContent = label;
+  button.onclick = async () => {
+    button.disabled = true;
+    try { await fn(); } catch (error) {statusLine.textContent = error.message;}
+    finally { button.disabled = false; }
+  };
+  return button;
+}
+function cards(result) {
+  try {
+    const value = JSON.parse(result.trim().replace(/^\x60\x60\x60(?:json)?\s*/i,'').replace(/\s*\x60\x60\x60$/,''));
+    return Array.isArray(value) ? value : [value];
+  } catch {return [{conclusion:result}];}
+}
+async function refresh() {
+  clearTimeout(timer);
+  const {runs} = await sdk.history();
+  results.replaceChildren();
+  for (const run of runs.filter(item=>!item.source_run)) {
+    const article = document.createElement('article');
+    const title = document.createElement('h3');
+    title.textContent = run.question;
+    article.append(title);
+    if (run.status !== 'completed') {
+      if (run.status === "running") article.append(action("停止任务",async()=>{await sdk.cancel(run.id);await refresh();}));
+      article.append(document.createTextNode(run.error || ({running:'团队正在处理…',interrupted:'任务已中断',cancelled:'任务已停止'}[run.status] || run.status)));
+    } else {
+      const items = cards(run.result);
+      if (!items.length) article.append(document.createTextNode('没有找到支持该结论的证据。'));
+      for (const [index,item] of items.entries()) {
+        const itemId = run.id + "-" + index;
+        const quote = document.createElement('blockquote');
+        quote.textContent = [item.page && '第 '+String(item.page).replace(/[^0-9–-]/g,'')+' 页',item.quote,item.conclusion,item.limitation].filter(Boolean).join('\n') || JSON.stringify(item);
+        article.append(quote,action('核对这一条',async () => {
+          await sdk.submit({request_id:crypto.randomUUID(),source_run:run.id,item_id:itemId,selection:quote.textContent,question:'请只核对选中的这条证据。'});
+          await refresh();
+        }),action('带入对话',async () => {
+          await sdk.share({run:run.id,item_id:itemId,text:quote.textContent});
+          statusLine.textContent='证据已加入对话草稿';
+        }));
+        for (const review of runs.filter(r=>r.source_run===run.id && r.item_id===itemId)) {
+          const section=document.createElement('section');
+          section.setAttribute('aria-label','条目复核');
+          section.textContent=review.status==='completed'
+            ? '复核结果：'+cards(review.result).map(card=>[card.conclusion,card.limitation].filter(Boolean).join(' ')).join(' ')
+            : review.error || (review.status==='running' ? '正在复核这一条…' : review.status);
+          if (review.status==='running') section.append(action('停止复核',async()=>{await sdk.cancel(review.id);await refresh();}));
+          article.append(section);
+        }
+      }
+    }
+    results.append(article);
+  }
+  if (runs.some(run=>run.status==='running')) timer=setTimeout(()=>refresh().catch(showError),1500);
+}
+function showError(error) {statusLine.textContent=error.message;}
+search.onclick = async () => {
+  const file=paper.files[0], prompt=question.value.trim();
+  if (!file || !prompt) {statusLine.textContent='请选择 PDF 并输入问题';return;}
+  if (file.size>8*1024*1024) {statusLine.textContent='请选择 8 MiB 以内的 PDF';return;}
+  search.disabled=true;
+  try {
+    const encoded=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result.split(',')[1]);
+      reader.onerror=()=>reject(new Error('文档读取失败'));
+      reader.readAsDataURL(file);
+    });
+    await sdk.submit({request_id:crypto.randomUUID(),question:prompt,document_name:file.name,pdf:encoded});
+    statusLine.textContent='';
+    await refresh();
+  } catch(error) {showError(error);}
+  finally {search.disabled=false;}
+};
+refresh().catch(showError);
+</script></html>

@@ -167,7 +167,7 @@ TCODE_SANDBOX_EGRESS_PROXY_CONTAINER=tcode-egress-proxy
 
 ## 文档与开发
 
-- **接入示例**：[部署自己的 FastMCP 服务](tcode_agent/MCP_QUICKSTART.md#部署自己的-fastmcp-服务) · [纯 JSON 异步 MCP](examples/third_party_mcp/json-async/README.md)（不需要文件 SDK） · [文件传输 SDK](packages/artifact-sdk/README.md)（远端收发文件） · [插件 SDK](docs/plugin-sdk/README.md)（BenchThread 侧扩展）。
+- **接入示例**：[部署自己的 FastMCP 服务](tcode_agent/MCP_QUICKSTART.md#部署自己的-fastmcp-服务) · [纯 JSON 异步 MCP](examples/third_party_mcp/json-async/README.md)（不需要文件 SDK） · [文件传输 SDK](packages/artifact-sdk/README.md)（远端收发文件） · [插件 SDK](docs/plugin-sdk/README.md)（BenchThread 侧扩展） · [React / Vue 侧栏前端 SDK](packages/tcode-panel-sdk/README.md)。
 - **项目维护**：[文档目录](docs/README.md) · [项目架构](docs/MAINTENANCE.md) · [贡献指南](CONTRIBUTING.md) · [安全与漏洞报告](SECURITY.md)。
 
 ## 许可证与来源

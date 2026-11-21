@@ -19,6 +19,7 @@ from ..config.options import TEMPLATE_MODEL_REFS
 from ..mcp.manager_auto import MCPManager
 from ..mcp.executor_config import resolve_executor_mcp_config, executor_config_candidates, broker_servers
 from ..plugins.manager import PluginManager
+from ..plugins.registry import PluginRegistry
 from ..runtime.gateway import agent_backend_registry, runtime_registry
 from ..runtime.model_policy import native_model_ids
 from ..team.catalog import TeamCatalog
@@ -200,6 +201,12 @@ async def list_agents(
             timeout=plugin_request_wait_seconds(),
         )
         await PluginManager.get_global(workdir=workdir, ensure_configured=False)
+        external = False
+        if session_id:
+            from .harness_api import _owned_session, harness_projection_for_session
+            session = await _owned_session(session_id, request)
+            external = harness_projection_for_session(session)["runtime_id"] != "tcode-native"
+        excluded = PluginRegistry.agent_names() if external else set()
         hidden_agent_names = {
             agent_name
             for entry in TeamCatalog.list(available_only=True)
@@ -215,11 +222,14 @@ async def list_agents(
             for agent in BuiltinAgents.list()
             if (
                 not agent.hidden
+                and agent.name not in excluded
                 and agent.mode in {AgentMode.PRIMARY, AgentMode.MANAGER}
                 and agent.name not in hidden_agent_names
             )
         ]
         for entry in TeamCatalog.visible_alias_entries():
+            if entry.runtime_agent in excluded:
+                continue
             agents.append(
                 {
                     "name": entry.visible_agent_name,
@@ -250,6 +260,12 @@ async def get_team_catalog(
         )
         await PluginManager.get_global(workdir=workdir, ensure_configured=False)
         teams = TeamCatalog.api_payload()
+        if session_id:
+            from .harness_api import _owned_session, harness_projection_for_session
+            session = await _owned_session(session_id, request)
+            if harness_projection_for_session(session)["runtime_id"] != "tcode-native":
+                excluded = PluginRegistry.agent_names()
+                teams = [team for team in teams if team.get("runtime_agent") not in excluded]
     return {"teams": teams}
 
 

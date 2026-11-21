@@ -357,6 +357,19 @@ def validate_plugin_package(plugin_root: str | Path) -> list[str]:
                         field_name=f"{field_name}[{index}]",
                         errors=errors,
                     )
+    panel_ids = set()
+    for panel in document.get("panels", []) if isinstance(document.get("panels"), list) else []:
+        if not isinstance(panel, dict):
+            continue
+        identifier = panel.get("id")
+        if isinstance(identifier, str):
+            if identifier in panel_ids:
+                errors.append(f"panels: duplicate id {identifier}")
+            panel_ids.add(identifier)
+        if isinstance(panel.get("entry"), str):
+            path = _checked_package_path(root, panel["entry"], field_name="panels.entry", errors=errors)
+            if path is not None and not path.is_file():
+                errors.append("panels.entry: must be an HTML file")
     config_schema = document.get("configSchema")
     if isinstance(config_schema, str) and config_schema:
         config_path = _checked_package_path(
@@ -420,6 +433,8 @@ def contract_test_plugin(plugin_root: str | Path) -> list[PluginDiagnostic]:
     ]
     try:
         manifest = json.loads((root / "plugin.json").read_text(encoding="utf-8"))
+        if manifest.get("runtime") == "declarative":
+            return diagnostics
         entry = str(manifest.get("entry") or "").split(":", 1)[0]
         entry_path = (root / entry).resolve()
         entry_path.relative_to(root)

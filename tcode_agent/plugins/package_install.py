@@ -94,6 +94,7 @@ def install_package(manager, package: Path) -> dict:
         raise ValueError('插件名称必须为小写字母、数字、连字符或下划线，且不超过 64 字符')
     workspace = Path(manager.workdir).resolve()
     base = workspace / '.tcode' / 'installed-plugins'
+    workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
     for directory in (workspace / '.tcode', base):
         if directory.is_symlink():
             raise ValueError('插件安装目录不能是符号链接')

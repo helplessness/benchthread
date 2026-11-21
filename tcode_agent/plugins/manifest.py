@@ -14,13 +14,12 @@ from jsonschema.exceptions import SchemaError, best_match
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version
 
+from ..plugin_sdk.contracts import PLUGIN_API_VERSION, PLUGIN_SDK_VERSION
 from .permissions import PluginPermission, PluginPermissionScope
 
 
-PLUGIN_API_VERSION = "1.0"
-PLUGIN_SDK_VERSION = "1.6.0"
 PLUGIN_MANIFEST_FILENAME = "plugin.json"
-SUPPORTED_PLUGIN_RUNTIMES = frozenset({"python"})
+SUPPORTED_PLUGIN_RUNTIMES = frozenset({"python", "declarative"})
 SUPPORTED_PLUGIN_SCOPES = frozenset({"workspace"})
 SUPPORTED_REQUESTED_TRUST = frozenset(
     {"builtin", "trusted", "isolated", "quarantined"}
@@ -67,6 +66,7 @@ _OPTIONAL_FIELDS = frozenset(
         "workflows",
         "contributes",
         "desktopRuntime",
+        "panels",
     }
 )
 _SUPPORTED_CONTRIBUTIONS = frozenset({"tools", "prompt", "events", "verifiers"})
@@ -350,6 +350,7 @@ class PluginManifest:
     scope: str
     config_schema: Optional[str]
     requested_trust: str
+    panels: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     desktop_runtime: str = "remote"
     description: str = ""
     author: str = ""
@@ -425,9 +426,8 @@ class PluginManifest:
             "version": self.version,
             "apiVersion": self.api_version,
             "sdk": self.sdk,
-            "python": self.python,
+            **({"python": self.python, "entry": self.entry} if self.entry else {}),
             "runtime": self.runtime,
-            "entry": self.entry,
             "provides": list(self.provides),
             "requires": list(self.requires),
             "optional": list(self.optional),
@@ -436,6 +436,7 @@ class PluginManifest:
             "configSchema": self.config_schema,
             "requestedTrust": self.requested_trust,
             "desktopRuntime": self.desktop_runtime,
+            **({"panels": list(self.panels)} if self.panels else {}),
             "description": self.description,
             "author": self.author,
             "homepage": self.homepage,
@@ -472,7 +473,9 @@ class PluginManifest:
                 + ", ".join(forbidden),
                 path=manifest_path,
             )
-        missing = sorted(_REQUIRED_FIELDS - keys)
+        declarative = data.get("runtime") == "declarative"
+        required = _REQUIRED_FIELDS - {"entry", "python"} if declarative else _REQUIRED_FIELDS
+        missing = sorted(required - keys)
         if missing:
             raise PluginManifestSchemaError(
                 "Manifest v2 requires fields: " + ", ".join(missing),
@@ -513,7 +516,7 @@ class PluginManifest:
             )
         sdk = _strict_string(data["sdk"], field_name="sdk", path=manifest_path)
         python = _strict_string(
-            data["python"], field_name="python", path=manifest_path
+            data.get("python", ">=3.11"), field_name="python", path=manifest_path
         )
         for field_name, specifier, current_version in (
             ("sdk", sdk, PLUGIN_SDK_VERSION),
@@ -545,22 +548,24 @@ class PluginManifest:
                 f"unsupported runtime {runtime!r}",
                 path=manifest_path,
             )
-        entry = _strict_string(
-            data["entry"],
-            field_name="entry",
-            path=manifest_path,
-        )
-        if entry.count(":") != 1:
-            raise PluginManifestEntryError(
-                "entry must use '<relative-python-file>:<symbol>'",
+        entry = ""
+        if not declarative:
+            entry = _strict_string(
+                data["entry"],
+                field_name="entry",
                 path=manifest_path,
             )
-        entry_module, entry_symbol = entry.split(":", 1)
-        if not entry_module.endswith(".py") or not _ENTRY_SYMBOL_PATTERN.fullmatch(entry_symbol):
-            raise PluginManifestEntryError(
-                "entry must use '<relative-python-file>:<python-symbol>'",
-                path=manifest_path,
-            )
+            if entry.count(":") != 1:
+                raise PluginManifestEntryError(
+                    "entry must use '<relative-python-file>:<symbol>'",
+                    path=manifest_path,
+                )
+            entry_module, entry_symbol = entry.split(":", 1)
+            if not entry_module.endswith(".py") or not _ENTRY_SYMBOL_PATTERN.fullmatch(entry_symbol):
+                raise PluginManifestEntryError(
+                    "entry must use '<relative-python-file>:<python-symbol>'",
+                    path=manifest_path,
+                )
 
         provides = _strict_string_list(
             data["provides"],
@@ -646,7 +651,12 @@ class PluginManifest:
         else:
             config_schema = None
 
+        _validate_release_schema(data, path=manifest_path)
+        panels = tuple(data.get("panels", ()))
+        if len({panel["id"] for panel in panels}) != len(panels):
+            raise PluginManifestSchemaError("duplicate panel id", path=manifest_path)
         manifest = cls(
+            panels=panels,
             name=name,
             version=version,
             api_version=api_version,
@@ -710,7 +720,6 @@ class PluginManifest:
             package_root=package_root.resolve() if package_root is not None else None,
             manifest_path=manifest_path,
         )
-        _validate_release_schema(data, path=manifest_path)
         if validate_package:
             manifest = manifest._validated_package()
         return manifest
@@ -720,7 +729,14 @@ class PluginManifest:
             raise PluginManifestSchemaError("plugin package root is required")
         # Resolve every path before importing the entry module. This also blocks
         # symlink and '..' escapes outside the package root.
-        self.entry_path
+        if self.entry:
+            self.entry_path
+        for panel in self.panels:
+            _relative_package_path(self.package_root, panel["entry"], field_name="panels.entry",
+                                   manifest_path=self.manifest_path, must_be_file=True)
+        if self.runtime == "declarative":
+            from .declarative_agents import read_agents
+            read_agents(self.package_root, self)
         if self.async_targets:
             from .async_targets import declarations
             declarations(self.package_root, self.async_targets)

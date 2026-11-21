@@ -13,6 +13,7 @@ RUN mkdir -p /opt/lark-cli \
         && install -m 0755 /usr/local/lib/node_modules/@larksuite/cli/bin/lark-cli /opt/lark-cli/lark-cli; \
     fi
 COPY web/ ./
+COPY packages/tcode-panel-sdk/index.js /src/packages/tcode-panel-sdk/index.js
 # The Web type check also covers tests that import this checked-in scene fixture.
 COPY docs/IntelligentUI/examples/guided-bearing.json /src/docs/IntelligentUI/examples/
 # Rollup's production graph exceeds Node's default container heap.

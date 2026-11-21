@@ -34,10 +34,10 @@
 | `name` | 小写字母、数字、`.`、`_`、`-`，最多 128 字符 | 稳定插件 ID，必须与 `PluginMetadata.name` 一致 |
 | `version` | SemVer，如 `1.2.3` | 必须与 `PluginMetadata.version` 一致 |
 | `apiVersion` | 固定 `1.0` | Plugin API 主次版本 |
-| `sdk` | PEP 440 范围 | 必须包含当前 SDK `1.4.0` |
-| `python` | PEP 440 范围 | 必须包含实际 Host Python 版本 |
-| `runtime` | 固定 `python` | 当前唯一插件语言 |
-| `entry` | `<相对.py文件>:<符号>` | 例如 `plugin.py:Plugin` |
+| `sdk` | PEP 440 范围 | 必须包含当前 SDK `1.7.0` |
+| `python` | PEP 440 范围 | Python 插件必填，须覆盖宿主 Python 版本 |
+| `runtime` | `python` 或 `declarative` | Python 扩展或由宿主加载的声明式面板、角色与团队 |
+| `entry` | `<相对.py文件>:<符号>` | Python 插件必填，例如 `plugin.py:Plugin` |
 | `provides` | ServiceKey 数组 | 该包提供的版本化能力 |
 | `requires` | ServiceKey 数组 | 缺少任一能力时拒绝加载 |
 | `optional` | ServiceKey 数组 | 缺失时允许继续加载 |

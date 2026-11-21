@@ -13,8 +13,6 @@ from urllib.parse import urlsplit
 import httpx
 from jsonschema import Draft202012Validator
 
-from .registry import PluginRegistry
-
 
 def declarations(root: Path, paths) -> list[dict]:
     targets = []
@@ -188,6 +186,8 @@ async def restore_plugin(workdir, loaded, *, inactive_only=False):
 
 
 def find_target(workdir, server, owner=''):
+    from .registry import PluginRegistry
+
     with store(workdir) as db:
         rows = db.execute('SELECT owner,plugin,target,data FROM bindings').fetchall()
     for binding_owner, plugin, target_id, raw in rows:
@@ -207,6 +207,8 @@ def find_target(workdir, server, owner=''):
 
 
 def approved_servers(workdir, owner):
+    from .registry import PluginRegistry
+
     with store(workdir) as db:
         rows = db.execute('SELECT plugin,data FROM bindings WHERE owner=?', (owner,)).fetchall()
     return {data.get('alias', data['server']).lower() if data.get('origin') == 'mcp-config' else data['server']
@@ -215,6 +217,8 @@ def approved_servers(workdir, owner):
 
 
 def approved_target_version(workdir, owner, server):
+    from .registry import PluginRegistry
+
     with store(workdir) as db:
         rows = db.execute('SELECT plugin,data FROM bindings WHERE owner=?', (owner,)).fetchall()
     for plugin, raw in rows:

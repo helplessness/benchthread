@@ -1,0 +1,27 @@
+{
+  "name": "evidence-assistant",
+  "version": "0.1.0",
+  "description": "从本地文献查找可追溯的证据，并复核选中的条目。",
+  "apiVersion": "1.0",
+  "sdk": ">=1.7,<2",
+  "runtime": "declarative",
+  "provides": [],
+  "requires": [],
+  "optional": [],
+  "permissions": [],
+  "scope": "workspace",
+  "configSchema": null,
+  "requestedTrust": "isolated",
+  "panels": [
+    {
+      "id": "evidence",
+      "title": "文献证据助手",
+      "entry": "panel.html",
+      "agent": "evidence_assistant_review",
+      "capabilities": ["document.read", "team.run", "selection.share"]
+    }
+  ],
+  "agents": [
+    "agents"
+  ]
+}

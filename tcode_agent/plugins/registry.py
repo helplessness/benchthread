@@ -140,6 +140,10 @@ class PluginRegistry(metaclass=WorkspaceRegistryMeta):
         return cls._plugins.get(name)
 
     @classmethod
+    def agent_names(cls) -> set[str]:
+        return {agent for plugin in cls.list_all() for agent in plugin.agents}
+
+    @classmethod
     def list_all(cls) -> list[LoadedPlugin]:
         return list(cls._plugins.values())
 

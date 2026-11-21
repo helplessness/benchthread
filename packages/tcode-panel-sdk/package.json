@@ -1,0 +1,16 @@
+{
+  "name": "@tcode-ai/panel-sdk",
+  "version": "0.1.0",
+  "description": "TCode 侧栏插件浏览器 SDK 与本地模拟宿主",
+  "license": "MIT",
+  "type": "module",
+  "main": "./client.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": { "types": "./index.d.ts", "import": "./client.js" },
+    "./mock": { "types": "./mock.d.ts", "import": "./mock.js" }
+  },
+  "files": ["client.js", "index.d.ts", "mock.js", "mock.d.ts", "examples/*/package.json", "examples/*/index.html", "examples/*/src/*", "examples/*/vite.config.js", "examples/*/plugin/plugin.json", "examples/*/plugin/agent.json", "LICENSE", "README.md"],
+  "scripts": { "test": "node --test test/*.test.js" },
+  "publishConfig": { "access": "public" }
+}

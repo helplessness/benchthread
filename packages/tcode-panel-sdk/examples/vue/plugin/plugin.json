@@ -1,0 +1,30 @@
+{
+  "name": "vue-sidebar-demo",
+  "version": "0.1.0",
+  "description": "在侧栏提问，并把选中的回答带入对话。",
+  "apiVersion": "1.0",
+  "sdk": ">=1.7,<2",
+  "runtime": "declarative",
+  "provides": [],
+  "requires": [],
+  "optional": [],
+  "permissions": [],
+  "scope": "workspace",
+  "configSchema": null,
+  "requestedTrust": "isolated",
+  "panels": [
+    {
+      "id": "assistant",
+      "title": "Vue 问题助手",
+      "entry": "ui/index.html",
+      "agent": "vue_sidebar_demo_assistant",
+      "capabilities": [
+        "team.run",
+        "selection.share"
+      ]
+    }
+  ],
+  "agents": [
+    "agent.json"
+  ]
+}

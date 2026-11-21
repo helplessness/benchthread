@@ -17,8 +17,8 @@
     "test": "vitest run --environment node"
   },
   "dependencies": {
-    "@ag-ui/client": "0.0.59",
-    "@ag-ui/core": "0.0.59",
+    "@ag-ui/client": "1.0.5",
+    "@ag-ui/core": "1.0.5",
     "@antv/g6": "^5.1.1",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
@@ -27,17 +27,16 @@
     "@codemirror/search": "^6.7.1",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
-    "@mcp-ui/client": "7.1.1",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@open-file-viewer/core": "0.1.48",
     "dompurify": "^3.4.17",
     "gifenc": "1.0.3",
     "highlight.js": "^11.11.1",
-    "katex": "^0.16.22",
+    "katex": "^0.18.2",
     "marked": "^16.4.0",
     "mermaid": "^11.12.0",
     "molstar": "5.11.0",
-    "solid-js": "^1.9.5",
+    "solid-js": "^1.9.16",
     "three": "0.184.0",
     "zod": "^4.6.6"
   },
@@ -49,8 +48,16 @@
     "daisyui": "^5.3.7",
     "tailwindcss": "^4.1.15",
     "typescript": "^5.6.2",
-    "vite": "6.4.3",
+    "vite": "6.4.6",
     "vite-plugin-solid": "^2.11.9",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "@open-file-viewer/core": {
+      "ag-psd": "^31.0.3"
+    },
+    "mermaid": {
+      "katex": "$katex"
+    }
   }
 }

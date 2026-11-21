@@ -40,7 +40,14 @@ type PluginInfo = {
   }>;
 };
 
+const capabilityLabel: Record<string,string> = {
+  'document.read':'读取你选择的文档', 'team.run':'调用本插件的 Agent 团队', 'selection.share':'将选中内容带入对话草稿',
+};
 type AvailablePlugin = {
+  approved_permissions?:Record<string,unknown>;
+  requested_permissions?:Array<{scope:string;patterns:string[];required:boolean;description?:string}>;
+  panel_capabilities?:string[];
+  panel_grants?:string[];
   name: string;
   path: string;
   description?: string;
@@ -124,6 +131,7 @@ export default function PluginPanel(props: PluginPanelProps) {
   const [message, setMessage] = createSignal<{ type: 'success' | 'error'; text: string } | null>(null);
   const [advanced, setAdvanced] = createSignal(false);
   const [installOpen, setInstallOpen] = createSignal(false);
+  const [developmentPath,setDevelopmentPath] = createSignal('');
   const [packageFile, setPackageFile] = createSignal<File>();
   const [installing, setInstalling] = createSignal(false);
   const [installError, setInstallError] = createSignal('');
@@ -171,7 +179,7 @@ export default function PluginPanel(props: PluginPanelProps) {
     if (!file || installing()) return;
     setInstalling(true); setInstallError(''); setInstallation(undefined);
     try {
-      if (!file.name.toLowerCase().endsWith('.tcode-plugin')) throw new Error('请选择 .tcode-plugin 文件');
+      if (!/\.(?:zip|tcode-plugin)$/i.test(file.name)) throw new Error('请选择 .zip 或 .tcode-plugin 插件包');
       if (file.size > 32 * 1024 * 1024) throw new Error('插件包不能超过 32 MiB');
       const url = new URL(pluginApiUrl('install'), window.location.origin);
       url.searchParams.set('filename', file.name);
@@ -185,6 +193,7 @@ export default function PluginPanel(props: PluginPanelProps) {
       setInstallation(data.installation); setPackageFile(undefined);
       if (packageInput) packageInput.value = '';
       await loadPlugins();
+      window.dispatchEvent(new Event('tcode:plugins-changed'));
     } catch (error) {
       if (workdir === normalizedWorkdir()) setInstallError(error instanceof Error ? error.message : '插件安装失败');
     } finally { setInstalling(false); }
@@ -196,6 +205,21 @@ export default function PluginPanel(props: PluginPanelProps) {
     setInstallOpen(false);
     if (packageInput) packageInput.value = '';
   });
+
+  const registerDirectory = async () => {
+    const workdir = normalizedWorkdir();
+    setInstalling(true); setInstallError('');
+    try {
+      const response = await fetch(pluginApiUrl('development-directory'),{method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({path:developmentPath().trim()})});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || '开发目录登记失败');
+      if (workdir !== normalizedWorkdir()) return;
+      setInstallation(data.installation); setDevelopmentPath('');
+      await loadPlugins();
+    } catch (error) {setInstallError(error instanceof Error ? error.message : '开发目录登记失败');}
+    finally {setInstalling(false);}
+  };
 
   /** 并行读取插件列表与可用目录，并忽略已经过期的并发响应。 */
   const loadPlugins = async () => {
@@ -250,12 +274,18 @@ export default function PluginPanel(props: PluginPanelProps) {
   };
 
   const loadPlugin = async (name: string, path: string) => {
+    const item = availablePlugins().find(p=>p.name===name);
+    const declared = item?.panel_capabilities || [];
+    const permissions = (item?.requested_permissions || []).filter(p=>item?.approved_permissions?.[p.scope] !== false);
+    const labels = [...declared.map(cap => capabilityLabel[cap] || cap), ...permissions.map(p=>[p.description || p.scope, p.patterns.join(', ')].join(' · '))];
+    const approved = item?.requested_permissions?.length ? Object.fromEntries(permissions.map(p=>[p.scope,p.patterns])) : undefined;
+    if (labels.length && !await confirmAction(labels.join('\n'), {title:'插件申请以下权限',confirmLabel:'同意并加载'})) return;
     setLoading(true);
     try {
       const response = await fetch('/api/plugins/load', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, enabled: true, workdir: props.workdir }),
+        body: JSON.stringify({ name, path, enabled: true, workdir: props.workdir, panel_grants:declared, approved_permissions:approved }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) {
@@ -265,6 +295,7 @@ export default function PluginPanel(props: PluginPanelProps) {
       }
       showMessage('success', `插件 ${name} 已加载`);
       await loadPlugins();
+      window.dispatchEvent(new Event('tcode:plugins-changed'));
     } catch (error) {
       console.error(error);
       showMessage('error', error instanceof Error ? error.message : '加载插件失败');
@@ -273,7 +304,30 @@ export default function PluginPanel(props: PluginPanelProps) {
     }
   };
 
+  const changeToolPermission = async (plugin:AvailablePlugin, scope:string, granted:boolean) => {
+    if (plugin.loaded && !await confirmAction('修改后将停用插件。重新加载后，工具按新权限运行。',{title:'修改工具权限',confirmLabel:'修改并停用'})) return;
+    const response = await fetch(pluginApiUrl('tool-permission'),{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:plugin.name,scope,granted})});
+    if (!response.ok) showMessage('error','未能更改工具权限');
+    await loadPlugins();
+    window.dispatchEvent(new Event('tcode:plugins-changed'));
+  };
+
+  const changeGrant = async (plugin: AvailablePlugin, cap:string, allow:boolean) => {
+    const grants = new Set(plugin.panel_grants || []);
+    if (allow) grants.add(cap); else grants.delete(cap);
+    const response = await fetch(pluginApiUrl('panel-grants'), {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:plugin.name, grants:[...grants]})});
+    if (!response.ok) showMessage('error', '未能更改权限');
+    await loadPlugins();
+    window.dispatchEvent(new Event('tcode:plugins-changed'));
+  };
+
   const unloadPlugin = async (name: string) => {
+    const workdir = normalizedWorkdir();
+    const activity = await fetch(pluginApiUrl('activity/'+encodeURIComponent(name))).then(r=>r.ok?r.json():null).catch(()=>null);
+    if (activity?.running && !await confirmAction(`当前有 ${activity.running} 项插件任务运行中。卸载后将停止后续团队调用，保留已有结果。也可以返回面板等待完成。`,{title:'卸载运行中的插件',confirmLabel:'继续卸载'})) return;
+    if (workdir !== normalizedWorkdir()) return;
     setLoading(true);
     try {
       const response = await fetch('/api/plugins/unload', {
@@ -288,6 +342,7 @@ export default function PluginPanel(props: PluginPanelProps) {
       }
       showMessage('success', `插件 ${name} 已卸载`);
       await loadPlugins();
+      window.dispatchEvent(new Event('tcode:plugins-changed'));
     } finally {
       setLoading(false);
     }
@@ -308,6 +363,7 @@ export default function PluginPanel(props: PluginPanelProps) {
       if (installation()?.name === name) setInstallation(undefined);
       showMessage('success', `插件 ${name} 已删除，已有任务结果已保留`);
       await loadPlugins();
+      window.dispatchEvent(new Event('tcode:plugins-changed'));
     } catch (error) {
       showMessage('error', error instanceof Error ? error.message : '删除插件失败');
     } finally { setLoading(false); }
@@ -329,6 +385,7 @@ export default function PluginPanel(props: PluginPanelProps) {
         showMessage('success', `已重新加载 ${data.loaded_count} 个插件`);
       }
       await loadPlugins();
+      window.dispatchEvent(new Event('tcode:plugins-changed'));
     } finally {
       setLoading(false);
     }
@@ -392,11 +449,15 @@ export default function PluginPanel(props: PluginPanelProps) {
       <Show when={installOpen()}>
         <FeedbackDialog title="安装插件" tone="info" onClose={closeInstaller}>
         <section class="plugin-package-import plugin-install-body" aria-label="导入插件包" aria-busy={installing()}>
-          <label class="block font-semibold" for="plugin-package-file">导入 .tcode-plugin 插件包</label>
+          <label class="block font-semibold" for="plugin-package-file">导入 .zip 或 .tcode-plugin 插件包</label>
           <p class="my-2 leading-6">安装到当前工作区并自动登记，无需编辑 plugins.json。导入不会运行代码；加载后仍需单独授权异步 MCP。</p>
           <p class="mb-3 leading-6">仅导入可信来源。此入口校验包结构与摘要，不验证发布者签名；插件始终按隔离模式安装。</p>
-          <input ref={packageInput} id="plugin-package-file" type="file" accept=".tcode-plugin" disabled={installing()} class="block w-full rounded-lg border border-[#65717c] p-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400" onChange={e => { setPackageFile(e.currentTarget.files?.[0]); setInstallError(''); }} />
+          <input ref={packageInput} id="plugin-package-file" type="file" accept=".zip,.tcode-plugin" disabled={installing()} class="block w-full rounded-lg border border-[#65717c] p-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400" onChange={e => { setPackageFile(e.currentTarget.files?.[0]); setInstallError(''); }} />
           <button type="button" disabled={!packageFile() || installing()} class="mt-3 min-h-10 rounded-lg border border-[#65717c] px-4 py-2 font-semibold hover:bg-[#29353e] focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50" onClick={() => void installPackage()}>{installing() ? '正在校验并安装…' : '安装插件包'}</button>
+          <details><summary>从本地开发目录导入</summary>
+            <label>工作区内的插件目录<input value={developmentPath()} onInput={e=>setDevelopmentPath(e.currentTarget.value)} placeholder="例如 plugins/my-plugin" /></label>
+            <button type="button" disabled={!developmentPath().trim() || installing()} onClick={()=>void registerDirectory()}>登记开发目录</button>
+          </details>
           <Show when={installError()}><p role="alert" class="mt-3 leading-6">{installError()}</p></Show>
           <Show when={installation()}>{installed => <div class="mt-3 space-y-2" role="status">
             <p>已安装 {installed().name} v{installed().version}，当前{loadedPlugins().some(p => p.name === installed().name) ? '已加载' : '未加载'}。</p>
@@ -458,6 +519,14 @@ export default function PluginPanel(props: PluginPanelProps) {
                       </div>
                       <p class="plugin-card-description">{plugin.description || '暂无描述。'}</p>
                       <Show when={plugin.availability_message}><p class="plugin-card-note">{plugin.availability_message}</p></Show>
+                      <For each={plugin.requested_permissions || []}>{permission =>
+                        <label><input type="checkbox" checked={plugin.approved_permissions?.[permission.scope] !== false}
+                          onChange={e=>void changeToolPermission(plugin,permission.scope,e.currentTarget.checked)}/>
+                          {permission.description || permission.scope} · {permission.patterns.join(', ')}{permission.required ? '（必需）' : ''}</label>
+                      }</For>
+                      <Show when={plugin.loaded}><For each={plugin.panel_capabilities || []}>{cap =>
+                        <label><input type="checkbox" checked={plugin.panel_grants?.includes(cap)} onChange={e=>void changeGrant(plugin,cap,e.currentTarget.checked)}/> {capabilityLabel[cap] || cap}</label>
+                      }</For></Show>
                       <div class="plugin-card-actions">
                         <Show when={plugin.loaded} fallback={<Show when={plugin.loadable !== false}><button class="plugin-action plugin-action-primary" disabled={loading()} onClick={() => loadPlugin(plugin.name, plugin.path)}>加载</button></Show>}>
                           <button class="plugin-action" disabled={loading()} onClick={() => unloadPlugin(plugin.name)} title="停止运行并保留安装文件">卸载</button>

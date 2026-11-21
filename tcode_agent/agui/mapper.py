@@ -152,9 +152,10 @@ def runtime_event_to_agui(event: RuntimeEventValue) -> dict[str, Any] | None:
             {
                 "toolCallId": event.tool_call_id,
                 "toolCallName": event.tool_name,
-                "parentMessageId": event.message_id or None,
             }
         )
+        if event.message_id:
+            value["parentMessageId"] = event.message_id
         return value
     if event_type == "tool.args":
         value = _base(event, "TOOL_CALL_ARGS")
