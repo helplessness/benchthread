@@ -228,6 +228,34 @@ async def put_mcp_config(name: str, request: Request):
         return await _put_mcp_config(name, request)
 
 
+@router.post("/{name}/test")
+async def test_mcp_service(name: str, request: Request):
+    """Open a short-lived session using only the saved service configuration."""
+    from .desktop_config import remote_services_paused
+    from .managed_job_protocol import effective_config
+
+    _require_admin(request)
+    entry = effective_config(_read()).get(name)
+    if name.startswith("$") or not isinstance(entry, dict):
+        raise HTTPException(404, "未找到此 MCP 服务")
+    _check_binding(entry, request)
+    if entry.get("enabled") is False or remote_services_paused():
+        raise HTTPException(409, "服务已停用或远端连接已暂停")
+    transport = entry.get("transport", "streamable-http")
+    if transport not in {"streamable-http", "sse"} or not entry.get("url"):
+        raise HTTPException(400, "该服务未配置可测试的 HTTP 或 SSE 地址")
+    from fastmcp import Client
+    from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+    try:
+        headers = MCPManager._resolve_header_environment(entry.get("headers") or {})
+        protocol = SSETransport if transport == "sse" else StreamableHttpTransport
+        async with Client(protocol(entry["url"], headers=headers), init_timeout=15, timeout=15) as client:
+            tools = await client.list_tools()
+        return {"tools": len(tools)}
+    except Exception:
+        raise HTTPException(502, "连接测试失败，请检查服务地址、凭据和网络") from None
+
+
 async def _put_mcp_config(name: str, request: Request):
     _require_admin(request)
     if _web_managed_server(name):

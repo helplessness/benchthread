@@ -82,6 +82,10 @@ export async function reloadMCPConfig() {
   return mcpConfigRequest('/reload', { method: 'POST' });
 }
 
+export function testMCPConnection(name: string): Promise<{ tools: number }> {
+  return mcpConfigRequest(`/${encodeURIComponent(name)}/test`, { method: 'POST' });
+}
+
 export async function discoverMCPFiles(config: {name: string; url: string; transport: string; headers: Record<string, string>}): Promise<{tools: MCPFileDiscovery}> {
   return mcpConfigRequest('/discover-files', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config)});
 }
