@@ -13,7 +13,7 @@ VERSION="$(tr -d '[:space:]' < VERSION)"
 TAG="v$VERSION"
 PYTHON_VERSION="$(python -c 'from tcode_agent import __version__; print(__version__)')"
 if [[ "$VERSION" == *"alpha."* ]]; then
-  EXPECTED_PYTHON_VERSION="${VERSION/alpha./a}"
+  EXPECTED_PYTHON_VERSION="${VERSION/-alpha./a}"
 else
   EXPECTED_PYTHON_VERSION="$VERSION"
 fi

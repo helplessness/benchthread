@@ -76,15 +76,55 @@ BenchThread 中把这个端点单独添加为「实验室共享资料」，**不
 
 **接入其他 Harness：** 远程 MCP 使用 `Authorization: Bearer <个人令牌>`；文件 HTTP 接口支持相同的 Bearer，也兼容 SDK 的 `X-Artifact-Token`。无文件工具不用安装客户端 SDK。有文件工具先上传取得引用、调用 MCP、再按引用下载。列根目录请求 `GET /artifact/api/v1/files`；按列表返回的 artifact_id 下载 `GET /artifact/api/v1/artifacts/{artifact_id}/content`。客户端不要把令牌转发给引用中出现的其他主机。跨主机部署使用 HTTPS。
 
-**接入 TCode：** 在 MCP 连接设置中配置 Bearer 认证头；纯文件服务不需要添加 MCP。文件服务的地址、服务 ID、凭据环境变量名及 MCP 绑定见[文件服务设置步骤](#配置-benchthread-和验证)。让后端从环境读取该用户的个人 Token。聊天里能否列目录、导入文件，还受 TCode 的工作区授权控制，不能以“测试连接”通过代替实际读写验收。不要把同一个人的 Token 设为多人共用后端的全局凭据。
-
 **第三方作者：** 用 `run_personal_mcp(mcp, data_dir=..., files=True, service_id="lab")` 启动；同步工具内部继续使用 `ArtifactIO()`，自动选择经过认证的当前请求，不必自己传 owner_id。持久任务必须另外记录归属、校验查询和取消；SDK 不会自动保护自定义的 HTTP 接口或业务数据库。可参考[异步示例](../../examples/third_party_mcp/remote_server.py)：设置 `EXAMPLE_AUTH_MODE=personal-tokens`，用 `EXAMPLE_DATA_ROOT` 指向签发凭据的目录；个人模式下，示例用 ArtifactIO.delegate_job 为后台 worker 授权指定输入和一个输出包。用户断开后 worker 仍会发布文件；重启会继续处理尚未开始的任务，不会盲目重传已中断的发布。领取结果只读已持久化的引用，不启动计算。取消排队任务或发布结束后回收任务凭据。
 
-单人桌面端接入同源一体化服务时，无需单独登记文件端点：在「设置 → MCP 服务」添加服务名称和以 `/mcp` 结尾的地址，勾选「使用此 MCP 自带的个人文件服务」，填提供者发给你的个人 Token，再点「保存并连接」。如果此连接已有 Bearer 认证头，可以留空沿用。保存时会验证同源的 `/artifact/health`，不会跟随重定向，不接受服务返回的其他文件主机；已手工登记的相同服务 ID 不会被覆盖。保存后可在聊天里按 MCP 名称要求列文件并下载到工作区。
+### 本机自测个人 MCP
+
+先按上表签发个人令牌，启动「MCP 与文件服务一体」示例（服务 ID 为 `lab`）。另开终端，激活安装了 SDK 的虚拟环境，运行以下代码。它会隐藏令牌输入，上传临时文件、通过 MCP 调用 `echo_file`，再用 Artifact 下载并逐字节核对。**无需启动 BenchThread，也不需要 Job Protocol。**
+
+```sh
+python - <<'PY'
+import asyncio, getpass, tempfile
+from pathlib import Path
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+from tcode_artifacts import ArtifactIO
+
+async def main():
+    token = getpass.getpass("个人令牌: ")
+    base = "http://127.0.0.1:10240"
+    files = ArtifactIO(base + "/artifact", token=token, service_id="lab")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        src = root / "sample.txt"
+        src.write_bytes(b"BenchThread file echo\n")
+        ref = files.upload_file(src)
+        async with Client(StreamableHttpTransport(base + "/mcp", headers={"Authorization": "Bearer " + token})) as mcp:
+            reply = await mcp.call_tool("echo_file", {"input_file": ref})
+        out = files.materialize(reply.structured_content["output_bundle"], root / "received")
+        assert (out / "echo.dat").read_bytes() == src.read_bytes()
+        print("echo_file 文件往返通过")
+
+asyncio.run(main())
+PY
+```
+
+### 桌面 HTTPS 接入
+
+默认桌面不接受上面的环回 MCP 地址。让提供者在文件服务主机配置 HTTPS 反向代理：例如将 `https://lab.example.org/mcp` 和 `https://lab.example.org/artifact/…` 原路径转发至同机 `127.0.0.1:10240`，保留认证头并支持 MCP 流式响应。把示例域名换成桌面后端可达、证书受信任的真实域名。
+
+在 **设置 → MCP 服务 → 添加常规 MCP** 填服务名称和上述 HTTPS **/mcp** 地址，勾选 **使用此 MCP 自带的个人文件服务**，填写提供者签发的个人令牌（只填令牌值），点 **保存并连接**。桌面会用同一凭据验证同源的 `/artifact/health`；不用再手工添加 Artifact，也不会覆盖已登记的同 ID 服务。可在聊天里按服务名称列目录，并选一个自己的文件下载到工作区。
 
 桌面的个人绑定只属于保存时的账号和租户。切换身份后不能连接或沿用这份凭据；切回原身份，在自己的工作区即可继续使用。原用户取消勾选、改为普通 MCP 时，不会自动把旧个人认证头变成共享凭据；如需认证，请重新填写。
 
-旧的手动配置仍可使用一份秘密：例如向自己的 TCode 后端注入环境变量 `LAB_PERSONAL_TOKEN`，MCP 认证头的值填写字面量 `Bearer ${LAB_PERSONAL_TOKEN}`，文件服务的「凭据环境变量名」填写 `LAB_PERSONAL_TOKEN`。不要把该变量用于其他提供者。
+### Web 手动配置
+
+Web 没有桌面的个人绑定勾选项。以下步骤适用于**单用户私有 Web 实例**；Web 设置由管理员管理，不会按网页登录账号自动切换远端凭据。**不要把个人令牌配给多人共用的 Web 后端**。多人只读共享请按[共享目录与读者名单](#只读共享已有目录不需要-mcp-或重新上传)配置服务账号和访问范围。
+
+1. 在 BenchThread **后端进程**的环境中设置 `LAB_PERSONAL_TOKEN` 为提供者签发的令牌。不要把令牌写进聊天或提交到 Git。
+2. 在 **设置 → MCP 服务** 添加 `lab-echo`，URL 填 `https://lab.example.org/mcp`。高级设置添加固定认证头：名称 `Authorization`，值填写字面量 `Bearer ${LAB_PERSONAL_TOKEN}`。只有文件服务、没有 MCP 时，跳过此步。
+3. 在 **设置 → 文件服务** 添加端点：服务 ID 填提供者实际配置的 ID（如 `lab`），显示名称自定，URL 填 `https://lab.example.org/artifact`，凭据环境变量名只填 `LAB_PERSONAL_TOKEN`。如需绑定 MCP，选择或填写上一步登记的名称；只浏览和传文件则不绑定，另按[工作区读写授权](../../docs/RUNNING.md#不绑定-mcp-使用-artifact)配置访问范围。
+4. 保存 Artifact 配置，用**同一运行目录**重启 Web，再点 **测试连接**。连接通过只表示凭据和服务可用；实际文件往返以下载核对为准。若要从聊天附件发起异步计算，再按[Web 异步文件任务步骤](#echo_file-快速开始)启用 Job Protocol 并登记工具文件字段。
 
 ## Windows：手动安装与验证，不依赖 CI
 

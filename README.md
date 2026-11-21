@@ -43,9 +43,9 @@ TCODE_PROJECT_ROOT="$PWD" \
 tcode-server --local --host 127.0.0.1 --port 8080 --workdir "$PWD/workdirs/local"
 ```
 
-1. 打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)。已用文件配好模型的可以直接到第 3 步，不用在网页重复添加。否则打开 **设置 → 模型与执行 → Web 模型服务 → 添加聊天服务**，填协议、接口地址、模型 ID 和所需 API Key，点 **保存服务**。OpenAI 兼容接口填基础地址（通常以 `/v1` 结尾），不要附加 `/chat/completions`。
+1. 打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)。已用文件配好模型的可以直接到第 3 步。否则打开 **设置 → 模型与执行**（窄面板用「设置分类」下拉框），展开 **管理模型供应商**。在「Web 模型服务」点 **添加聊天服务**，填写服务名称、协议、接口地址、模型 ID 和所需 API Key，点 **保存服务**。OpenAI 兼容接口填基础地址（通常以 `/v1` 结尾），不要附加 `/chat/completions`。
 2. 对刚添加的模型点 **文本测试**，通过后选为 **实例默认对话模型**。
-3. 回到聊天页，点 **新建任务**。在「创建会话」中选工作目录；没有目录时先输入 `demo-workspace` 并点 **新增目录**。点 **创建会话**，确认输入框选中了实际模型，发送「你好，请用一句话介绍你能做什么」。收到回复即跑通。
+3. 回到聊天页，点 **新建任务**。选择已有工作区，或在「新建工作区」输入 `demo-workspace` 并点 **添加**，再点 **创建任务**。等聊天页显示该工作区、输入框选中实际模型后，发送「你好，请用一句话介绍你能做什么」。收到回复即跑通。
 
 直接运行 `tcode-server` 时，不设置 `TCODE_CONFIG_ROOT` 会优先使用已有的项目根目录 `.tcode-local/`；如果从已安装的命令启动，也可在项目根目录运行，让它找到当前目录下的 `.tcode-local/`。找不到该目录时沿用原来的默认路径。**找到配置目录不等于加载其中的 `local.env`**：`.tcode-local/tcode.json` 是应用配置，`local.env` 是部署脚本加载的环境文件。显式设置 `TCODE_CONFIG_ROOT` 可指定配置目录，`--workdir` 仍用于指定运行目录。
 
@@ -98,6 +98,8 @@ ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 user@server
 | **让远程工具收发文件** | [最小 FastMCP 示例代码](packages/artifact-sdk/README.md#最小-fastmcp-示例) · [用 `echo_file` 跑通第一次往返](packages/artifact-sdk/README.md#echo_file-快速开始) · [Artifact 部署指南](docs/RUNNING.md#文件服务artifact) | 只在传文件时需要。安装文件 SDK 不等于启动文件服务。 |
 
 其他入口：[运行指南](docs/RUNNING.md) · [配置指南](docs/CONFIGURATION.md) · [网页搜索配置](docs/CONFIGURATION.md#网页搜索可选) · [启动排查](docs/RUNNING.md#启动排查)。
+
+如果提供者给你的是**个人 MCP 令牌**，请按使用场景选择：[本机自测](packages/artifact-sdk/README.md#本机自测个人-mcp) · [桌面 HTTPS 接入](packages/artifact-sdk/README.md#桌面-https-接入) · [Web 手动配置](packages/artifact-sdk/README.md#web-手动配置)。
 
 ### Linux Web：沙箱组件与启动顺序
 
