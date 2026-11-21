@@ -10,7 +10,7 @@ const { ComputerBroker, McpDriverAdapter, approvalPresentation, resolvedApproval
 const { createTrayPanel } = require('./tray-panel.cjs');
 const { DesktopBrowser } = require('./browser.cjs');
 const { createTestInstance, readTestLogin } = require('./test-instance.cjs');
-const { modelSecrets } = require('./model-secrets.cjs');
+const { modelSecrets, requestModelSettings } = require('./model-secrets.cjs');
 
 app.setName('TCode Desktop');
 // Keep desktop Chromium state separate from Electron and the Web runtime.
@@ -263,29 +263,8 @@ function installNativeHandlers() {
     if (modelConfigPending) throw new Error('正在处理模型配置，请稍候');
     if (!payload || !['list','save','test','default'].includes(payload.action)) throw new Error('无效的模型配置操作');
     modelConfigPending = true;
-    let before;
-    let changed = false;
     try {
-      if (payload.action === 'save' && payload.api_key !== undefined) {
-        if (!/^[a-z0-9-]{1,64}$/.test(payload.id) || typeof payload.api_key !== 'string' || payload.api_key.length > 8192) throw new Error('密钥或服务标识无效');
-        before = secrets.read();
-        const key = `TCODE_DESKTOP_MODEL_${payload.id.replaceAll('-', '_').toUpperCase()}_KEY`;
-        secrets.write({...before, [key]:payload.api_key}); changed = true;
-      }
-      const cookies = await window.webContents.session.cookies.get({ url: origin });
-      const response = await fetch(`${origin}/api/desktop/model-settings`, {
-        method:'POST', headers:{'Content-Type':'application/json', Cookie:cookies.map(c=>`${c.name}=${c.value}`).join('; '), 'X-TCode-Desktop-Native':backend.token},
-        body:JSON.stringify(payload), signal:AbortSignal.timeout(30000),
-      });
-      const value = await response.json();
-      if (!response.ok) {
-        if(changed){secrets.write(before);changed=false;}
-        return {ok:false,message:typeof value.detail==='string'?value.detail:'模型配置未保存，请重试'};
-      }
-      return {...value, secure_storage:secrets.available()};
-    } catch {
-      // Unknown network commit outcomes retain the encrypted credential.
-      return {ok:false,message:'无法完成模型配置，请检查本地服务和系统密钥存储后重试'};
+      return await requestModelSettings(payload, secrets, window.webContents.session.cookies, origin, backend.token);
     } finally { modelConfigPending=false; }
   });
   ipcMain.handle('desktop:workspace', async (event, payload) => {
