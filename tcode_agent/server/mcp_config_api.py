@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..mcp.manager_auto import MCPManager
 from ..runtime.workspace_registry import registry_workspace
-from .auth import auth_required, require_current_user
+from .auth import auth_required, require_current_user, workdir_utils
 from .desktop_config import local_development_services, remote_url
 from .state import ServerState
 
@@ -64,8 +64,9 @@ def _write(config: dict[str, Any]) -> None:
 
 def _require_admin(request: Request) -> None:
     user = require_current_user(request)
-    if auth_required() and str(user.role or "").lower() not in {"owner", "admin"}:
-        raise HTTPException(403, "需要管理员权限")
+    if auth_required() and (str(user.role or "").lower() not in {"owner", "admin"}
+                            or user.tenant_id != workdir_utils.default_tenant_id()):
+        raise HTTPException(403, "需要实例管理员权限")
 
 
 def _web_managed_server(name: str) -> bool:
@@ -116,7 +117,8 @@ async def list_mcp_config(request: Request):
     config = effective_config(_read())
     return {
         "servers": [await _public_scoped(name, entry, request) for name, entry in sorted(config.items()) if not name.startswith("$") and isinstance(entry, dict)],
-        "can_edit": not auth_required() or str(user.role or "").lower() in {"owner", "admin"},
+        "can_edit": not auth_required() or (str(user.role or "").lower() in {"owner", "admin"}
+                                           and user.tenant_id == workdir_utils.default_tenant_id()),
         "config_file": str(_config_path()),
     }
 
@@ -159,7 +161,7 @@ async def discover_mcp_files(request: Request):
     if not remote_url(url, allow_loopback=local_development_services()):
         raise HTTPException(400, "地址必须是有效的 HTTP(S) MCP URL")
     old = _read().get(str(payload.get("name") or ""), {})
-    headers = dict(old.get("headers") or {})
+    headers = dict(old.get("headers") or {}) if url == str(old.get("url") or "") else {}
     supplied = payload.get("headers") or {}
     if not isinstance(supplied, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in supplied.items()):
         raise HTTPException(400, "headers 必须是字符串键值对象")
@@ -204,7 +206,8 @@ async def _put_mcp_config(name: str, request: Request):
         raise HTTPException(400, "当前异步任务网关仅支持 job-protocol-mcp")
     config = _read()
     old = config.get(name) if isinstance(config.get(name), dict) else {}
-    headers = dict(old.get("headers") or {}) if isinstance(old.get("headers"), dict) else {}
+    same_url = url == str(old.get("url") or "")
+    headers = dict(old.get("headers") or {}) if same_url and isinstance(old.get("headers"), dict) else {}
     supplied = payload.get("headers")
     if supplied is not None:
         if not isinstance(supplied, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in supplied.items()):
@@ -214,7 +217,7 @@ async def _put_mcp_config(name: str, request: Request):
         headers.pop(str(key), None)
     from ..mcp.dynamic_headers import validate_rules
     try:
-        dynamic_headers = validate_rules(payload.get('dynamic_headers', old.get('dynamic_headers', {})), headers)
+        dynamic_headers = validate_rules(payload.get('dynamic_headers', old.get('dynamic_headers', {}) if same_url else {}), headers)
         from ..mcp.dynamic_headers import augment_schema
         client = MCPManager._clients.get(name)
         for tool in client.tools if client else []:

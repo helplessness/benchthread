@@ -353,15 +353,33 @@ class MacOSNativeRuntime:
         # ponytail: bounded whole-workspace copies; use per-operation snapshots
         # when workspaces larger than 64 MiB need native processing.
         try:
-            from ...server import project_files
+            from ...server import project_files, project_roots, workdirs
+            from contextlib import nullcontext
             scope = resolve_workspace_context(**owner)
-            bound = project_files.binding(server_root, scope) if workspace == expected else None
+            roots = project_roots.list_roots(server_root, scope) if workspace == expected else []
+            bound = next((row for row in roots if row["root_id"] == "primary"), None)
+            project_shell = bool(roots) and spec.tool_name in {"bash", "exec"}
+            if spec.metadata.get("managed_input"):
+                if spec.tool_name not in {"read", "glob", "grep"}:
+                    raise ValueError("托管输入文件只读")
+                bound = None
+            if spec.metadata.get("desktop_root_id"):
+                if workspace != expected or spec.tool_name not in {"read","write","edit","glob","grep"}:
+                    raise ValueError("项目文件授权不适用于当前任务")
+                bound = next((r for r in project_roots.list_roots(server_root, scope)
+                              if r["root_id"] == spec.metadata["desktop_root_id"] and
+                              r["grant_id"] == spec.metadata.get("desktop_grant_id")), None)
+                if not bound or (spec.tool_name in {"write","edit"} and bound["access"] != "rw"):
+                    raise ValueError("项目目录已解除或不允许写入")
             if bound:
                 with project_files.opened(bound, "", directory=True) as fd:
                     selected = spec.metadata.get("project_file_input")
                     hashes = copy_tree(fd, work, relative_paths={selected} if selected else None)
             else:
-                hashes = copy_tree(workspace, work)
+                selected = spec.metadata.get("project_file_input") if spec.metadata.get("managed_input") else None
+                if selected and not (workspace / selected).is_file():
+                    raise ValueError("找不到托管输入文件，请核对原路径")
+                hashes = copy_tree(workspace, work, relative_paths={selected} if selected else None)
             if skill_source is not None:
                 skill = root / 'skill'; skill.mkdir()
                 copy_tree(skill_source, skill)
@@ -444,10 +462,24 @@ class MacOSNativeRuntime:
                 try:
                     exported = root / 'export'; exported.mkdir()
                     result_hashes = copy_tree(work, exported)
-                    if bound and hashes.keys() - result_hashes.keys():
-                        raise ValueError('本地隔离命令不支持删除或移动项目原文件，未发布改动')
-                    _publish_changes(exported, hashes, result_hashes, publish, job.metadata,
-                                     '' if bound else f'artifacts/local/{identifier}/')
+                    # The input snapshot is not an implicit destination. Also handle a
+                    # second folder attached while a single-folder command was running.
+                    with workdirs._WORKSPACE_MUTATION_LOCK if project_shell else nullcontext():
+                        managed_only = project_shell and (len(roots) > 1 or not bound
+                            or len(project_roots.list_roots(server_root, scope)) > 1)
+                        if managed_only:
+                            assert_workspace_active(server_root, scope)
+                            _publish_changes(exported, hashes, result_hashes,
+                                lambda ref, data, _: publish_file(workspace, ref.removeprefix('/workspace/'), data),
+                                job.metadata, f'/workspace/artifacts/local/{identifier}/')
+                            refs = job.metadata['artifacts']
+                            if refs:
+                                state['stdout'].extend(('\n托管结果（未写回项目目录）：\n' + '\n'.join(refs[:10])).encode())
+                        else:
+                            if bound and hashes.keys() - result_hashes.keys():
+                                raise ValueError('本地隔离命令不支持删除或移动项目原文件，未发布改动')
+                            _publish_changes(exported, hashes, result_hashes, publish, job.metadata,
+                                             '' if bound else f'artifacts/local/{identifier}/')
                 except Exception as exc:
                     job.status = 'failed'
                     state['stderr'].extend(f'\n结果保存失败：{exc}'.encode())

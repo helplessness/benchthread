@@ -32,6 +32,11 @@ except ValueError:
     raise SystemExit("file path escapes workspace")
 
 operation = request["operation"]
+def match_path(candidate):
+    if "result_root" in request:
+        return (Path(request["result_root"]) / candidate.relative_to(root)).as_posix()
+    return candidate.as_posix()
+
 try:
     if operation == "read":
         if path.stat().st_size > 128 * 1024:
@@ -65,7 +70,7 @@ try:
         for candidate in sorted(glob.iglob(str(path / pattern), recursive=True)):
             resolved = Path(candidate).resolve(strict=False)
             if resolved.is_relative_to(root) and len(matches) < 1000:
-                matches.append(resolved.as_posix())
+                matches.append(match_path(resolved))
         result = {"output": "\n".join(matches)[:128000], "count": len(matches)}
     elif operation == "grep":
         import fnmatch
@@ -88,7 +93,7 @@ try:
                         scanned += 1
                         for number, line in enumerate(source, 1):
                             if pattern in line:
-                                matches.append(f"{target}:{number}: {line.rstrip()}")
+                                matches.append(f"{match_path(target)}:{number}: {line.rstrip()}")
                                 if len(matches) >= 1000:
                                     break
                 except OSError as exc:
@@ -120,7 +125,7 @@ async def run_sandbox_file_io(
     arguments: dict[str, Any],
     title: str | None = None,
 ) -> ToolResult:
-    if os.environ.get("TCODE_DESKTOP_MANAGED") == "1" and decision.relative_path.startswith("@project/"):
+    if os.environ.get("TCODE_DESKTOP_MANAGED") == "1" and not decision.metadata.get("desktop_root_id") and decision.relative_path.startswith("@project/"):
         from ..server import project_files
         from .path_policy import resolve_workspace_io_path
         if project_files.tool_input_binding(decision, context.extra or {}):
@@ -128,6 +133,9 @@ async def run_sandbox_file_io(
             if decision.blocked:
                 return ToolResult(title=decision.display_path, output="", error=decision.reason)
     request = {"operation": operation, "path": decision.container_path, **arguments}
+    root_id = decision.metadata.get("desktop_root_id")
+    if root_id and operation in {"glob", "grep"}:
+        request["result_root"] = "@project" if root_id == "primary" else f"@roots/{root_id}"
     encoded = base64.b64encode(json.dumps(request, ensure_ascii=False).encode()).decode()
     if len(encoded) > 60_000:
         return ToolResult(
@@ -138,7 +146,7 @@ async def run_sandbox_file_io(
         )
     try:
         native = os.environ.get("TCODE_DESKTOP_MANAGED") == "1"
-        if native and operation in {"write", "edit"} and decision.relative_path.split('/')[0] == 'upload':
+        if native and not root_id and operation in {"write", "edit"} and decision.relative_path.split('/')[0] == 'upload':
             raise ValueError('导入输入只读，请把修改后的文件写入 artifacts 目录')
         spec = build_tool_sandbox_spec(
             tool_name=operation,
@@ -150,6 +158,10 @@ async def run_sandbox_file_io(
         )
         if native and operation in {"read", "write", "edit"} and decision.relative_path:
             spec.metadata["project_file_input"] = decision.relative_path
+        if native and decision.metadata.get("desktop_root_id"):
+            spec.metadata.update({k:decision.metadata[k] for k in ("desktop_root_id","desktop_grant_id")})
+        elif native and (decision.metadata.get("managed_input") or decision.relative_path.split("/", 1)[0] == "upload"):
+            spec.metadata["managed_input"] = True
         if not native and (spec.network != "none" or spec.user in {"0", "root"} or spec.user.startswith("0:") or spec.read_only is not True):
             raise RuntimeError("strict file operations require a non-root, read-only, offline profile")
         result = await get_sandbox_runtime().run_once(spec)

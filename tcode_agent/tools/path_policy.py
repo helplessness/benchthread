@@ -346,6 +346,48 @@ def resolve_workspace_io_path(
 ) -> WorkspacePathDecision:
     workdir = _workdir_from_context(context)
     guarded = _guard_enabled(context)
+    if os.environ.get("TCODE_DESKTOP_MANAGED") == "1" and tool_id in {"read","write","edit","glob","grep","artifact_import","artifact_upload"}:
+        from ..server import project_files, project_roots
+        from fastapi import HTTPException
+        owner = project_files.tool_owner(getattr(context, "extra", None) or {})
+        project = project_roots.inventory(os.environ["TCODE_WORKDIR"], owner) if owner else None
+        raw = str(raw_path or ".")
+        if project:
+            managed = project_roots.managed_input_relative(raw, workdir)
+            # Keep the sandbox worker on its existing private /workspace path;
+            # root grants are selected here, then independently rechecked at launch.
+            if raw == "/workspace" or raw.startswith("/workspace/"):
+                raw = raw[len("/workspace"):].lstrip("/") or "."
+            elif Path(raw).is_absolute() and Path(raw).is_relative_to(workdir):
+                raw = Path(raw).relative_to(workdir).as_posix()
+            if managed is not None:
+                blocked = _platform_workspace_path_block(managed, workdir, guarded=guarded, operation=operation)
+                if blocked:
+                    return blocked
+                if operation in {"write", "edit", "delete"}:
+                    return WorkspacePathDecision(raw, workdir/managed, raw, managed, "", True, True, "托管输入文件只读")
+                # Retain the receipt's lexical path; the native copier opens each entry without following links.
+                container = "/workspace/" + managed
+                return WorkspacePathDecision(raw, workdir/managed, container, managed, container, True,
+                                             metadata={"workspace_io_guarded": True, "relative_path": managed, "container_path": container, "managed_input": True})
+        if project_roots.uses_project_root(project, raw):
+            try:
+                grant, rel = project_roots.resolve(project, "" if raw == "." else raw, write=operation in {"write","edit","delete"})
+            except HTTPException as exc:
+                return WorkspacePathDecision(raw, workdir, raw, "", "", True, True, str(exc.detail))
+            blocked = _platform_workspace_path_block(rel, workdir, guarded=guarded, operation=operation)
+            if blocked:
+                return blocked
+            # Use a managed placeholder path, never hand a host root to a fallback tool.
+            display = str(Path(Path(grant["path"]).name) / rel)
+            target = (workdir / rel).resolve(strict=False)
+            if not target.is_relative_to(workdir) or (operation in {"write","edit","delete"} and
+                    any(_inside(target, ro) for ro in _read_only_workspace_roots(context))):
+                return WorkspacePathDecision(raw, workdir, display, rel, "", True, True, "该项目路径不可写或已变更")
+            path = "/workspace" + ("/" + rel if rel else "")
+            return WorkspacePathDecision(raw, target, display, rel, path, True, metadata={
+                "workspace_io_guarded": True, "relative_path": rel, "container_path": path,
+                "desktop_root_id":grant["root_id"], "desktop_grant_id":grant["grant_id"]})
     platform_block = _platform_workspace_path_block(
         str(raw_path or ""),
         workdir,

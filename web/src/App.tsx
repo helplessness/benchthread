@@ -1,4 +1,5 @@
 import {hypothesisMapLink,type HypothesisFocus} from './api/hypothesisMap';
+import { displayWorkspacePath } from './utils/filePreview';
 import { confirmAction, showFeedback } from './components/FeedbackDialog';
 import { researchChangesLink, type ResearchChangeFocus } from './api/researchChanges';
 import { listResearchProjects } from './api/research';
@@ -880,7 +881,7 @@ export default function App(props: AppProps) {
         const previous = composerDrafts.get(key);
         const path = String(detail.path || '');
         const files = path && !previous.files.some(file=>file.path===path)
-          ? [...previous.files, {id:crypto.randomUUID(),name:String(detail.name||path.split('/').pop()||path),path,mode:'path' as const,source:'mention' as const,sessionId:sessionStore.currentSessionId()||undefined}]
+          ? [...previous.files, {id:crypto.randomUUID(),name:String(detail.name||path.split('/').pop()||path),path,displayPath:detail.displayPath,mode:'path' as const,source:'mention' as const,sessionId:sessionStore.currentSessionId()||undefined}]
           : previous.files;
         composerDrafts.update(key, {text: [previous.text, text].filter(Boolean).join('\n\n'), files});
         navigate('console');
@@ -1340,7 +1341,7 @@ export default function App(props: AppProps) {
                 <TabIndicator active={workspaceMerged()&&mergedMainActive()?'main':companionView()} selector=".companion-tab[data-active=true]" top />
                 <Show when={workspaceMerged()}><div class="companion-tab" data-active={mergedMainActive()}><button aria-pressed={mergedMainActive()} onClick={()=>setMergedMainActive(true)}>主界面</button></div></Show>
                 <For each={companionTabs()}>{tab => <div class="companion-tab" data-active={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())}>
-                  <button title={isPreviewView(tab) ? `/workspace/${previewPath(tab)}` : companionLabel(tab)} aria-pressed={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())} onClick={()=>{setMergedMainActive(false);setCompanionView(tab);}}>{companionLabel(tab)}</button>
+                  <button title={isPreviewView(tab) ? displayWorkspacePath(previewPath(tab)) : companionLabel(tab)} aria-pressed={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())} onClick={()=>{setMergedMainActive(false);setCompanionView(tab);}}>{companionLabel(tab)}</button>
                   <button class="companion-tab-close" aria-label={`关闭${companionLabel(tab)}标签`} title={isSideChatView(tab) ? '关闭并删除这段侧聊' : '关闭标签'} disabled={isSideChatView(tab) && closingSideChats().includes(tab.slice(9))} onClick={()=>tab==='evidence'?closeCitation():void closeCompanion(tab)}>×</button>
                 </div>}</For>
               </nav>

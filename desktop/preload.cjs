@@ -4,7 +4,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 if (process.isMainFrame) {
   contextBridge.exposeInMainWorld('tcodeDesktop', Object.freeze({
     openProject: () => ipcRenderer.invoke('desktop:open-project'),
-    unlinkProject: workspaceId => ipcRenderer.invoke('desktop:unlink-project', workspaceId),
+    addProjectFolder: workspaceId => ipcRenderer.invoke('desktop:add-project-folder', workspaceId),
+    projectFolders: (workspaceId, change) => ipcRenderer.invoke('desktop:project-folders', workspaceId, change),
     exportProjectFile: (workspaceId, source) => ipcRenderer.invoke('desktop:export-project-file', workspaceId, source),
     projectInput: workspaceId => ipcRenderer.invoke('desktop:project-input', workspaceId),
     modelSettings: payload => ipcRenderer.invoke('desktop:model-settings', payload),

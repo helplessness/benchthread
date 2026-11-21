@@ -3,6 +3,7 @@
 Routes retain their original paths and are registered by app.py.
 """
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from ..skill.installer import install_skill_from_github
 from ..skill.source_resolver import resolve_skill_source, select_skill_source
 from ..skill.runtime_binding import skill_runtime_binding
 from .auth_api import _require_tenant_admin
+from .websearch_config_api import _authorize as _require_instance_admin
 from .plugin_warmup import plugin_request_wait_seconds, wait_for_plugin_warmup
 from .state import ServerState
 from . import workdirs
@@ -25,9 +27,11 @@ from .workspace_scope import _resolve_user_workdir_path, _workspace_context_from
 router = APIRouter()
 
 
-def _skill_workdir(request: Request, workspace_id: str = "") -> str:
+def _skill_workdir(request: Request, workspace_id: str = "", *, write: bool = False) -> str:
     workspace = str(workspace_id or "").strip()
     if not workspace:
+        if write:
+            _require_instance_admin(request)
         return ServerState.get_workdir()
     context = _workspace_context_from_request(request, workspace_id=workspace)
     workdirs.assert_workspace_active(ServerState.get_workdir(), context)
@@ -39,7 +43,10 @@ async def install_skill(payload: dict[str, Any], request: Request):
     from ..runtime.workspace_registry import registry_workspace
 
     _require_tenant_admin(request)
-    workdir = _skill_workdir(request, str(payload.get("workspace_id") or ""))
+    scope = str(payload.get("scope") or "workspace")
+    if scope == "home" and os.environ.get("TCODE_DESKTOP_MANAGED") != "1":
+        _require_instance_admin(request)
+    workdir = _skill_workdir(request, str(payload.get("workspace_id") or ""), write=True)
     try:
         introduction_url = str(payload.get("introduction_url") or "")
         source_url = str(payload.get("source_url") or "")
@@ -72,7 +79,7 @@ async def install_skill(payload: dict[str, Any], request: Request):
 @router.post("/api/skills/resolve-source")
 async def resolve_source(payload: dict[str, Any], request: Request):
     _require_tenant_admin(request)
-    _skill_workdir(request, str(payload.get("workspace_id") or ""))
+    _skill_workdir(request, str(payload.get("workspace_id") or ""), write=True)
     try:
         return await resolve_skill_source(str(payload.get("url") or ""))
     except ValueError as exc:
@@ -235,7 +242,7 @@ async def update_skill_activation(
     from ..runtime.workspace_registry import registry_workspace
 
     _require_tenant_admin(request)
-    workdir = _skill_workdir(request, str(payload.get("workspace_id") or ""))
+    workdir = _skill_workdir(request, str(payload.get("workspace_id") or ""), write=True)
     with registry_workspace(workdir):
         await wait_for_plugin_warmup(workdir, timeout=plugin_request_wait_seconds())
         await SkillManager.load(workdir=workdir)

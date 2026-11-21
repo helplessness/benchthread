@@ -1,5 +1,6 @@
 import { toolDisplayLabel } from '../utils/userFacingLabels';
 import FeedbackDialog, { confirmAction, showFeedback } from './FeedbackDialog';
+import ProjectFolders, { FolderIcon } from './ProjectFolders';
 import { For, Show, createSignal, createEffect, createMemo, onMount, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import {
@@ -100,6 +101,14 @@ export default function SessionList(props: SessionListProps) {
   const [workspacePreferences,setWorkspacePreferences]=createSignal(parseWorkspaceList(readPreference(workspacePreferenceKey,'')));
   const grouped=()=>desktop()&&workspacePreferences().grouped;
   const [renamingWorkspace,setRenamingWorkspace]=createSignal<{id:string;name:string}|null>(null);
+  const [editingProject, setEditingProject] = createSignal('');
+  const editProjectFolders = async (id: string) => {
+    try {
+      const { workdirs: items } = await getWorkdirs();
+      if (items.some(item => item.name === id && item.project_name)) setEditingProject(id);
+      else await showFeedback('这个工作区没有关联本机项目。请从「新建任务 → 打开项目文件夹」选择主目录。', {title:'编辑工作区'});
+    } catch { await showFeedback('未能读取工作区，请重试。', {title:'编辑工作区'}); }
+  };
   function saveWorkspaces(change:Partial<WorkspaceListPreferences>){
     const next={...workspacePreferences(),...change};setWorkspacePreferences(next);
     try{localStorage.setItem(workspacePreferenceKey,JSON.stringify(next));}
@@ -952,6 +961,9 @@ export default function SessionList(props: SessionListProps) {
                     <div onClick={event=>{if((event.target as Element).closest('button'))event.currentTarget.closest('details')!.open=false;}}>
                       <button type="button" onClick={()=>toggleWorkspace('pinned',group.id)}>{workspacePreferences().pinned.includes(group.id)?'取消置顶':'置顶工作区'}</button>
                       <button type="button" onClick={()=>setRenamingWorkspace({id:group.id,name:group.title})}>重命名</button>
+                      <Show when={window.tcodeDesktop?.projectFolders && group.sessions[0]?.workspace_id}>{id =>
+                        <button type="button" onClick={() => void editProjectFolders(id())}>编辑工作区</button>
+                      }</Show>
                       <button type="button" disabled={workspaceMoveGroup(group.id).indexOf(group.id)<=0} onClick={()=>stepWorkspace(group.id,-1)}>上移</button>
                       <button type="button" disabled={workspaceMoveGroup(group.id).indexOf(group.id)>=workspaceMoveGroup(group.id).length-1} onClick={()=>stepWorkspace(group.id,1)}>下移</button>
                     </div>
@@ -1066,6 +1078,10 @@ export default function SessionList(props: SessionListProps) {
         </div></Portal>
       }</Show>
 
+      <Show keyed when={editingProject()}>{id => <FeedbackDialog title="编辑工作区" eyebrow="本机项目" icon={<FolderIcon/>} onClose={() => setEditingProject('')}>
+        <ProjectFolders workspace={id} changed={refreshWorkdirs}/>
+        <footer class="feedback-dialog-actions"><button type="button" onClick={() => setEditingProject('')}>完成</button></footer>
+      </FeedbackDialog>}</Show>
       <Show when={renamingWorkspace()}>{target=><FeedbackDialog title="重命名工作区" onClose={()=>setRenamingWorkspace(null)}>
         <form onSubmit={event=>{event.preventDefault();const name=target().name.trim();if(!name)return;saveWorkspaces({names:{...workspacePreferences().names,[target().id]:name}});setRenamingWorkspace(null);}}>
           <p>只修改会话列表中的显示名称，不修改磁盘目录或会话归属。</p>
@@ -1189,6 +1205,9 @@ export default function SessionList(props: SessionListProps) {
                   }}>打开项目文件夹</button>
                 </Show>
               </div>
+              <Show keyed when={manageWorkdirs() && window.tcodeDesktop?.projectFolders && workdirs().find(d => d.name === selectedWorkdirName())?.project_name && selectedWorkdirName()}>
+                {id => <ProjectFolders workspace={id} changed={refreshWorkdirs}/>}
+              </Show>
               <div class="max-h-56 overflow-y-auto rounded-2xl border border-[#2a3136] bg-[#0f1418]">
                 <For each={workdirs()}>
                   {(dir) => (
@@ -1205,12 +1224,6 @@ export default function SessionList(props: SessionListProps) {
                         <span class="truncate text-sm text-[#e6edf3]" title={dir.project_name || dir.name}>{dir.project_name || dir.name}</span>
                       </label>
                       <Show when={manageWorkdirs()}>
-                      <Show when={dir.project_name && window.tcodeDesktop?.unlinkProject}>
-                        <button type="button" class="btn btn-sm" onClick={async () => {
-                          try { await window.tcodeDesktop!.unlinkProject!(dir.name); await refreshWorkdirs(); }
-                          catch (error) { setWorkdirError(String(error)); }
-                        }}>解除关联</button>
-                      </Show>
                       <button
                         type="button"
                         class="mr-3 inline-flex h-8 shrink-0 items-center justify-center rounded border border-[#6b2d2d] px-2.5 text-xs text-[#ff9c96] transition-colors hover:bg-[#3a1d1d] disabled:cursor-not-allowed disabled:opacity-50"

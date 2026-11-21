@@ -57,7 +57,7 @@ describe('composer file mentions', () => {
     menu.refreshFileMentionMenu('@r');
     menu.refreshFileMentionMenu('@report');
     await vi.advanceTimersByTimeAsync(140);
-    expect(api.searchWorkspaceFiles).toHaveBeenCalledExactlyOnceWith('report', 'workspace-1', 40);
+    expect(api.searchWorkspaceFiles).toHaveBeenCalledExactlyOnceWith('report', 'workspace-1', 40, expect.any(Function));
     menu.closeFileMentionMenu();
     finish([file('report.txt')]);
     await Promise.resolve();

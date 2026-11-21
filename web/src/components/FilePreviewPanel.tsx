@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, on, onCleanup } from 'solid-js';
 import { getInlineFileUrl } from '../api/client';
-import { isHtmlFile, isImageFile, isOfficeFile, isPdfFile } from '../utils/filePreview';
+import { displayWorkspacePath, isHtmlFile, isImageFile, isOfficeFile, isPdfFile } from '../utils/filePreview';
 import { ZoomableImage } from './ImageLightbox';
 import OfficeFilePreview from './OfficeFilePreview';
 import TextFilePreview from './TextFilePreview';
@@ -16,7 +16,7 @@ export default function FilePreviewPanel(props: FilePreviewPanelProps) {
   const [error, setError] = createSignal('');
   const [loading, setLoading] = createSignal(false);
   const path = () => String(props.path || '').trim();
-  const displayPath = () => path().startsWith('/') ? path() : `/workspace/${path()}`;
+  const displayPath = () => displayWorkspacePath(path());
   const isRichPreview = () => isImageFile(path()) || isHtmlFile(path()) || isPdfFile(path()) || isOfficeFile(path());
   const previewUrl = () => {
     if (isHtmlFile(path())) {

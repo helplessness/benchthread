@@ -27,6 +27,7 @@ export default function ResourceLibraryWorkspace(props: {workspaceId?: string; a
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [notice, setNotice] = createSignal('');
+  const [coverage, setCoverage] = createSignal('');
   const [fileMenu, setFileMenu] = createSignal<{file: WorkspaceFileSearchItem; x: number; y: number}>();
 
   onMount(() => {
@@ -47,7 +48,7 @@ export default function ResourceLibraryWorkspace(props: {workspaceId?: string; a
     try {
       const [paperResult, fileResult] = await Promise.allSettled([
         listPaperLibrary(workspaceId, category() === 'paper' ? query() : '', 0, 100),
-        searchWorkspaceFiles(category() === 'file' ? query() : '', workspaceId, 100),
+        searchWorkspaceFiles(category() === 'file' ? query() : '', workspaceId, 100, setCoverage),
       ]);
       if (paperResult.status === 'fulfilled') {
         setPapers(paperResult.value.items); setPaperEnabled(paperResult.value.enabled);
@@ -73,7 +74,7 @@ export default function ResourceLibraryWorkspace(props: {workspaceId?: string; a
 
   function useFileInChat(file: WorkspaceFileSearchItem) {
     window.dispatchEvent(new CustomEvent('tcode-use-library-item-in-chat', {detail: {
-      text: `请基于资料库文件“${file.name}”继续：`, path: file.path, name: file.name,
+      text: `请基于资料库文件“${file.name}”继续：`, path: file.path, name: file.name, displayPath: file.display_path,
     }}));
   }
 
@@ -121,8 +122,9 @@ export default function ResourceLibraryWorkspace(props: {workspaceId?: string; a
       </Show>
 
       <Show when={category()==='file'}><div class="resource-library-file-grid">
-        <Show when={!loading() && files().length===0}><div class="resource-library-empty">还没有匹配的其他文件。</div></Show>
-        <For each={files()}>{file=><article onContextMenu={event=>{event.preventDefault();setFileMenu({file,x:event.clientX,y:event.clientY});}}><span>{file.name.split('.').pop()?.slice(0,4).toUpperCase() || 'FILE'}</span><div><b title={file.name}>{file.name}</b><small title={file.path}>{file.path}</small><em>{file.origin==='uploaded'?'用户上传':'任务生成'} · {formatBytes(file.size)} · {formatDate(file.modified_at)}</em></div><footer><button onClick={()=>openFile(file.path)}>预览</button><button onClick={()=>useFileInChat(file)}>加入聊天</button></footer></article>}</For>
+        <Show when={coverage()}><p role="status">{coverage()}</p></Show>
+        <Show when={!loading() && !coverage() && files().length===0}><div class="resource-library-empty">还没有匹配的其他文件。</div></Show>
+        <For each={files()}>{file=><article onContextMenu={event=>{event.preventDefault();setFileMenu({file,x:event.clientX,y:event.clientY});}}><span>{file.name.split('.').pop()?.slice(0,4).toUpperCase() || 'FILE'}</span><div><b title={file.name}>{file.name}</b><small title={file.display_path || file.path}>{file.display_path || file.path}</small><em>{file.origin==='project'?'项目文件':file.origin==='uploaded'?'用户上传':'任务生成'} · {formatBytes(file.size)} · {formatDate(file.modified_at)}</em></div><footer><button onClick={()=>openFile(file.path)}>预览</button><button onClick={()=>useFileInChat(file)}>加入聊天</button></footer></article>}</For>
       </div></Show>
     </Show>
     <Show when={fileMenu()} keyed>{menu=><div class="resource-library-context-menu" style={{left:`${Math.min(menu.x,window.innerWidth-190)}px`,top:`${Math.min(menu.y,window.innerHeight-190)}px`}} onPointerDown={event=>event.stopPropagation()}>

@@ -49,6 +49,7 @@ from .session_presenter import (
 from .agent_selection import normalize_primary_agent_name
 from .session_lifecycle import (
     _SESSION_DELETE_ERRORS,
+    _SESSION_DELETE_OWNERS,
     _SESSION_DELETE_PENDING,
     _SESSION_DELETE_TASKS,
     _schedule_session_delete,
@@ -993,6 +994,8 @@ async def delete_session(session_id: str, request: Request):
     """Delete a session and all nested sub-sessions."""
     workspace_context = _workspace_context_from_request(request)
     session_owner = _session_owner_kwargs(workspace_context)
+    if await SessionManager.get(session_id, **session_owner) is None:
+        raise HTTPException(404, "Session not found")
     scheduled = _schedule_session_delete(session_id, owner_kwargs=session_owner)
     return {
         "status": "deleting",
@@ -1004,7 +1007,14 @@ async def delete_session(session_id: str, request: Request):
 
 
 @router.get("/api/sessions/{session_id}/delete-status")
-async def get_session_delete_status(session_id: str):
+async def get_session_delete_status(session_id: str, request: Request):
+    owner = _session_owner_kwargs(_workspace_context_from_request(request))
+    recorded = _SESSION_DELETE_OWNERS.get(session_id)
+    if recorded is not None:
+        if recorded != owner:
+            raise HTTPException(404, "Session not found")
+    elif await SessionManager.get(session_id, **owner) is None:
+        raise HTTPException(404, "Session not found")
     task = _SESSION_DELETE_TASKS.get(session_id)
     return {
         "session_id": session_id,

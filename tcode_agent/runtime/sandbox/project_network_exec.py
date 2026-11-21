@@ -102,10 +102,11 @@ async def run_project_transfer(parsed, context, tool):
     kind, url, dest, shallow = spec
     extra = context.extra or {}
     try:
-        target = resolve_workspace_io_path(
-            dest, context, tool_id=tool, operation="write"
-        )
-        grant = project_files.tool_input_binding(target, extra)
+        # Only the parsed shortcut destination uses file-write routing, never arbitrary shell commands.
+        target = resolve_workspace_io_path(dest, context, tool_id="write", operation="write")
+        if target.blocked:
+            raise ValueError(target.reason)
+        grant = project_files.selected_tool_grant(target, extra)
         if not grant:
             return None
         if target.relative_path != dest:
@@ -145,9 +146,12 @@ async def run_project_transfer(parsed, context, tool):
         cancelled()
         if kind == "trash":
             project_files.trash_bound(runtime, scope, grant, dest)
-            return ToolResult(title=parsed.command, output=f"已移到废纸篓：{dest}", metadata={"exitCode": 0})
+            return ToolResult(title=parsed.command, output=f"已移到废纸篓，原位置：{Path(grant['path']) / dest}",
+                              metadata={"exitCode": 0, "project_path": f"@roots/{grant['root_id']}/{dest}"})
         if target.host_path.exists():
             raise ValueError("托管工作区存在同名路径，未覆盖")
+        # A default change is fine; revoking the grant shown in the prompt is not.
+        project_files.selected_tool_grant(target, extra)
         host = urlsplit(url).hostname
         records = await asyncio.get_running_loop().getaddrinfo(
             host, 443, family=socket.AF_INET, type=socket.SOCK_STREAM
@@ -393,8 +397,7 @@ async def _execute_transfer(
                 raise ValueError("仓库包含指向项目外部的符号链接，未导入")
             with workdirs._WORKSPACE_MUTATION_LOCK:
                 workdirs.assert_workspace_active(runtime, scope)
-                if dict(project_files.binding(runtime, scope) or {}) != dict(grant):
-                    raise ValueError("项目关联已变更")
+                project_files.check_writable(runtime, scope, grant)
                 with project_files.opened(grant, "", directory=True) as fd:
                     parent = os.dup(fd)
                     try:
@@ -412,12 +415,14 @@ async def _execute_transfer(
                         _publish_checkout(payload, parent, dest.split("/")[-1], cancelled)
                     finally:
                         os.close(parent)
+    ref = f"@roots/{grant['root_id']}/{dest}"
+    published = Path(grant["path"]) / dest
     return ToolResult(
         title=parsed.command,
-        output=(f"已克隆到项目：{dest}；已核对 .git/HEAD 和来源 {url}。普通文件列表隐藏 .git。"
-                if kind == "git" and checkout_verified else f"已保存到项目：{dest}"),
-        metadata={"exitCode": 0, "sandbox": True, **(
-            {"published_checkout": {"origin": url, "path": dest}}
+        output=(f"已克隆到项目：{published}；已核对 .git/HEAD 和来源 {url}。普通文件列表隐藏 .git。"
+                if kind == "git" and checkout_verified else f"已保存到项目：{published}"),
+        metadata={"exitCode": 0, "sandbox": True, "project_path": ref, **(
+            {"published_checkout": {"origin": url, "path": ref}}
             if kind == "git" and checkout_verified else {}
         )},
     )

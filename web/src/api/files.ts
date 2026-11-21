@@ -40,18 +40,20 @@ export type WorkspaceFileRef = {
 };
 
 export type WorkspaceFileSearchItem = {
+  display_path?: string;
   name: string;
   path: string;
   type: 'file';
   size: number;
   modified_at: number;
-  origin: 'uploaded' | 'generated';
+  origin: 'uploaded' | 'generated' | 'project';
 };
 
 export async function searchWorkspaceFiles(
   query: string,
   workspaceId: string,
   limit = 40,
+  onCoverage?: (notice: string) => void,
 ): Promise<WorkspaceFileSearchItem[]> {
   const params = new URLSearchParams({
     q: String(query || '').trim(),
@@ -63,6 +65,9 @@ export async function searchWorkspaceFiles(
   if (!resp.ok) {
     throw new Error(String(data.detail || `文件搜索失败 (${resp.status})`));
   }
+  const missing = Array.isArray(data.unavailable_roots) ? data.unavailable_roots : [];
+  onCoverage?.([missing.length ? '仅显示部分结果，未能搜索：' + missing.join('、') : '',
+    Array.isArray(data.unavailable_roots) && data.truncated ? '达到搜索上限，请缩小搜索范围。' : ''].filter(Boolean).join('；'));
   return Array.isArray(data.items) ? data.items : [];
 }
 

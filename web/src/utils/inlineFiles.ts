@@ -20,6 +20,10 @@ export const isImageFileRef = (value: string) => (
 
 export const normalizeInlineFilePath = (path: string) => {
   const text = String(path || '').trim();
+  // On desktop these absolute references identify managed bytes, not the default project folder.
+  if (typeof window !== 'undefined' && window.tcodeDesktop
+      && (text.startsWith('/workspace/project-inputs/') || text.startsWith('/workspace/artifacts/jobs/')
+          || text.startsWith('/workspace/artifacts/local/'))) return text;
   // Sandbox tools expose the current host workspace at /workspace. The file API
   // resolves from that host workspace, so only the virtual sandbox root is removed.
   return text.startsWith('/workspace/') ? text.slice('/workspace/'.length) : text;

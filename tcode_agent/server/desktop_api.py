@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .auth import require_current_user
 from .state import ServerState
-from . import workdirs
+from . import workdirs, project_roots
 from .workspace_scope import _workspace_context_from_request, _resolve_user_workdir_path
 
 
@@ -40,75 +40,94 @@ def desktop_router(token: str) -> APIRouter:
 
     @router.post("/projects")
     def open_project(request: Request, payload: dict):
-        if not hmac.compare_digest(request.headers.get("x-tcode-desktop-native", ""), token):
-            raise HTTPException(403, "Native desktop access required")
-        require_current_user(request)
-        context = _workspace_context_from_request(request)
-        raw = Path(str(payload.get("path") or ""))
-        if not raw.is_absolute() or not raw.is_dir():
-            raise HTTPException(400, "请选择存在的项目目录")
-        source = raw.resolve(strict=True)
+        context = native_scope(request, "")
         runtime = Path(ServerState.get_workdir()).resolve()
-        if source.is_relative_to(runtime) or runtime.is_relative_to(source):
-            raise HTTPException(400, "请选择独立于应用运行目录的项目目录")
-        info = source.stat()
+        source, info = project_roots.checked_directory(runtime, str(payload.get("path") or ""))
+        if "identity" in payload and payload["identity"] != [str(info.st_dev), str(info.st_ino)]:
+            raise HTTPException(409, "所选文件夹已变更，请重新选择")
         identity = hashlib.sha256(os.fsencode(source) + f":{info.st_dev}:{info.st_ino}".encode()).hexdigest()[:16]
         name = f"{workdirs.sanitize_workdir_name(source.name)[:40] or 'project'}-{identity}"
         owner = dict(tenant_id=context.tenant_id, user_id=context.user_id)
         target = workdirs.resolve_user_workdir_path(str(runtime), name, **owner)
         # The binding lives outside the project. Purge only sees the managed workspace.
-        from contextlib import closing
-        with workdirs._WORKSPACE_MUTATION_LOCK, closing(workdirs._workspace_state_connection(str(runtime))) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS desktop_projects (tenant TEXT, user TEXT, workspace TEXT, generation INTEGER, path TEXT, device INTEGER, inode INTEGER, PRIMARY KEY(tenant,user,workspace))")
-            key = (context.tenant_id, context.user_id, name)
-            bound = workdirs.WorkspaceContext(*key)
+        with workdirs._WORKSPACE_MUTATION_LOCK:
+            bound = workdirs.WorkspaceContext(context.tenant_id, context.user_id, name)
             state = workdirs.workspace_state(str(runtime), bound) or {}
             if target.exists() and state.get("status") != "purged":
                 workdirs.assert_workspace_active(str(runtime), bound)
-                generation = workdirs.workspace_generation(str(runtime), bound)
-                row = db.execute("SELECT * FROM desktop_projects WHERE tenant=? AND user=? AND workspace=?", key).fetchone()
-                if not row or row["generation"] != generation or row["path"] not in ("", str(source)):
-                    raise HTTPException(409, "工作区名称已占用")
-                if not row["path"]:
-                    db.execute("UPDATE desktop_projects SET path=? WHERE tenant=? AND user=? AND workspace=?", (str(source), *key))
-                    db.commit()
+                with project_roots.database(str(runtime)) as db:
+                    if not db.execute(f"SELECT 1 FROM desktop_root_sets WHERE {project_roots.KEY}", project_roots.key(runtime, bound)).fetchone():
+                        raise HTTPException(409, "工作区名称已占用")
             else:
                 workdirs.create_user_workdir(str(runtime), name, **owner)
-                generation = workdirs.workspace_generation(str(runtime), bound)
-                db.execute("INSERT OR REPLACE INTO desktop_projects VALUES(?,?,?,?,?,?,?)",
-                           (*key, generation, str(source), info.st_dev, info.st_ino))
-                db.commit()
+            project_roots.attach(str(runtime), bound, str(source), "rw", primary=True,
+                                 expected_identity=payload.get("identity", [str(info.st_dev),str(info.st_ino)]))
         return {"name": name}
 
-    @router.delete("/project-binding")
-    def unlink_project(request: Request, workspace_id: str):
-        from contextlib import closing
+    def native_scope(request, workspace_id):
         if not hmac.compare_digest(request.headers.get("x-tcode-desktop-native", ""), token):
             raise HTTPException(403, "Native desktop access required")
         require_current_user(request)
         context = _workspace_context_from_request(request, workspace_id=workspace_id)
+        for field in ("user_id", "tenant_id"):
+            expected = request.headers.get("x-tcode-dialog-" + field.replace("_", "-"))
+            if expected is not None and expected != getattr(context, field):
+                raise HTTPException(409, "账号或租户已切换，操作已取消")
+        return context
+
+    @router.get("/project-roots")
+    def get_project_roots(request: Request, workspace_id: str):
+        from .project_files import available
+        context = native_scope(request, workspace_id)
+        project = project_roots.inventory(ServerState.get_workdir(), context)
+        if not project:
+            raise HTTPException(404, "请先打开一个项目")
+        return {**project, "name": next((Path(r["path"]).name for r in project["roots"] if r["root_id"]=="primary"),
+                                         context.workspace_id.rsplit("-",1)[0]), "roots": [{"id": r["root_id"], "path": r["path"],
+                                      "name": Path(r["path"]).name, "access": r["access"], "available": available(r)}
+                                     for r in project["roots"]]}
+
+    @router.post("/project-roots")
+    def add_project_root(request: Request, payload: dict):
+        workspace = str(payload.get("workspace_id") or "")
+        context = native_scope(request, workspace)
+        if not isinstance(payload.get("identity"), list):
+            raise HTTPException(400, "缺少所选文件夹身份，请重新选择")
+        with workdirs._WORKSPACE_MUTATION_LOCK:
+            current = project_roots.inventory(ServerState.get_workdir(), context)
+            if not current or any(current[k] != payload.get(k) for k in ("revision","generation")):
+                raise HTTPException(409, "项目已变更，请重新选择文件夹")
+            project_roots.attach(ServerState.get_workdir(), context, str(payload.get("path") or ""),
+                                 payload.get("access", "ro"), expected_identity=payload["identity"])
+        return get_project_roots(request, workspace)
+
+    @router.patch("/project-roots")
+    def change_project_root(request: Request, payload: dict):
+        workspace_id = str(payload.get("workspace_id") or "")
+        context = native_scope(request, workspace_id)
         runtime = ServerState.get_workdir()
-        with workdirs._WORKSPACE_MUTATION_LOCK, closing(workdirs._workspace_state_connection(runtime)) as db:
-            db.execute("UPDATE desktop_projects SET path='' WHERE tenant=? AND user=? AND workspace=? AND generation=?",
-                       (context.tenant_id, context.user_id, context.workspace_id, workdirs.workspace_generation(runtime, context)))
-            db.commit()
-        return {"unlinked": True}
+        root_id = str(payload.get("root_id") or "")
+        action = payload.get("action")
+        with workdirs._WORKSPACE_MUTATION_LOCK:
+            current = project_roots.inventory(runtime, context)
+            if not current or any(current[k] != payload.get(k) for k in ("revision","generation")):
+                raise HTTPException(409, "目录列表已变更，请刷新后重试")
+            if action == "remove":
+                project_roots.unlink(runtime, context, root_id)
+            elif action in ("ro","rw","default"):
+                project_roots.update(runtime, context, root_id, access=None if action=="default" else action,
+                                     make_default=action=="default")
+            else:
+                raise HTTPException(400, "不支持的目录操作")
+            return get_project_roots(request, workspace_id)
 
     @router.get("/project-root")
     def project_root(request: Request, workspace_id: str):
-        if not hmac.compare_digest(request.headers.get("x-tcode-desktop-native", ""), token):
-            raise HTTPException(403, "Native desktop access required")
-        require_current_user(request)
-        context = _workspace_context_from_request(request, workspace_id=workspace_id)
+        context = native_scope(request, workspace_id)
         runtime = ServerState.get_workdir()
         workdirs.assert_workspace_active(runtime, context)
-        from contextlib import closing
-        with closing(workdirs._workspace_state_connection(runtime)) as db:
-            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='desktop_projects'").fetchone():
-                return {"path": None}
-            row = db.execute("SELECT * FROM desktop_projects WHERE tenant=? AND user=? AND workspace=? AND generation=?",
-                             (context.tenant_id, context.user_id, context.workspace_id,
-                              workdirs.workspace_generation(runtime, context))).fetchone()
+        from .project_files import binding
+        row = binding(runtime, context)
         if not row or not row["path"]:
             return {"path": None}
         source = Path(row["path"])
@@ -124,14 +143,18 @@ def desktop_router(token: str) -> APIRouter:
     def snapshot_project_input(request: Request, payload: dict):
         from . import project_files
         workspace_id = str(payload.get("workspace_id") or "")
-        project_root(request, workspace_id)
-        context = _workspace_context_from_request(request, workspace_id=workspace_id)
-        row = project_files.binding(ServerState.get_workdir(), context)
-        if not row:
+        context = native_scope(request, workspace_id)
+        project = project_roots.inventory(ServerState.get_workdir(), context)
+        if not project:
             raise HTTPException(404, "工作区未关联项目")
-        relative = str(payload.get("relative_path") or "")
+        if any(project[k] != payload.get(k) for k in ("generation","revision")):
+            raise HTTPException(409, "项目已变更，请重新选取文件")
+        selected = str(payload.get("path") or "")
+        if not Path(selected).is_absolute():
+            raise HTTPException(400, "请选择项目内的文件")
+        row, relative = project_roots.resolve(project, selected)
         with project_files.opened(row, relative):
-            return {"relative_path": relative}
+            return {"relative_path": f"@roots/{row['root_id']}/{relative}"}
 
     @router.post("/project-export")
     def export_project_file(request: Request, payload: dict):
@@ -152,17 +175,22 @@ def desktop_router(token: str) -> APIRouter:
         source_name = str(payload.get("source") or "")
         root, source = _resolve_workspace_file_path(source_name, context)
         parent, _, name = relative.rpartition("/")
-        with opened(row, parent, directory=True) as directory, opened(
+        with workdirs._WORKSPACE_MUTATION_LOCK, opened(row, parent, directory=True) as directory, opened(
             {"path": str(root), "device": root.stat().st_dev, "inode": root.stat().st_ino},
             source.relative_to(root).as_posix(),
         ) as fd:
+            workdirs.assert_workspace_active(ServerState.get_workdir(), context)
+            project_files.check_writable(ServerState.get_workdir(), context, row)
             temporary = ".benchthread-" + secrets.token_hex(16)
             with os.fdopen(os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory), "wb") as output:
                 try:
                     with os.fdopen(os.dup(fd), "rb") as content:
                         shutil.copyfileobj(content, output)
                     output.flush()
-                    os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+                    with opened(row, parent, directory=True) as fresh:
+                        if not os.path.samestat(os.fstat(fresh), os.fstat(directory)):
+                            raise HTTPException(409, "写回位置已变更，请重新选择")
+                        os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=fresh)
                 finally:
                     try:
                         os.unlink(temporary, dir_fd=directory)
@@ -341,12 +369,19 @@ def desktop_router(token: str) -> APIRouter:
         workdirs.assert_workspace_active(ServerState.get_workdir(), context)
         from .files_api import _resolve_workspace_file_path
         from . import project_files
-        row = project_files.binding(ServerState.get_workdir(), context)
-        if row:
-            rel = path.removeprefix("@project/")
+        project = project_roots.inventory(ServerState.get_workdir(), context)
+        if project:
+            root = _resolve_user_workdir_path(context.workspace_id, context)
+            relative = project_roots.managed_input_relative(path, root)
+            if relative is not None:
+                info = root.stat()
+                with project_files.opened({"path": root, "device": info.st_dev, "inode": info.st_ino}, relative):
+                    return {"path": str(root / relative)}
+        if project_roots.uses_project_root(project, path):
+            row, rel = project_roots.resolve(project, path)
             with project_files.opened(row, rel):
                 return {"path": str(Path(row["path"]) / rel)}
-        _root, target = await asyncio.to_thread(_resolve_workspace_file_path, path, context)
+        _root, target = await asyncio.to_thread(_resolve_workspace_file_path, path, context, desktop_preview=True)
         if not target.is_file() or target.is_symlink():
             raise HTTPException(404, "File not found")
         return {"path": str(target)}

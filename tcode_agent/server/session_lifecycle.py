@@ -3,6 +3,8 @@
 
 import asyncio
 
+from fastapi import HTTPException
+
 from ..runtime import SessionArchiveManager
 from ..session.manager import SessionManager
 from ..team.registry import WorkerRegistry
@@ -24,6 +26,9 @@ _SESSION_DELETE_PENDING: set[str] = set()
 
 
 _SESSION_DELETE_ERRORS: dict[str, str] = {}
+
+# Retain ownership after the session row is removed so completion polling stays private.
+_SESSION_DELETE_OWNERS: dict[str, dict[str, str]] = {}
 
 
 def _session_delete_task_done(session_id: str):
@@ -58,7 +63,11 @@ async def _delete_session_tree_background(
     """
 
     owner = dict(owner_kwargs or {})
+    if not owner.get("tenant_id") or not owner.get("user_id"):
+        raise HTTPException(404, "Session not found")
     target = await SessionManager.get(session_id, **owner)
+    if target is None:
+        raise HTTPException(404, "Session not found")
     workspace = None
     turn_task = ServerState.get_turn_task(session_id)
     await ServerState.cancel_session(session_id)
@@ -128,6 +137,12 @@ def _schedule_session_delete(session_id: str, *, owner_kwargs: dict[str, str]) -
     normalized = str(session_id or "").strip()
     if not normalized:
         return False
+    if not owner_kwargs.get("tenant_id") or not owner_kwargs.get("user_id"):
+        raise HTTPException(404, "Session not found")
+    previous_owner = _SESSION_DELETE_OWNERS.get(normalized)
+    if previous_owner is not None and previous_owner != owner_kwargs:
+        raise HTTPException(404, "Session not found")
+    _SESSION_DELETE_OWNERS[normalized] = dict(owner_kwargs)
     existing = _SESSION_DELETE_TASKS.get(normalized)
     if existing is not None and not existing.done():
         _SESSION_DELETE_PENDING.add(normalized)

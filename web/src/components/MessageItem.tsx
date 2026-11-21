@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX 
 import { Portal } from 'solid-js/web';
 import MarkdownContent from './MarkdownContent';
 import UserMessageText from './UserMessageText';
+import { displayWorkspacePath } from '../utils/filePreview';
 import { confirmModelSwitch } from '../utils/modelSwitchNotice';
 import WorkflowReply from './WorkflowReply';
 import SwarmRunSummary from './SwarmRunSummary';
@@ -1819,7 +1820,10 @@ function MessageItem(props: MessageItemProps) {
                               <Show
                                 when={isWorkflowNarration() && String(props.message.id || '').startsWith('workflow-run:')}
                                 fallback={<MarkdownContent
-                                content={String(displayContent() || '')}
+                                content={desktop && props.message.role === 'user' ? String(displayContent() || '').replace(
+                                  /^(### File: [^\n]+\n)Path: (@roots\/[^\n]+)/gm,
+                                  (_, heading, path) => heading + '项目文件：' + displayWorkspacePath(path),
+                                ) : String(displayContent() || '')}
                                 role={props.message.role}
                                 renderKey={String(props.message.id || 'message')}
                                 class="text-sm text-[#dee3e8]"

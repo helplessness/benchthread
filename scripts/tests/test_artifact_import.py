@@ -186,6 +186,14 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
                     return owner if owner == dict(tenant_id="tenant", user_id="alice", workspace_id=wid) else None
                 scoped.setattr(artifact_import.SessionManager, "get", owned_session)
                 ctx = ToolContext("bound", "message", "build", None, extra={**context.extra, "workdir": str(managed), "workspace_id": wid})
+                for directory, data in ((managed, b"uploaded copy"), (source_dir, b"unrelated project file")):
+                    (directory / "upload").mkdir(exist_ok=True)
+                    (directory / "upload/evidence.txt").write_bytes(data)
+                result = await upload.execute({"local_path": "/workspace/upload/evidence.txt",
+                                               "remote_path": "exports/receipt.txt"}, ctx)
+                assert not result.error, result.error
+                assert not (await tool.execute({"path":"exports/receipt.txt", "local_path":"results/receipt.txt"}, ctx)).error
+                assert (source_dir / "results/receipt.txt").read_bytes() == b"uploaded copy"
                 from tcode_agent.runtime.sandbox.project_network_exec import transfer_argv, run_project_transfer
                 from tcode_agent.tools.builtin.exec import ExecParameters
                 assert not transfer_argv("git clone https://github.com/octocat/Hello-World ../escape")
@@ -208,7 +216,9 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
                                 (source / "entry").write_text("keep")
                             else:
                                 source.write_text("keep")
-                            assert not (await run_project_transfer(ExecParameters(command=f"trash {name}"),ctx,"exec")).error
+                            moved = await run_project_transfer(ExecParameters(command=f"trash {name}"),ctx,"exec")
+                            assert not moved.error and str(source) in moved.output
+                            assert moved.metadata["project_path"] == "@roots/primary/" + name
                             assert not source.exists() and (trash / name).exists()
                         assert (trash / "test-folder/entry").read_text() == "keep"
                         assert not transfer_argv("trash ../outside")
@@ -222,7 +232,7 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
                         outcome = await run_project_transfer(params,ctx,"exec")
                         assert not outcome.error, outcome.error
                         if params is checkout:
-                            assert outcome.metadata["published_checkout"] == {"origin": "https://github.com/octocat/Hello-World", "path": "sample"}
+                            assert outcome.metadata["published_checkout"] == {"origin": "https://github.com/octocat/Hello-World", "path": "@roots/primary/sample"}
                         assert (await run_project_transfer(params,ctx,"exec")).error
                     with zipfile.ZipFile(source_dir/"source.zip") as archive:
                         assert archive.comment == subprocess.check_output(["git","-C",str(source_dir/"sample"),"rev-parse","HEAD"]).strip()
@@ -252,7 +262,86 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
                 assert not (managed / "results/returned.csv").exists()
                 assert (await tool.execute(download, ctx)).error
                 (source_dir / "input.csv").write_bytes(b"changed")
-                (await desktop_client.delete("/api/desktop/project-binding", params={"workspace_id": wid})).raise_for_status()
+                from tcode_agent.server import project_roots
+                owner = workdirs.WorkspaceContext("tenant", "alice", wid)
+                second = tmp_path / "reports"
+                second.mkdir()
+                (second / "input.csv").write_bytes(b"other root")
+                added = project_roots.attach(runtime, owner, str(second), "rw")
+                project_roots.update(runtime, owner, added["root_id"], make_default=True)
+                # All three foreground shortcuts must refuse a read-only default before
+                # prompting, doing network I/O, or falling back to the writable primary.
+                project_roots.update(runtime, owner, added["root_id"], access="ro")
+                for command in ("trash input.csv", "curl -o input.csv https://example.org/file",
+                                "git clone https://example.org/repo input.csv"):
+                    for tool_id in ("bash", "exec"):
+                        denied = await run_project_transfer(ExecParameters(command=command), ctx, tool_id)
+                        assert denied and "只读" in denied.error
+                assert (second / "input.csv").read_bytes() == b"other root"
+                assert (source_dir / "input.csv").read_bytes() == b"changed"
+                project_roots.update(runtime, owner, added["root_id"], access="rw")
+                from hashlib import sha256
+                snap = f"project-inputs/{sha256(b'snapshot').hexdigest()}/input.csv"
+                job = "artifacts/jobs/0123456789abcdefabcd/input.csv"
+                for rel, data in ((snap,b"snapshot"),(job,b"recovered")):
+                    for folder, content in ((managed,data),(second,b"namesake")):
+                        path = folder/rel
+                        path.parent.mkdir(parents=True,exist_ok=True)
+                        path.write_bytes(content)
+                before = project_roots.inventory(runtime, owner)
+                for stale_header in ("x-tcode-dialog-user-id", "x-tcode-dialog-tenant-id"):
+                    refused = await desktop_client.patch("/api/desktop/project-roots", headers={stale_header:"former"},
+                        json={"workspace_id":wid,"root_id":added["root_id"],"action":"ro",
+                              "revision":before["revision"],"generation":before["generation"]})
+                    assert refused.status_code == 409 and project_roots.inventory(runtime,owner) == before
+                for index, (local_path, expected) in enumerate((
+                        ("input.csv", b"other root"), ("@project/input.csv", b"changed"),
+                        (f"@roots/{added['root_id']}/input.csv", b"other root"),
+                        ("/workspace/"+snap,b"snapshot"),(str(managed/job),b"recovered"),
+                        (job,b"namesake"),(str(second/snap),b"namesake"),
+                        ("/workspace/upload/evidence.txt", b"uploaded copy"))):
+                    remote = f"outputs/bound-{index}.csv"
+                    sent = await upload.execute({"local_path":local_path,"remote_path":remote},ctx)
+                    assert not sent.error, sent.error
+                    saved = await tool.execute({"path":remote,"local_path":f"results/{index}.csv"},ctx)
+                    assert not saved.error and (second / f"results/{index}.csv").read_bytes() == expected
+                    assert not (source_dir / f"results/{index}.csv").exists()
+                from contextlib import contextmanager
+                original_open = artifact_import.open_authorized_input
+                for revoke in ("directory", "service"):
+                    with scoped.context() as late:
+                        @contextmanager
+                        def finish_read(*args):
+                            with original_open(*args) as stream:
+                                yield stream
+                            if revoke == "directory":
+                                project_roots.update(runtime,owner,added["root_id"],access="rw")
+                            else:
+                                late.setenv("TCODE_ARTIFACT_UPLOAD_ACCESS","{}")
+                        late.setattr(artifact_import,"open_authorized_input",finish_read)
+                        calls.clear()
+                        refused = await upload.execute({"local_path":"input.csv","remote_path":"late.txt"},ctx)
+                        assert "未上传" in refused.error and not calls
+                project_roots.update(runtime, owner, added["root_id"], access="ro")
+                assert (await tool.execute({"path":remote,"local_path":"readonly.csv"},ctx)).error
+                assert not (second / "readonly.csv").exists()
+                assert not (source_dir / "readonly.csv").exists()
+                assert not (await tool.execute({"path":remote,"local_path":"@project/primary.csv"},ctx)).error
+                assert (source_dir / "primary.csv").read_bytes() == b"uploaded copy"
+                # A confirmation can outlive the grant that selected these bytes.
+                with scoped.context() as changed:
+                    def revoke_during_confirmation(kind, _patterns):
+                        if kind == "write":
+                            project_roots.update(runtime, owner, added["root_id"], access="ro")
+                        return True
+                    changed.setitem(ctx.extra,"__permission_ask__",revoke_during_confirmation)
+                    calls.clear()
+                    assert (await upload.execute({"local_path":"input.csv","remote_path":"outputs/stale.csv"},ctx)).error
+                    assert not calls
+                for root_id in ("primary", added["root_id"]):
+                    current = project_roots.inventory(runtime, owner)
+                    (await desktop_client.patch("/api/desktop/project-roots", json={"workspace_id":wid,"root_id":root_id,
+                        "action":"remove","revision":current["revision"],"generation":current["generation"]})).raise_for_status()
                 assert (await upload.execute({**args, "remote_path": "outputs/after-unlink.csv"}, ctx)).error
                 assert not (await tool.execute({"path": args["remote_path"]}, ctx)).error
                 assert (managed / "imports/from-project.csv").read_bytes() == b"original"

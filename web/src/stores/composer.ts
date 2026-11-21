@@ -4,6 +4,7 @@ export type AttachedFile = {
   id: string;
   name: string;
   path?: string;
+  displayPath?: string;
   file?: File;
   mode: 'path' | 'content';
   content?: string;

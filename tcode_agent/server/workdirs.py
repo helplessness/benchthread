@@ -459,9 +459,14 @@ def user_workdirs_root(
 
 def delete_tenant_workspace_states(server_workdir: str, tenant_id: str) -> None:
     safe_tenant_id = sanitize_owner_id(tenant_id, default_tenant_id())
-    with _WORKSPACE_STATE_LOCK, closing(
+    with _WORKSPACE_MUTATION_LOCK, _WORKSPACE_STATE_LOCK, closing(
         _workspace_state_connection(server_workdir)
     ) as connection:
+        # Grants share this database, but ordinary Web and older installations
+        # may never have created these tables. Do not initialize them at deletion.
+        for table in ("desktop_roots", "desktop_root_sets", "desktop_projects"):
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                connection.execute(f"DELETE FROM {table} WHERE tenant=?", (safe_tenant_id,))
         connection.execute(
             "DELETE FROM workspace_states WHERE tenant_id = ?",
             (safe_tenant_id,),

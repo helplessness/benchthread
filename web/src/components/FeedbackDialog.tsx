@@ -3,14 +3,14 @@ import { render } from 'solid-js/web';
 import './FeedbackDialog.css';
 
 type Tone='info'|'success'|'warning'|'danger';
-export default function FeedbackDialog(props:{title:string;tone?:Tone;onClose:()=>void;children:JSX.Element}){
+export default function FeedbackDialog(props:{title:string;tone?:Tone;eyebrow?:string;icon?:JSX.Element;onClose:()=>void;children:JSX.Element}){
   let dialog!:HTMLDialogElement;
   const titleId=createUniqueId();
   const tone=()=>props.tone||'info';
   onMount(()=>dialog.showModal());
   onCleanup(()=>dialog.close());
   return <dialog ref={dialog} class="feedback-dialog" data-tone={tone()} aria-labelledby={titleId} onKeyDown={event=>event.stopPropagation()} onCancel={event=>{event.preventDefault();props.onClose();}}>
-    <header><span class="feedback-dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/>{tone()==='success'?<path d="m8 12 3 3 5-6"/>:<><path d="M12 7v6"/><path d="M12 17h.01"/></>}</svg></span><div><small>TCode · {tone()==='success'?'操作完成':tone()==='danger'?'谨慎操作':tone()==='warning'?'操作确认':'操作提示'}</small><h2 id={titleId}>{props.title}</h2></div></header>
+    <header><span class="feedback-dialog-icon" aria-hidden="true">{props.icon ?? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/>{tone()==='success'?<path d="m8 12 3 3 5-6"/>:<><path d="M12 7v6"/><path d="M12 17h.01"/></>}</svg>}</span><div><small>{props.eyebrow ?? ('TCode · ' + (tone()==='success'?'操作完成':tone()==='danger'?'谨慎操作':tone()==='warning'?'操作确认':'操作提示'))}</small><h2 id={titleId}>{props.title}</h2></div></header>
     <div class="feedback-dialog-body">{props.children}</div>
   </dialog>;
 }

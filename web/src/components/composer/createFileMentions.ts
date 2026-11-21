@@ -67,7 +67,9 @@ export function createFileMentions(options: {
     fileMentionSearchTimer = setTimeout(async () => {
       fileMentionSearchTimer = null;
       try {
-        const items = await searchWorkspaceFiles(trigger.query, workspaceId, 40);
+        const items = await searchWorkspaceFiles(trigger.query, workspaceId, 40, notice => {
+          if (generation === fileMentionSearchGeneration) setFileMentionError(notice);
+        });
         if (generation !== fileMentionSearchGeneration) return;
         const attachedPaths = new Set(
           options.attachedFiles()
@@ -112,12 +114,13 @@ export function createFileMentions(options: {
           id: generateId(),
           name: item.name,
           path: item.path,
+          displayPath: item.display_path,
           mode: 'path',
           source: 'mention',
         },
       ]);
     } else {
-      sessionStore.setStatus(`${item.path} 已在文件引用中`);
+      sessionStore.setStatus(`${item.display_path || item.name} 已在文件引用中`);
     }
 
     options.setInput(updated.value);

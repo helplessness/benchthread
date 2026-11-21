@@ -3,12 +3,12 @@ import hashlib
 import os
 import secrets
 import stat
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from fastapi import HTTPException
 
-from . import workdirs
+from . import workdirs, project_roots
 
 PREFIX = "@project"
 
@@ -16,24 +16,19 @@ PREFIX = "@project"
 def binding(runtime, context):
     if os.environ.get("TCODE_DESKTOP_MANAGED") != "1":
         return None
-    with closing(workdirs._workspace_state_connection(runtime)) as db:
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='desktop_projects'").fetchone():
-            return None
-        return db.execute("SELECT * FROM desktop_projects WHERE tenant=? AND user=? AND workspace=? AND generation=? AND path<>''",
-                          (context.tenant_id, context.user_id, context.workspace_id,
-                           workdirs.workspace_generation(runtime, context))).fetchone()
+    return next((row for row in project_roots.list_roots(runtime, context) if row["root_id"] == "primary"), None)
 
 
 def project_names(runtime, context):
     if os.environ.get("TCODE_DESKTOP_MANAGED") != "1":
         return {}
-    with closing(workdirs._workspace_state_connection(runtime)) as db:
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='desktop_projects'").fetchone():
-            return {}
-        return {row["workspace"]: Path(row["path"]).name for row in db.execute(
-            """SELECT p.workspace,p.path FROM desktop_projects p JOIN workspace_states s
-               ON s.workspace_id=p.workspace AND s.tenant_id=p.tenant AND s.user_id=p.user
-               AND s.generation=p.generation WHERE p.tenant=? AND p.user=? AND p.path<>''""",
+    with project_roots.database(runtime) as db:
+        return {row["workspace"]: (Path(row["path"]).name if row["path"] else row["workspace"].rsplit("-",1)[0])
+                for row in db.execute(
+            """SELECT r.workspace,p.path FROM desktop_root_sets r JOIN workspace_states s
+               ON (s.workspace_id,s.tenant_id,s.user_id,s.generation)=(r.workspace,r.tenant,r.user,r.generation)
+               LEFT JOIN desktop_roots p ON (p.tenant,p.user,p.workspace,p.generation)=(r.tenant,r.user,r.workspace,r.generation)
+               AND p.root_id='primary' WHERE r.tenant=? AND r.user=?""",
             (context.tenant_id, context.user_id))}
 
 
@@ -60,6 +55,14 @@ def opened(row, rel, directory=False):
         if not directory and (not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_nlink != 1):
             raise HTTPException(400, "请选择普通文件")
         yield fd
+
+
+def available(row):
+    try:
+        with opened(row, "", directory=True):
+            return True
+    except HTTPException:
+        return False
 
 
 def snapshot(row, rel, workspace):
@@ -106,9 +109,21 @@ def snapshot(row, rel, workspace):
     return cache / digest / name
 
 
+def managed_input_snapshot(workspace, relative):
+    info = workspace.stat()
+    return snapshot({"path": workspace, "device": info.st_dev, "inode": info.st_ino}, relative, workspace)
+
+
 def tool_input_binding(decision, extra):
     """Only the authenticated owner's exact managed workspace may use its grant."""
     if os.environ.get("TCODE_DESKTOP_MANAGED") != "1" or decision.blocked or not decision.relative_path:
+        return None
+    owner = tool_owner(extra)
+    return binding(os.environ["TCODE_WORKDIR"], owner) if owner else None
+
+
+def tool_owner(extra):
+    if os.environ.get("TCODE_DESKTOP_MANAGED") != "1":
         return None
     runtime = os.environ.get("TCODE_WORKDIR", "")
     workspace = extra.get("workdir")
@@ -121,7 +136,20 @@ def tool_input_binding(decision, extra):
     if Path(workspace).resolve() != expected:
         return None
     workdirs.assert_workspace_active(runtime, owner)
-    return binding(runtime, owner)
+    return owner
+
+
+def selected_tool_grant(decision, extra):
+    """Never reinterpret a resolved file as belonging to the current default."""
+    root_id = decision.metadata.get("desktop_root_id")
+    if not root_id:
+        return None
+    owner = tool_owner(extra)
+    if owner:
+        for row in project_roots.list_roots(os.environ["TCODE_WORKDIR"], owner):
+            if row["root_id"] == root_id and row["grant_id"] == decision.metadata.get("desktop_grant_id"):
+                return row
+    raise HTTPException(409, "项目目录授权已变更，请重新选择")
 
 
 def publish_bound(runtime, owner, row, relative, data, *, expected=None):
@@ -129,11 +157,30 @@ def publish_bound(runtime, owner, row, relative, data, *, expected=None):
     from ..runtime.sandbox.macos_native import publish_file
     with workdirs._WORKSPACE_MUTATION_LOCK:
         workdirs.assert_workspace_active(runtime, owner)
-        current = binding(runtime, owner)
-        if current is None or dict(current) != dict(row):
-            raise ValueError("项目关联已变更，未写入文件")
-        with opened(current, "", directory=True) as fd:
+        check_writable(runtime, owner, row)
+        with opened(row, "", directory=True) as fd:
             publish_file(fd, relative, data, expected=expected)
+
+
+def check_writable(runtime, owner, grant):
+    current = next((r for r in project_roots.list_roots(runtime, owner) if r["root_id"] == grant["root_id"]), None)
+    if current != dict(grant) or current["access"] != "rw":
+        raise HTTPException(409, "项目关联或写入权限已变更")
+
+
+def mirror_upload(runtime, owner, grant, relative, temporary):
+    """A change to the optional project copy must not redirect or discard the chat attachment."""
+    with workdirs._WORKSPACE_MUTATION_LOCK:
+        workdirs.assert_workspace_active(runtime, owner)
+        if grant["access"] == "rw" and binding(runtime, owner) == grant:
+            publish_bound(runtime, owner, grant, relative, temporary.read_bytes())
+
+
+def rename_bound(runtime, owner, grant, relative, name):
+    with workdirs._WORKSPACE_MUTATION_LOCK:
+        workdirs.assert_workspace_active(runtime, owner)
+        check_writable(runtime, owner, grant)
+        change_entry(grant, relative, name)
 
 
 def entries(row, rel):
@@ -151,7 +198,6 @@ def entries(row, rel):
 
 
 def change_entry(row, rel, new_name=None):
-    rel = rel.removeprefix(PREFIX + "/")
     if any(not part or part.startswith(".") for part in rel.split("/")):
         raise HTTPException(403, "项目路径不可访问")
     parent, _, name = rel.rpartition("/")
@@ -170,14 +216,12 @@ def trash_bound(runtime, scope, grant, rel):
     """Use the macOS Trash (including Put Back); never fall back to unlink."""
     import subprocess
     import sys
-    rel = rel.removeprefix(PREFIX + "/")
     if sys.platform != "darwin" or any(not p or p.startswith(".") or p == "node_modules" for p in rel.split("/")):
         raise HTTPException(400, "只能将已关联项目内的普通文件或文件夹移到废纸篓")
     parent, _, name = rel.rpartition("/")
     with workdirs._WORKSPACE_MUTATION_LOCK:
         workdirs.assert_workspace_active(runtime, scope)
-        if dict(binding(runtime, scope) or {}) != dict(grant):
-            raise HTTPException(409, "项目关联已变更")
+        check_writable(runtime, scope, grant)
         with opened(grant, parent, directory=True) as src:
             mode = os.stat(name, dir_fd=src, follow_symlinks=False).st_mode
             if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
@@ -193,13 +237,13 @@ def trash_bound(runtime, scope, grant, rel):
                 raise HTTPException(409, "系统未确认移入废纸篓，请检查原位置；不会永久删除") from exc
 
 
-def search(row, query, limit):
+def search(row, query, limit, scan_limit=4000):
     pending, hits, scanned = [""], [], 0
     words = query.casefold().split()
     while pending:
         for item in entries(row, pending.pop()):
             scanned += 1
-            if scanned > 4000:
+            if scanned > scan_limit:
                 return hits, scanned, True
             if item["type"] == "directory":
                 pending.append(item["path"])

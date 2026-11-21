@@ -984,6 +984,7 @@ async def websocket_chat(websocket: WebSocket):
                 session_id=resource_session_id,
                 workdir=resource_workdir,
                 file_refs=requested_file_refs,
+                owner=workspace_context,
             )
             current_input_images = _message_input_images(
                 incoming_resource_context,

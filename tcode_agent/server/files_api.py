@@ -10,12 +10,14 @@ import mimetypes
 import os
 import re
 import uuid
+import tempfile
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from . import project_files
+from starlette.background import BackgroundTask
+from . import project_files, project_roots, managed_files
 
 from ._shared import (
     ServerState,
@@ -81,12 +83,17 @@ _UNSAFE_INLINE_MEDIA_TYPES = {"text/html", "application/xhtml+xml", "image/svg+x
 def _resolve_workspace_file_path(
     path: str,
     context: workdir_utils.WorkspaceContext,
+    *,
+    desktop_preview: bool = False,
 ) -> tuple[Path, Path]:
     base_path = _resolve_user_workdir_path(
         context.workspace_id,
         context,
     ).resolve(strict=False)
     raw_path = str(path or "").strip()
+    if desktop_preview and os.environ.get("TCODE_DESKTOP_MANAGED") == "1" and raw_path.startswith(("/workspace/project-inputs/", "/workspace/artifacts/jobs/", "/workspace/artifacts/local/")):
+        # Unlinked desktop workspaces have no root inventory to translate managed links.
+        raw_path = project_roots.managed_input_relative(raw_path, base_path) or raw_path
     try:
         full_path = (base_path / raw_path).resolve(strict=False) if raw_path else base_path
         full_path.relative_to(base_path)
@@ -201,11 +208,21 @@ async def list_files(
     workspace_id: str = Query(default=""),
 ):
     workspace_context = _workspace_context_from_request(request, workspace_id=workspace_id)
-    project = project_files.binding(ServerState.get_workdir(), workspace_context)
-    if project:
-        workdir_utils.assert_workspace_active(ServerState.get_workdir(), workspace_context)
-        relative = "" if path == project_files.PREFIX else path.removeprefix(project_files.PREFIX + "/")
-        return {"path": path, "project_bound": True, "items": await asyncio.to_thread(project_files.entries, project, relative)}
+    project = project_roots.inventory(ServerState.get_workdir(), workspace_context)
+    if project_roots.uses_project_root(project, path):
+        from collections import Counter
+        names = Counter(Path(r["path"]).name for r in project["roots"])
+        labels = {r["root_id"]: (r["path"] if names[Path(r["path"]).name] > 1 else Path(r["path"]).name)
+                  for r in project["roots"]}
+        if path in ("", "@roots") and (project["default_id"] != "primary" or len(project["roots"]) > 1 or path == "@roots"):
+            return {"path": path, "project_bound": True, "root_labels": labels, "items": [
+                {"name": labels[r["root_id"]], "path": "@roots/" + r["root_id"], "type": "directory",
+                 "access": r["access"]} for r in project["roots"]]}
+        row, relative = project_roots.resolve(project, path)
+        items = await asyncio.to_thread(project_files.entries, row, relative)
+        for item in items:
+            item["path"] = "@roots/" + row["root_id"] + "/" + item["path"]
+        return {"path": path, "project_bound": True, "root_labels": labels, "items": items}
     base_dir, full_path = _resolve_workspace_file_path(path, workspace_context)
     if not full_path.is_dir():
         raise HTTPException(400, "Not a directory")
@@ -232,7 +249,7 @@ async def list_files(
                 item["size"] = 0
         items.append(item)
     items.sort(key=lambda x: (x["type"] != "directory", x["name"].lower()))
-    return {"path": path, "items": items, "project_bound": bool(project)}
+    return {"path": path, "items": items, "project_bound": False}
 
 
 @router.get("/api/files/search")
@@ -245,9 +262,30 @@ async def search_files(
     workspace_context = _workspace_context_from_request(request, workspace_id=workspace_id)
     workdir_utils.assert_workspace_active(ServerState.get_workdir(), workspace_context)
     base_dir, _full_path = _resolve_workspace_file_path("", workspace_context)
-    row = project_files.binding(ServerState.get_workdir(), workspace_context)
-    if row:
-        items, scanned, truncated = await asyncio.to_thread(project_files.search, row, q, max(1,min(100,limit)))
+    project = project_roots.inventory(ServerState.get_workdir(), workspace_context)
+    unavailable = []
+    if project and project["roots"]:
+        items, scanned, truncated = [], 0, False
+        for row in project["roots"]:
+            if len(items) >= limit or scanned >= 4000:
+                truncated = True
+                break
+            name = Path(row["path"]).name
+            label = row["path"] if sum(Path(r["path"]).name == name for r in project["roots"]) > 1 else name
+            try:
+                hits, count, more = await asyncio.to_thread(project_files.search, row, q, limit-len(items), 4000-scanned)
+            except (HTTPException, OSError) as exc:
+                if isinstance(exc, HTTPException) and exc.status_code not in (404, 409):
+                    raise
+                unavailable.append(label)
+                continue
+            for hit in hits:
+                hit["display_path"] = label + "/" + hit["path"]
+                hit["path"] = "@roots/" + row["root_id"] + "/" + hit["path"]
+                hit["root_name"] = label
+            items.extend(hits)
+            scanned += count
+            truncated |= more
     else:
         items, scanned, truncated = await asyncio.to_thread(
             _search_workspace_files, base_dir, query=q, limit=limit,
@@ -256,6 +294,7 @@ async def search_files(
     return {
         "workspace_id": workspace_context.workspace_id,
         "query": str(q or "").strip()[:200],
+        **({"unavailable_roots": unavailable} if project and project["roots"] else {}),
         "items": items,
         "scanned": scanned,
         "truncated": truncated,
@@ -270,16 +309,15 @@ async def rename_workspace_file(payload: dict[str, Any], request: Request):
     if not name or name != Path(name).name or name.startswith(".") or len(name) > 255:
         raise HTTPException(400, "Invalid file name")
     path = str(payload.get("path") or "")
-    row = project_files.binding(ServerState.get_workdir(), context)
-    if row:
-        workdir_utils.assert_workspace_active(ServerState.get_workdir(), context)
-        await asyncio.to_thread(project_files.change_entry, row, path, name)
+    runtime = ServerState.get_workdir()
+    project = project_roots.inventory(runtime, context)
+    if project and (project["roots"] or project_roots.explicit_reference(path)):
+        row, rel = project_roots.resolve(project, path, write=True)
+        await asyncio.to_thread(project_files.rename_bound, runtime, context, row, rel, name)
         return {"path": str(Path(path).with_name(name)), "name": name}
     _base_path, source = await asyncio.to_thread(_require_visible_workspace_file, path, context)
     target = source.with_name(name)
-    if target.exists():
-        raise HTTPException(409, "A file with that name already exists")
-    await asyncio.to_thread(source.rename, target)
+    await asyncio.to_thread(managed_files.change, _base_path, source, name)
     return {"path": target.relative_to(_base_path).as_posix(), "name": target.name}
 
 
@@ -290,13 +328,14 @@ async def delete_workspace_file(
     workspace_id: str = Query(default=""),
 ):
     context = _workspace_context_from_request(request, workspace_id=workspace_id)
-    row = project_files.binding(ServerState.get_workdir(), context)
-    if row:
-        workdir_utils.assert_workspace_active(ServerState.get_workdir(), context)
-        await asyncio.to_thread(project_files.trash_bound, ServerState.get_workdir(), context, row, path)
+    runtime = ServerState.get_workdir()
+    project = project_roots.inventory(runtime, context)
+    if project and (project["roots"] or project_roots.explicit_reference(path)):
+        row, rel = project_roots.resolve(project, path, write=True)
+        await asyncio.to_thread(project_files.trash_bound, runtime, context, row, rel)
         return {"deleted": True, "trashed": True, "path": path}
     _base_path, target = await asyncio.to_thread(_require_visible_workspace_file, path, context)
-    await asyncio.to_thread(target.unlink)
+    await asyncio.to_thread(managed_files.change, _base_path, target)
     return {"deleted": True, "path": path}
 
 
@@ -311,10 +350,11 @@ async def get_file_content(
     if not full_path.is_file():
         raise HTTPException(404, "File not found")
     try:
-        content = full_path.read_text(encoding="utf-8")
+        data = await asyncio.to_thread(managed_files.read, _base_dir, full_path)
+        content = data.decode("utf-8")
         if "\x00" in content[:8192]:
             raise HTTPException(400, "Binary file")
-        return {"path": path, "content": content, "size": full_path.stat().st_size}
+        return {"path": path, "content": content, "size": len(data)}
     except UnicodeDecodeError:
         raise HTTPException(400, "Cannot read file")
 
@@ -324,12 +364,17 @@ def _resolve_local_file_access(
     context: workdir_utils.WorkspaceContext,
 ) -> tuple[Path, Path]:
     runtime = ServerState.get_workdir()
-    row = project_files.binding(runtime, context)
-    if row:
-        workdir_utils.assert_workspace_active(runtime, context)
+    project = project_roots.inventory(runtime, context)
+    if project:
         root = _resolve_user_workdir_path(context.workspace_id, context)
-        return root, project_files.snapshot(row, path.removeprefix(project_files.PREFIX + "/"), root)
-    return _resolve_workspace_file_path(path, context)
+        relative = project_roots.managed_input_relative(path, root)
+        if relative is not None:
+            return root, project_files.managed_input_snapshot(root, relative)
+    if project_roots.uses_project_root(project, path):
+        row, rel = project_roots.resolve(project, path)
+        root = _resolve_user_workdir_path(context.workspace_id, context)
+        return root, project_files.snapshot(row, rel, root)
+    return _resolve_workspace_file_path(path, context, desktop_preview=True)
 
 
 @router.get("/api/files/download")
@@ -345,8 +390,8 @@ async def download_file(
         raise HTTPException(404, "File not found")
 
     filename = full_path.name
-    return FileResponse(
-        path=full_path.as_posix(),
+    return managed_files.response(
+        _base_dir, full_path,
         filename=filename,
         media_type="application/octet-stream",
     )
@@ -366,13 +411,13 @@ async def inline_file(
     filename = full_path.name
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     if _is_unsafe_inline_file(filename, media_type):
-        return FileResponse(
-            path=full_path.as_posix(),
+        return managed_files.response(
+            _base_dir, full_path,
             filename=filename,
             media_type="application/octet-stream",
         )
-    return FileResponse(
-        path=full_path.as_posix(),
+    return managed_files.response(
+        _base_dir, full_path,
         filename=filename,
         media_type=media_type,
         content_disposition_type="inline",
@@ -390,8 +435,8 @@ async def html_preview(
     _base_dir, full_path = _resolve_local_file_access(path, workspace_context)
     if not full_path.is_file() or full_path.suffix.lower() not in {".html", ".htm"}:
         raise HTTPException(404, "HTML file not found")
-    return FileResponse(
-        path=full_path.as_posix(),
+    return managed_files.response(
+        _base_dir, full_path,
         media_type="text/html; charset=utf-8",
         content_disposition_type="inline",
         headers={
@@ -433,29 +478,35 @@ async def presented_image(
         str(block.get("path") or ""),
         session_context,
     )
+    private_copy = managed_files.snapshot(_base_dir, full_path)
     try:
-        inspected = inspect_image_file(full_path)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc))
+        try:
+            inspected = inspect_image_file(private_copy)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
 
-    expected_mime = str(block.get("mime_type") or "").strip().lower()
-    detected_mime = str(inspected.get("mime_type") or "").strip().lower()
-    if not expected_mime or expected_mime != detected_mime:
-        raise HTTPException(409, "Registered image type changed")
-    expected_size = int(block.get("size") or 0)
-    if expected_size and expected_size != int(inspected.get("size") or 0):
-        raise HTTPException(409, "Registered image content changed")
-    expected_sha256 = str(block.get("sha256") or "").strip().lower()
-    if expected_sha256 and expected_sha256 != str(inspected.get("sha256") or ""):
-        raise HTTPException(409, "Registered image content changed")
+        expected_mime = str(block.get("mime_type") or "").strip().lower()
+        detected_mime = str(inspected.get("mime_type") or "").strip().lower()
+        if not expected_mime or expected_mime != detected_mime:
+            raise HTTPException(409, "Registered image type changed")
+        expected_size = int(block.get("size") or 0)
+        if expected_size and expected_size != int(inspected.get("size") or 0):
+            raise HTTPException(409, "Registered image content changed")
+        expected_sha256 = str(block.get("sha256") or "").strip().lower()
+        if expected_sha256 and expected_sha256 != str(inspected.get("sha256") or ""):
+            raise HTTPException(409, "Registered image content changed")
 
-    response = FileResponse(
-        path=full_path.as_posix(),
-        media_type=detected_mime,
-    )
-    response.headers["Content-Disposition"] = "inline"
-    response.headers["Cache-Control"] = "private, no-cache"
-    return response
+        response = managed_files.SnapshotResponse(
+            path=private_copy.as_posix(),
+            background=BackgroundTask(private_copy.unlink, missing_ok=True),
+            media_type=detected_mime,
+        )
+        response.headers["Content-Disposition"] = "inline"
+        response.headers["Cache-Control"] = "private, no-cache"
+        return response
+    except BaseException:
+        private_copy.unlink(missing_ok=True)
+        raise
 
 
 @router.post("/api/files/upload")
@@ -519,7 +570,6 @@ async def upload_file(
     if full_path == upload_root_path:
         raise HTTPException(400, "invalid upload filename")
 
-    full_path.parent.mkdir(parents=True, exist_ok=True)
     relative_to_workdir = full_path.relative_to(target_root_path).as_posix()
     container_root = (
         str(os.environ.get("TCODE_SANDBOX_CONTAINER_WORKDIR", "/workspace") or "/workspace")
@@ -530,7 +580,8 @@ async def upload_file(
 
     total_bytes = 0
     content_hasher = hashlib.sha256()
-    temp_path = full_path.with_name(f".{full_path.name}.{uuid.uuid4().hex}.uploading")
+    with tempfile.NamedTemporaryFile(prefix="tcode-upload-", delete=False) as staging:
+        temp_path = Path(staging.name)
 
     def _cleanup_temp_upload() -> None:
         try:
@@ -550,25 +601,20 @@ async def upload_file(
                     raise HTTPException(413, "single file exceeds 100MB limit")
                 content_hasher.update(chunk)
                 f.write(chunk)
-        # Publishing a completed upload must never replace an older attachment,
-        # including when two requests finish concurrently with the same name.
+        # Publish through pinned directory descriptors; retain the private staging
+        # file for the optional desktop project copy.
+        from ..runtime.sandbox.macos_native import WorkspaceFileExists
+
         requested_path = full_path
         while True:
             try:
-                os.link(temp_path, full_path)
-                if bound:
-                    from ..runtime.sandbox.macos_native import WorkspaceFileExists
-                    try:
-                        await asyncio.to_thread(project_files.publish_bound, runtime, workspace_context, bound,
-                                                full_path.relative_to(target_root_path).as_posix(), temp_path.read_bytes())
-                    except WorkspaceFileExists:
-                        full_path.unlink()
-                        raise FileExistsError
-                    except Exception:
-                        full_path.unlink()
-                        raise
+                with managed_files.publish(target_root_path, full_path, temp_path) as published:
+                    full_path = published
+                    if bound and bound["access"] == "rw":
+                        await asyncio.to_thread(project_files.mirror_upload, runtime, workspace_context, bound,
+                                                full_path.relative_to(target_root_path).as_posix(), temp_path)
                 break
-            except FileExistsError:
+            except (FileExistsError, WorkspaceFileExists):
                 full_path = requested_path.with_name(
                     f"{requested_path.stem}-{uuid.uuid4().hex}{requested_path.suffix}"
                 )

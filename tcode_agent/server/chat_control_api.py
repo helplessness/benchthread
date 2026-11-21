@@ -637,6 +637,7 @@ async def guide_chat(payload: ChatGuideRequest, request: Request):
             session_id=session_id,
             workdir=session_workdir,
             file_refs=payload.file_refs,
+            owner=session_context,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

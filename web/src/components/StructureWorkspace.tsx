@@ -33,7 +33,7 @@ export default function StructureWorkspace(props: { workspaceId: string; workdir
   const [state, setState] = createSignal<ViewState>({ ready: false });
   const [source, setSource] = createSignal<StructureRequest>();
   const [error, setError] = createSignal(''), [notice, setNotice] = createSignal('');
-  const [files, setFiles] = createSignal<{path: string; name: string}[]>([]);
+  const [files, setFiles] = createSignal<{path: string; name: string; display_path?: string}[]>([]);
   const [enabled, setEnabled] = createSignal(readBooleanPreference(preferenceKeys.structureAgent, false)), [connection, setConnection] = createSignal('连接中');
   const [showAgentStatus, setShowAgentStatus] = createSignal(readBooleanPreference(preferenceKeys.structureAgentStatus, true));
   const [rememberScene, setRememberScene] = createSignal(readBooleanPreference(preferenceKeys.structureRememberScene, true));
@@ -223,9 +223,9 @@ export default function StructureWorkspace(props: { workspaceId: string; workdir
     <form class="structure-source" onSubmit={event => { event.preventDefault(); void load({ path: path().trim() }).catch(fail); }}>
       <label><span class="sr-only">结构文件路径</span><input aria-label="结构文件路径" value={path()} onInput={event => setPath(event.currentTarget.value)} placeholder="工作区内的 .pdb / .cif / .sdf / .mol2" required /></label>
       <button class="btn btn-sm" disabled={loading() || busy() || !session}>{loading() ? '加载中…' : '加载结构'}</button>
-      <button class="btn btn-sm" type="button" disabled={!workspace} onClick={() => void searchWorkspaceFiles('', workspace, 100).then(items => { if (!closed) setFiles(items.filter(item => /\.(pdb|cif|mmcif|sdf|mol2)$/i.test(item.path))); }).catch(fail)}>查找结构文件</button>
+      <button class="btn btn-sm" type="button" disabled={!workspace} onClick={() => void searchWorkspaceFiles('', workspace, 100, setNotice).then(items => { if (!closed) setFiles(items.filter(item => /\.(pdb|cif|mmcif|sdf|mol2)$/i.test(item.path))); }).catch(fail)}>查找结构文件</button>
     </form>
-    <Show when={files().length}><select aria-label="选择工作区结构" disabled={busy() || loading()} onChange={event => { if (event.currentTarget.value) void load({ path: event.currentTarget.value }).catch(fail); }}><option value="">选择结构文件（搜索前 100 项）</option><For each={files()}>{file => <option value={file.path}>{file.name}</option>}</For></select></Show>
+    <Show when={files().length}><select aria-label="选择工作区结构" disabled={busy() || loading()} onChange={event => { if (event.currentTarget.value) void load({ path: event.currentTarget.value }).catch(fail); }}><option value="">选择结构文件（搜索前 100 项）</option><For each={files()}>{file => <option value={file.path}>{file.display_path || file.name}</option>}</For></select></Show>
     <Show when={error()}><p role="alert" class="structure-error">{error()}</p></Show>
     <Show when={notice()}><p role="status" class="structure-notice">{notice()}</p></Show>
     <div ref={shell} class="molstar-shell" classList={{ 'is-resizing': resizing() }} style={{ height: `${viewerHeight()}px` }} aria-busy={loading() || busy()}>

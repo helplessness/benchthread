@@ -165,63 +165,98 @@ async function resolveWorkspaceFile(payload) {
   return data.path;
 }
 
+let projectLoginEpoch = 0;
+async function projectRequests(confirmation = false) {
+  const epoch = projectLoginEpoch;
+  const check = () => { if (epoch !== projectLoginEpoch) throw new Error('账号或租户已切换，操作已取消'); };
+  const cookies = await window.webContents.session.cookies.get({ url: origin });
+  const headers = { Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token, 'Content-Type': 'application/json' };
+  const request = async (route, method = 'GET', body) => {
+    check();
+    const response = await fetch(origin + route, { method, headers, body: JSON.stringify(body) });
+    const data = await response.json();
+    check();
+    if (!response.ok) throw new Error(data.detail || '项目操作失败');
+    return data;
+  };
+  if (confirmation) {
+    const {user} = await request('/api/auth/me');
+    headers['X-TCode-Dialog-User-Id'] = user.user_id;
+    headers['X-TCode-Dialog-Tenant-Id'] = user.tenant_id;
+  }
+  return Object.assign(request, {check});
+}
+const folderRoute = id => '/api/desktop/project-roots?' + new URLSearchParams({workspace_id:id});
+
 function installNativeHandlers() {
-  ipcMain.handle('desktop:unlink-project', async (event, workspaceId) => {
+  ipcMain.handle('desktop:project-folders', async (event, workspaceId, change) => {
     assertSender(event, window, origin);
-    const cookies = await window.webContents.session.cookies.get({ url: origin });
-    const response = await fetch(origin + '/api/desktop/project-binding?' + new URLSearchParams({ workspace_id: workspaceId }), {
-      method: 'DELETE', headers: { Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token },
-    });
-    if (!response.ok) throw new Error('解除项目关联失败');
+    const request = await projectRequests(Boolean(change));
+    const project = await request(folderRoute(workspaceId));
+    if (!change) return project;
+    const folder = project.roots.find(root => root.id === change.id);
+    if (!folder || project.revision !== change.revision) throw new Error('目录列表已变更，请刷新');
+    const messages = new Map([['remove', '解除此文件夹的关联'], ['default', '设为默认工作目录'],
+      ['rw', '允许项目读写此文件夹'], ['ro', '将此文件夹设为只读']]);
+    if (!messages.has(change.action)) throw new Error('不支持的目录操作');
+    const message = messages.get(change.action);
+    const { response } = await dialog.showMessageBox(window, { type: 'question', message,
+      detail: folder.path + '\n此更改适用于项目内的所有对话。解除关联不会删除磁盘文件。',
+      buttons: ['取消', message], defaultId: 0, cancelId: 0 });
+    return response === 1 ? request('/api/desktop/project-roots', 'PATCH', {workspace_id:workspaceId, root_id:folder.id, generation:project.generation, revision:project.revision, action:change.action}) : request(folderRoute(workspaceId));
+  });
+  ipcMain.handle('desktop:add-project-folder', async (event, workspaceId) => {
+    assertSender(event, window, origin);
+    const request = await projectRequests(true);
+    const project = await request(folderRoute(workspaceId));
+    const selected = await dialog.showOpenDialog(window, { title: '添加文件夹到当前项目', properties: ['openDirectory'] });
+    if (selected.canceled) return null;
+    const folder = selected.filePaths[0];
+    const pinned = await fs.promises.open(folder, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+    try {
+    const info = await pinned.stat({ bigint: true });
+    request.check();
+    const target = project.roots.find(r => r.id === 'primary')?.path || project.name;
+    const { response } = await dialog.showMessageBox(window, { type: 'question', message: '允许这个项目访问所选文件夹？',
+      detail: `当前项目：${target}\n添加目录：${folder}\n授权适用于该项目的所有对话。`,
+      buttons: ['只读添加', '允许读写', '取消'], defaultId: 0, cancelId: 2 });
+    if (response !== 0 && response !== 1) return null;
+    await request('/api/desktop/project-roots', 'POST', {workspace_id: workspaceId, path: folder, generation:project.generation, revision:project.revision,
+        identity:[String(info.dev),String(info.ino)], access: response === 0 ? 'ro' : 'rw'});
+    return path.basename(folder);
+    } finally { await pinned.close(); }
   });
   ipcMain.handle('desktop:export-project-file', async (event, workspaceId, source) => {
     assertSender(event, window, origin);
-    const cookies = await window.webContents.session.cookies.get({ url: origin });
-    const headers = { Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token };
-    const lookup = await fetch(origin + '/api/desktop/project-root?' + new URLSearchParams({ workspace_id: workspaceId }), { headers });
-    const binding = await lookup.json();
-    if (!lookup.ok || !binding.path) throw new Error(binding.detail || '工作区未关联项目');
+    const request = await projectRequests(true);
+    const binding = await request('/api/desktop/project-root?' + new URLSearchParams({workspace_id:workspaceId}));
+    if (!binding.path) throw new Error('工作区未关联项目');
     const selected = await dialog.showSaveDialog(window, { title: '写回项目文件', defaultPath: path.join(binding.path, path.basename(source)) });
     if (selected.canceled) return;
     const destination = path.relative(binding.path, path.join(await fs.promises.realpath(path.dirname(selected.filePath)), path.basename(selected.filePath)));
     if (!destination || destination.startsWith('..') || path.isAbsolute(destination)) throw new Error('请选择项目目录内的位置');
-    const response = await fetch(origin + '/api/desktop/project-export', { method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ workspace_id: workspaceId, source, destination }) });
-    if (!response.ok) throw new Error((await response.json()).detail || '写回失败');
+    await request('/api/desktop/project-export','POST',{workspace_id:workspaceId,source,destination});
   });
   ipcMain.handle('desktop:project-input', async (event, workspaceId) => {
     assertSender(event, window, origin);
-    const cookies = await window.webContents.session.cookies.get({ url: origin });
-    const headers = { Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token };
-    const params = new URLSearchParams({ workspace_id: workspaceId });
-    const lookup = await fetch(origin + '/api/desktop/project-root?' + params, { headers });
-    const binding = await lookup.json();
-    if (!lookup.ok || !binding.path) throw new Error(binding.detail || '请选择已关联的项目工作区');
-    const selected = await dialog.showOpenDialog(window, { title: '选取项目输入文件', defaultPath: binding.path, properties: ['openFile'] });
+    const request = await projectRequests(true);
+    const project = await request(folderRoute(workspaceId));
+    const selected = await dialog.showOpenDialog(window, { title: '选取项目输入文件', defaultPath: project.roots.find(r=>r.id===project.default_id)?.path, properties: ['openFile'] });
     if (selected.canceled) return null;
-    const file = await fs.promises.realpath(selected.filePaths[0]);
-    const relative = path.relative(binding.path, file);
-    if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('请选择项目目录内的文件');
-    const response = await fetch(origin + '/api/desktop/project-input', { method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspace_id: workspaceId, relative_path: relative }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || '项目输入文件导入失败');
+    const data = await request('/api/desktop/project-input','POST',{workspace_id:workspaceId,
+      path:selected.filePaths[0], generation:project.generation, revision:project.revision});
     return data.relative_path;
   });
   ipcMain.handle('desktop:open-project', async event => {
     assertSender(event, window, origin);
+    const request = await projectRequests(true);
     const selection = await dialog.showOpenDialog(window, { title: '打开项目文件夹', properties: ['openDirectory'] });
     if (selection.canceled) return null;
-    const cookies = await window.webContents.session.cookies.get({ url: origin });
-    const response = await fetch(origin + '/api/desktop/projects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookies.map(c => c.name + '=' + c.value).join('; '), 'X-TCode-Desktop-Native': backend.token },
-      body: JSON.stringify({ path: selection.filePaths[0] }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || '无法打开项目文件夹');
-    return result;
+    const pinned = await fs.promises.open(selection.filePaths[0], fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+    try {
+    const info = await pinned.stat({ bigint: true });
+    return await request('/api/desktop/projects','POST',{path:selection.filePaths[0],identity:[String(info.dev),String(info.ino)]});
+    } finally { await pinned.close(); }
   });
   ipcMain.handle('desktop:model-settings', async (event, payload) => {
     assertSender(event, window, origin);
@@ -578,6 +613,8 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     const desktopSession = session.fromPartition('persist:tcode-desktop');
     desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      if (details.method === 'POST' && origin && isLocalNavigation(details.url, origin)
+          && /^\/api\/(auth\/(login|logout)|tenants\/[^/]+\/switch)$/.test(new URL(details.url).pathname)) projectLoginEpoch++;
       // Cookies have no port boundary. Never leak our launch credential to a
       // different loopback service loaded by a preview or remote resource.
       if (!origin || !isLocalNavigation(details.url.replace(/^ws/, 'http'), origin)) {

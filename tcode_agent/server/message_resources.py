@@ -126,11 +126,31 @@ def _resolve_workspace_file_reference(
     path_text: str,
     *,
     workdir: str,
+    owner: workdir_utils.WorkspaceContext | None = None,
 ) -> Path:
     """Resolve a structured reference and require it to stay in its workspace."""
 
     if not str(workdir or "").strip():
         raise ValueError("workspace file reference requires a session workdir")
+    from . import project_files, project_roots
+    if owner is not None and project_roots.explicit_reference(path_text):
+        import os
+        from fastapi import HTTPException
+        if os.environ.get("TCODE_DESKTOP_MANAGED") == "1":
+            runtime = ServerState.get_workdir()
+            scope = project_files.tool_owner({"workdir": workdir, "tenant_id": owner.tenant_id,
+                                             "user_id": owner.user_id, "workspace_id": owner.workspace_id})
+            if scope != owner:
+                raise ValueError("项目引用不属于当前工作区")
+            try:
+                project = project_roots.inventory(runtime, scope)
+                if not project:
+                    raise ValueError("当前工作区没有关联项目目录")
+                grant, relative = project_roots.resolve(project, path_text)
+                # Only this explicitly selected file enters the existing attachment flow.
+                return project_files.snapshot(grant, relative, Path(workdir))
+            except HTTPException as exc:
+                raise ValueError(str(exc.detail)) from exc
     path = _resolve_existing_attachment_path(path_text, workdir=workdir)
     if path is None or not path.is_file():
         raise ValueError(f"workspace file reference does not exist: {path_text}")
@@ -273,12 +293,16 @@ def _build_message_resource_context(
     session_id: str = "",
     workdir: str = "",
     file_refs: Any = None,
+    owner: workdir_utils.WorkspaceContext | None = None,
 ) -> dict[str, Any]:
     attachment_paths = _extract_attachment_paths(message)
     uploaded_files: list[dict[str, Any]] = []
     staged_paths: set[str] = set()
 
+    structured = _extract_structured_file_ref_paths(file_refs)
     for raw_path in attachment_paths:
+        if raw_path in structured:
+            continue
         path = _resolve_existing_attachment_path(raw_path, workdir=workdir)
         if path is None:
             continue
@@ -294,8 +318,8 @@ def _build_message_resource_context(
             )
         )
 
-    for raw_path in _extract_structured_file_ref_paths(file_refs):
-        path = _resolve_workspace_file_reference(raw_path, workdir=workdir)
+    for raw_path in structured:
+        path = _resolve_workspace_file_reference(raw_path, workdir=workdir, owner=owner)
         canonical = path.resolve(strict=False).as_posix()
         if canonical in staged_paths:
             continue

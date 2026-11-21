@@ -152,15 +152,26 @@ class ArtifactImportTool(_ArtifactFileTool):
 
         root = Path(extra["workdir"]).resolve()
         relative = params.local_path or "imports/" + parts[-1]
-        if not _valid_path(relative) or any(_excluded(part) for part in relative.split("/")):
+        # Absolute destinations are meaningful only for a desktop project grant.
+        candidate = relative.removeprefix("/") if os.environ.get("TCODE_DESKTOP_MANAGED") == "1" else relative
+        if not _valid_path(candidate):
             return ToolResult(title=title, output="", error="请输入有效的本地相对文件路径")
         target = resolve_workspace_io_path(relative, context, tool_id=self.id, operation="write")
+        if target.metadata.get("desktop_root_id"):
+            relative = target.relative_path
+        if not _valid_path(relative) or any(_excluded(part) for part in relative.split("/")):
+            return ToolResult(title=title, output="", error="请输入有效的本地相对文件路径")
         if target.blocked or target.host_path != root / relative:
             return ToolResult(title=title, output="", error="无法写入当前工作区的导入目录")
         visible = target.container_path or relative
         from ...server import project_files, workdirs
         from fastapi import HTTPException
-        row = project_files.tool_input_binding(target, extra)
+        try:
+            row = project_files.selected_tool_grant(target, extra)
+        except HTTPException as exc:
+            return ToolResult(title=title, output="", error=str(exc.detail))
+        if row:
+            visible = str(Path(row["path"]) / relative)
         if row and target.host_path.exists():
             return ToolResult(title=title, output="", error="旧托管工作区已有同名文件；请核对或指定其他目标路径")
         if (not await context.ask("read", [f"artifact:{key}/{params.path}"])
@@ -327,12 +338,13 @@ class ArtifactUploadTool(_ArtifactFileTool):
         from fastapi import HTTPException
         read_approved = False
         try:
-            row = project_files.tool_input_binding(source, extra)
+            row = project_files.selected_tool_grant(source, extra)
             if row:
-                read_approved = await context.ask("read", [source.container_path or source.display_path])
+                rel = source.relative_path
+                read_approved = await context.ask("read", [str(Path(row["path"]) / rel)])
                 if not read_approved:
                     return ToolResult(title=title, output="", error="本地读取未获授权")
-                rel = source.relative_path.removeprefix("@project/")
+                project_files.selected_tool_grant(source, extra)
                 path = await asyncio.to_thread(project_files.snapshot, row, rel, root)
             info = path.stat()
             if info.st_nlink != 1 or not path.is_file() or info.st_size > MAX_BYTES:
@@ -355,13 +367,29 @@ class ArtifactUploadTool(_ArtifactFileTool):
                 return data
 
         try:
+            if row:
+                project_files.selected_tool_grant(source, extra)
             data = await asyncio.to_thread(read_source)
-        except (ValueError, OSError):
+        except (ValueError, OSError, HTTPException):
             return ToolResult(title=title, output="", error="本地文件已变化或不可安全读取")
         if context.abort is not None and context.abort.is_set():
             return ToolResult(title=title, output="", error="上传已取消")
         try:
             async with httpx.AsyncClient(headers=headers, follow_redirects=False, timeout=30) as client:
+                # This is the last reversible point: never change the approved source or
+                # destination, or retry a PUT that may already have reached the service.
+                try:
+                    if row:
+                        project_files.selected_tool_grant(source, extra)
+                    elif source.metadata.get("managed_input") and not project_files.tool_owner(extra):
+                        raise ValueError
+                    if (not _service_candidates("", owner, "TCODE_ARTIFACT_UPLOAD_ACCESS", service_id=key)
+                            or artifact_service(key) != (key, base, headers)):
+                        raise ValueError
+                except (HTTPException, ValueError, TypeError, AttributeError):
+                    return ToolResult(title=title, output="", error="文件或服务授权已变更，未上传；请重新确认")
+                if context.abort is not None and context.abort.is_set():
+                    return ToolResult(title=title, output="", error="上传已取消，未发送")
                 response = await client.put(f"{base}/api/v1/files/by-path", params={"path": params.remote_path},
                                             files={"file": (path.name, data, "application/octet-stream")})
                 response.raise_for_status()

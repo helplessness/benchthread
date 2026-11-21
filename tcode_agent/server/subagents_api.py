@@ -652,6 +652,7 @@ async def ask_side_question(payload: SideQuestionRequest, request: Request):
             session_id=side_session_id,
             workdir=side_workdir,
             file_refs=payload.file_refs,
+            owner=parent_context,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

@@ -1624,7 +1624,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
                         </span>
                       </div>
                       <Show when={file.path}>
-                        <div class="mt-1 truncate text-xs text-[#8b949e]">{file.path}</div>
+                        <div class="mt-1 truncate text-xs text-[#8b949e]">{file.displayPath || (desktop && file.path?.startsWith('@roots/') ? file.name : file.path)}</div>
                       </Show>
                     </div>
                   </div>
@@ -1801,7 +1801,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
                     <div class="px-4 py-4 text-xs text-[#9faeb7]">正在搜索当前 Workspace...</div>
                   </Show>
                   <Show when={!fileMentionLoading() && Boolean(fileMentionError())}>
-                    <div class="px-4 py-4 text-xs text-[#ffb6b0]">{fileMentionError()}</div>
+                    <div role="status" class="px-4 py-4 text-xs">{fileMentionError()}</div>
                   </Show>
                   <Show when={!fileMentionLoading() && !fileMentionError() && fileMentionItems().length === 0}>
                     <div class="px-4 py-4 text-xs text-[#9faeb7]">没有匹配的文件</div>
@@ -1821,10 +1821,10 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
                         <div class="flex items-center justify-between gap-4">
                           <div class="min-w-0 flex-1">
                             <div class="truncate text-sm font-semibold text-[#e6edf3]">{item.name}</div>
-                            <div class="mt-1 truncate font-mono text-[11px] text-[#8b949e]">{item.path}</div>
+                            <div class="mt-1 truncate font-mono text-[11px] text-[#8b949e]">{item.display_path || item.path}</div>
                           </div>
                           <div class="flex shrink-0 items-center gap-2 text-[10px] text-[#6f7d87]">
-                            <span>{item.origin === 'uploaded' ? '已上传' : '新产物'}</span>
+                            <span>{item.origin === 'project' ? '项目文件' : item.origin === 'uploaded' ? '已上传' : '新产物'}</span>
                             <span>{formatMentionFileSize(item.size)}</span>
                           </div>
                         </div>
