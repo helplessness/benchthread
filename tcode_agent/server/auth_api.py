@@ -21,6 +21,8 @@ from .auth import (
     CurrentUserContext,
     add_tenant_member,
     authenticate,
+    auth_required,
+    previously_used_desktop_accounts,
     clear_auth_cookie,
     clear_login_session,
     create_login_session,
@@ -71,6 +73,14 @@ async def auth_logout(request: Request):
     )
     clear_auth_cookie(response)
     return response
+
+
+@router.get("/api/auth/desktop-accounts")
+async def desktop_accounts(request: Request):
+    if not getattr(request.state, "desktop_gate", None):
+        raise HTTPException(404)
+    return {"accounts": previously_used_desktop_accounts() if auth_required() else [],
+            "local_workspace": False, "can_register": False}
 
 
 @router.get("/api/auth/me")

@@ -127,6 +127,19 @@ export async function deleteTenant(tenantId: string, confirmation: string): Prom
   });
 }
 
+export interface DesktopAccounts {
+  accounts: string[];
+  local_workspace: boolean;
+  can_register: boolean;
+}
+
+export async function getDesktopAccounts(): Promise<DesktopAccounts> {
+  const response = await fetch('/api/auth/desktop-accounts', { cache: 'no-store' });
+  if (response.status === 404) return { accounts: [], local_workspace: false, can_register: false };
+  if (!response.ok) throw new Error('无法读取本机登录记录');
+  return response.json();
+}
+
 export async function login(email: string, password: string): Promise<AuthUser> {
   const resp = await fetch(`${API_BASE}/api/auth/login`, {
     method: 'POST',

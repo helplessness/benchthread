@@ -244,6 +244,16 @@ def ensure_auth_store() -> None:
             _ensure_bootstrap_user(conn)
 
 
+def previously_used_desktop_accounts() -> list[str]:
+    with _connect() as conn:
+        return [row["email"] for row in conn.execute("""
+            SELECT u.email FROM users u WHERE u.status='active' AND u.last_login_at IS NOT NULL
+              AND EXISTS (SELECT 1 FROM tenant_memberships m JOIN tenants t ON t.id=m.tenant_id
+                          WHERE m.user_id=u.id AND m.status='active' AND t.status='active')
+            ORDER BY u.last_login_at DESC, u.email
+        """)]
+
+
 def _ensure_bootstrap_user(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()
     if int(row["count"] or 0) > 0:

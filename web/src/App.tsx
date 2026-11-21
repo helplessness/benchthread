@@ -1,4 +1,5 @@
 import {hypothesisMapLink,type HypothesisFocus} from './api/hypothesisMap';
+import { getDesktopAccounts, type DesktopAccounts } from './api/auth';
 import { displayWorkspacePath } from './utils/filePreview';
 import { confirmAction, showFeedback } from './components/FeedbackDialog';
 import { researchChangesLink, type ResearchChangeFocus } from './api/researchChanges';
@@ -390,6 +391,8 @@ export default function App(props: AppProps) {
   const [loginPasswordVisible, setLoginPasswordVisible] = createSignal(false);
   const [loginError, setLoginError] = createSignal('');
   const [loginSubmitting, setLoginSubmitting] = createSignal(false);
+  const [desktopAccounts, setDesktopAccounts] = createSignal<DesktopAccounts>({ accounts: [], local_workspace: false, can_register: false });
+  const [desktopIdentityFailed, setDesktopIdentityFailed] = createSignal(false);
   const [showTenantManagement, setShowTenantManagement] = createSignal(false);
   const [reviewRequest,setReviewRequest] = createSignal<{reviewId?:string;reviewIdentifier?:string}>();
   const [workflowRequest,setWorkflowRequest] = createSignal<{sessionId?:string;runId?:string;templateKey?:string;draftId?:string}>();
@@ -605,6 +608,7 @@ export default function App(props: AppProps) {
       let user: AuthUser | null = null;
       try {
         user = await getCurrentUser();
+        if (isDesktop) setDesktopAccounts(await getDesktopAccounts());
         if (user) {
           if (sessionStore.bindIdentityScope(`${user.user_id}:${user.tenant_id}`)) {
             resetSessionRequestCache();
@@ -615,6 +619,7 @@ export default function App(props: AppProps) {
           setLoginEmail(user.email || loginEmail());
         }
       } catch (e) {
+        setDesktopIdentityFailed(isDesktop);
         console.error('Failed to initialize auth state:', e);
       } finally {
         setAuthChecking(false);
@@ -1253,6 +1258,15 @@ export default function App(props: AppProps) {
           <h1 class="text-xl font-semibold text-[#f7fafc]">登录 Tcode</h1>
           <p class="mt-1 text-sm text-[#9faeb7]">使用已配置的账号进入工作区。</p>
         </div>
+        <Show when={isDesktop && desktopAccounts().accounts.length > 0}>
+          <label class="mb-3 block">最近登录的账号
+            <select class="block w-full" value={desktopAccounts().accounts.includes(loginEmail()) ? loginEmail() : ''}
+              onChange={event => { setLoginEmail(event.currentTarget.value); setLoginPassword(''); setLoginError(''); }}>
+              <option value="">使用其他账号</option>
+              <For each={desktopAccounts().accounts}>{email => <option value={email}>{email}</option>}</For>
+            </select>
+          </label>
+        </Show>
         <label class="mb-3 block">
           <span class="mb-1 block text-xs font-semibold text-[#bdc8d1]">邮箱</span>
           <input
@@ -1297,7 +1311,7 @@ export default function App(props: AppProps) {
 
   return (
     <Show when={!authChecking()} fallback={<AppLoading label="正在确认登录状态…" />}>
-      <Show when={identity()} keyed fallback={loginView}>
+      <Show when={identity()} keyed fallback={desktopIdentityFailed() ? <div role="alert" class="settings-page"><h2>暂时无法打开本机工作区</h2><button class="settings-save" onClick={()=>window.location.reload()}>重新连接</button></div> : loginView}>
         <Show when={!workspaceInitializing()} fallback={<AppLoading label={workspaceInitStage()} />}>
         <StudioShell page={mainSection()} onNavigate={navigate}
           mergedMainActive={mergedMainActive()} onMergedChange={setWorkspaceMerged} splitRequest={splitRequest()}

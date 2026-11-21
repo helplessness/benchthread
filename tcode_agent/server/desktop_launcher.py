@@ -93,6 +93,8 @@ class DesktopGate:
                 await send({"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json")]})
                 await send({"type": "http.response.body", "body": b'{"detail":"Desktop transport authentication required"}'})
             return
+        if valid_cookie and scope.get("path") == "/api/auth/desktop-accounts":
+            scope.setdefault("state", {})["desktop_gate"] = self
         return await self.app(scope, receive, send)
 
 
