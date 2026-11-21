@@ -19,5 +19,10 @@ describe('asset upload entry', () => {
     const empty = renderToString(() => <FileBrowser />);
     expect(empty).toContain('disabled');
     expect(empty).toContain('选择工作区后');
+    expect(empty).toContain('请先选择工作区');
+    expect(empty).not.toContain('当前目录暂无文件');
+    expect(empty).not.toContain('点击左侧文件进行预览');
+    const jobOnly = renderToString(() => <FileBrowser jobId="job1" artifactRoot="outputs" />);
+    expect(jobOnly).toContain('当前目录暂无文件');
   });
 });

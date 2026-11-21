@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 
 type Entry = { size: number; hash?: string };
 type Change = { path: string; status: string; before?: Entry; after?: Entry };
@@ -32,6 +32,7 @@ export default function AssetHistory(props: { workspaceId: string; onPreview?: (
   const [loading, setLoading] = createSignal(false);
   let pickerRef: HTMLDivElement | undefined;
   let controller: AbortController | undefined;
+  let listController: AbortController | undefined;
 
   async function loadRuns(offset = 0, selectFirst = false, from = dateFrom(), to = dateTo()) {
     const query = new URLSearchParams({ workspace_id: props.workspaceId, offset: String(offset), limit: String(RUN_PAGE) });
@@ -41,11 +42,16 @@ export default function AssetHistory(props: { workspaceId: string; onPreview?: (
       exclusiveEnd.setDate(exclusiveEnd.getDate() + 1);
       query.set('started_before', String(exclusiveEnd.getTime() / 1000));
     }
-    const response = await fetch(`/api/files/history/runs?${query}`);
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || '任务记录加载失败');
-    setRuns(result.runs || []); setRunTotal(result.total || 0); setRunOffset(result.offset || 0);
-    if (selectFirst && result.runs?.length) await selectRun(result.runs[0]);
+    listController?.abort();
+    const current = listController = new AbortController();
+    try {
+      const response = await fetch(`/api/files/history/runs?${query}`, { signal: current.signal });
+      const result = await response.json();
+      if (current.signal.aborted) return;
+      if (!response.ok) throw new Error(result.detail || '任务记录加载失败');
+      setError(''); setRuns(result.runs || []); setRunTotal(result.total || 0); setRunOffset(result.offset || 0);
+      if (selectFirst && result.runs?.length) await selectRun(result.runs[0]);
+    } catch (e) { if (!current.signal.aborted) setError(e instanceof Error ? e.message : '任务记录加载失败'); }
   }
 
   async function loadChanges(selectedRunId = run(), offset = changeOffset()) {
@@ -82,18 +88,15 @@ export default function AssetHistory(props: { workspaceId: string; onPreview?: (
     finally { if (!current.signal.aborted) setLoading(false); }
   }
 
-  createEffect(on(() => props.workspaceId, () => {
-    setRuns([]); setRun(''); setSelectedRun(undefined); setPath(''); setData(undefined); setDateFrom(''); setDateTo(''); setChangeQuery(''); setChangeStatus('');
-    void loadRuns(0, true).catch(e => setError(e instanceof Error ? e.message : '加载失败'));
-  }));
   onMount(() => {
+    void loadRuns(0, true);
     const closePicker = (event: PointerEvent) => {
       if (pickerOpen() && pickerRef && !pickerRef.contains(event.target as Node)) setPickerOpen(false);
     };
     document.addEventListener('pointerdown', closePicker);
     onCleanup(() => document.removeEventListener('pointerdown', closePicker));
   });
-  onCleanup(() => controller?.abort());
+  onCleanup(() => { listController?.abort(); controller?.abort(); });
   const selectedChange = () => data()?.selected_change || data()?.changes.find(item => item.path === path());
   const changeTotal = () => data()?.change_total || 0;
 
@@ -105,7 +108,7 @@ export default function AssetHistory(props: { workspaceId: string; onPreview?: (
         </button>
         <Show when={pickerOpen()}>
           <div class="asset-history-picker-menu absolute mt-1 w-full rounded-box border p-2">
-            <form class="space-y-2" onSubmit={e => { e.preventDefault(); void loadRuns(0).catch(error => setError(String(error))); }}>
+            <form class="space-y-2" onSubmit={e => { e.preventDefault(); void loadRuns(0); }}>
               <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
                 <label class="min-w-0 text-xs">开始日期<input type="date" class="input input-sm mt-1 w-full" value={dateFrom()} max={dateTo() || undefined} onInput={e => setDateFrom(e.currentTarget.value)} /></label>
                 <span class="mt-5 opacity-50">至</span>

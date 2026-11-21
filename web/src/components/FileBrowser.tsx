@@ -26,6 +26,7 @@ interface FileItem {
 }
 
 interface FileBrowserProps {
+  identityScope?: string;
   mode?: 'files' | 'changes';
   initialHistory?: boolean;
   workdir?: string;
@@ -64,14 +65,22 @@ export default function FileBrowser(props: FileBrowserProps) {
   const [folderPlan, setFolderPlan] = createSignal<ReturnType<typeof planFolderImport<File>>>();
   let uploadController: AbortController | undefined;
   let uploadVersion = 0;
+  let scopeGeneration = 0;
   let dragDepth = 0;
   const [dragOver, setDragOver] = createSignal(false);
   const [uploading, setUploading] = createSignal(false);
   const [uploadNotice, setUploadNotice] = createSignal('');
   const [uploadErrors, setUploadErrors] = createSignal<string[]>([]);
+  const showDesktopError = () => {
+    const generation = scopeGeneration;
+    return (error: unknown) => {
+      if (generation === scopeGeneration) setUploadErrors([String(error)]);
+    };
+  };
   const canUpload = () => !props.jobId && Boolean(props.workspaceId?.trim());
 
   const isArtifactMode = () => Boolean(props.jobId && props.artifactRoot);
+  const hasFileScope = () => isArtifactMode() || Boolean(!props.jobId && (props.workspaceId?.trim() || props.workdir?.trim()));
   const displayPath = (path: string | null | undefined) => {
     const value = String(path || '').trim();
     if (desktop && !isArtifactMode() && value.startsWith('@roots/')) {
@@ -114,6 +123,7 @@ export default function FileBrowser(props: FileBrowserProps) {
 
   const loadFiles = async (path: string = '') => {
     const requestId = ++latestFileRequest;
+    if (!hasFileScope()) return;
     setLoading(true);
     setListError('');
     try {
@@ -170,6 +180,7 @@ export default function FileBrowser(props: FileBrowserProps) {
 
   const loadFileContent = async (path: string) => {
     const requestId = ++latestPreviewRequest;
+    if (!hasFileScope()) return;
     setPreviewLoading(true);
     setPreviewError('');
     setSelectedFile(path);
@@ -211,12 +222,12 @@ export default function FileBrowser(props: FileBrowserProps) {
 
   const openFileAtPath = async (path: string) => {
     if (!path) return;
-    const scope = browserScopeKey();
+    const generation = scopeGeneration;
     const dir = path.split('/').slice(0, -1).join('/');
     if (dir !== currentPath()) {
       await loadFiles(dir);
     }
-    if (scope !== browserScopeKey()) return;
+    if (generation !== scopeGeneration) return;
     await loadFileContent(path);
   };
 
@@ -335,6 +346,7 @@ export default function FileBrowser(props: FileBrowserProps) {
 
   // 会话运行态和消息更新会频繁替换对象；使用稳定键避免打开的目录被重置。
   const browserScopeKey = createMemo(() => JSON.stringify([
+    props.identityScope || '',
     String(props.workdir || '').trim(),
     String(props.workspaceId || '').trim(),
     String(props.jobId || '').trim(),
@@ -343,6 +355,7 @@ export default function FileBrowser(props: FileBrowserProps) {
   ]));
 
   createEffect(on(browserScopeKey, () => {
+    scopeGeneration++;
     uploadVersion += 1;
     uploadController?.abort();
     uploadController = undefined;
@@ -353,6 +366,13 @@ export default function FileBrowser(props: FileBrowserProps) {
     setFolderPlan(undefined);
     setDragOver(false);
     latestPreviewRequest += 1;
+    setLoading(false);
+    setListError('');
+    setFiles([]);
+    setCurrentPath('');
+    setBoundWorkspace('');
+    setEditingWorkspace('');
+    setRootLabels({});
     const initialPath = String(props.initialPath || '');
     setSelectedFile(null);
     setFileContent('');
@@ -399,6 +419,7 @@ export default function FileBrowser(props: FileBrowserProps) {
   onMount(() => onCleanup(installUploadFeedback(uploadTarget, event => canUpload() && !uploading() && !Array.from(event?.dataTransfer?.items || []).some(item => item.webkitGetAsEntry?.()?.isDirectory))));
 
   onCleanup(() => {
+    scopeGeneration++;
     uploadVersion += 1;
     uploadController?.abort();
     latestFileRequest += 1;
@@ -475,13 +496,14 @@ export default function FileBrowser(props: FileBrowserProps) {
             <button class="btn btn-sm" disabled={!canUpload() || uploading()} onClick={() => uploadInput.click()}>{uploading() ? '导入中…' : desktop ? '导入本地文件' : '上传文件'}</button>
             <Show when={desktop?.projectInput && canUpload() && boundWorkspace() === props.workspaceId}>
               <button class="btn btn-sm" onClick={async () => {
+                const generation = scopeGeneration;
                 try {
                   const imported = await desktop?.projectInput?.(props.workspaceId!);
-                  if (imported) await openFileAtPath(imported);
-                } catch (error) { setUploadErrors([String(error)]); }
+                  if (imported && generation === scopeGeneration) await openFileAtPath(imported);
+                } catch (error) { if (generation === scopeGeneration) setUploadErrors([String(error)]); }
               }}>选取项目输入</button>
             </Show>
-            <Show when={desktop && props.workspaceId}><button class="btn btn-sm" onClick={()=>void desktop!.workspace(props.workspaceId!, 'finder').catch(error=>setUploadErrors([String(error)]))}>Finder</button><button class="btn btn-sm" onClick={()=>void desktop!.workspace(props.workspaceId!, 'terminal').catch(error=>setUploadErrors([String(error)]))}>终端</button></Show>
+            <Show when={desktop && props.workspaceId}><button class="btn btn-sm" onClick={()=>void desktop!.workspace(props.workspaceId!, 'finder').catch(showDesktopError())}>Finder</button><button class="btn btn-sm" onClick={()=>void desktop!.workspace(props.workspaceId!, 'terminal').catch(showDesktopError())}>终端</button></Show>
             <Show when={desktop}><input ref={element => { folderInput = element; element.setAttribute('webkitdirectory', ''); }} type="file" multiple hidden aria-label="选择本地文件夹"
               onChange={event => {
                 const files = Array.from(event.currentTarget.files || []); event.currentTarget.value = '';
@@ -494,7 +516,7 @@ export default function FileBrowser(props: FileBrowserProps) {
             <button class="btn btn-sm" onClick={()=>window.dispatchEvent(new CustomEvent('tcode-open-structure',{detail:{path:selectedFile(),workspaceId:props.workspaceId,workdir:props.workdir,jobId:props.jobId,artifactRoot:props.artifactRoot}}))}>三维查看</button>
           </Show>
           <Show when={desktop && props.workspaceId && selectedFile() && !isArtifactMode()}>
-            <Show when={!selectedFile()?.startsWith('@project/')}><button class="btn btn-sm" onClick={() => void desktop!.revealFile(props.workspaceId!, selectedFile()!).catch(error => setUploadErrors([String(error)]))}>在文件夹中显示</button></Show>
+            <Show when={!selectedFile()?.startsWith('@project/')}><button class="btn btn-sm" onClick={() => void desktop!.revealFile(props.workspaceId!, selectedFile()!).catch(showDesktopError())}>在文件夹中显示</button></Show>
           </Show>
           <Show when={selectedFile()}>
             {(filePath) => (
@@ -512,6 +534,7 @@ export default function FileBrowser(props: FileBrowserProps) {
           <button
             class={iconButtonClass}
             onClick={handleRefresh}
+            disabled={!hasFileScope()}
             title="刷新"
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" class={`w-4 h-4 ${loading() ? 'animate-spin' : ''}`}>
@@ -534,7 +557,10 @@ export default function FileBrowser(props: FileBrowserProps) {
       </div>
 
       {/* 文件树与预览区域 */}
-      <Show when={showHistory() && !props.jobId && props.workspaceId}><AssetHistory workspaceId={props.workspaceId!} onPreview={props.onPreview} onQuote={props.onQuote} /></Show>
+      <Show when={hasFileScope()} fallback={<p role="status" class="p-4 text-center text-sm text-[var(--tcode-text-muted)]">请先选择工作区</p>}>
+      <Show keyed when={showHistory() && !props.jobId && props.workspaceId && browserScopeKey()}>{_scope =>
+        <AssetHistory workspaceId={props.workspaceId!} onPreview={props.onPreview} onQuote={props.onQuote} />
+      }</Show>
       <Show when={!showHistory() || props.jobId || !props.workspaceId}>
       <div ref={browserContentRef} class="flex min-h-0 flex-1">
         <div class="tcode-scrollbar min-w-[180px] overflow-y-auto border-r border-[#2a3136] bg-[#13191d]" style={{ width: `${leftPaneWidth()}%` }}>
@@ -664,6 +690,7 @@ export default function FileBrowser(props: FileBrowserProps) {
           </Show>
         </div>
       </div>
+      </Show>
       </Show>
     </div>
   );
