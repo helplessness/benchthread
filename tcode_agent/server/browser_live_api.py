@@ -26,7 +26,7 @@ from .workspace_scope import (
     _workspace_context_from_request,
     _workspace_context_from_websocket,
 )
-from .auth import auth_required, current_user_from_websocket, require_current_user
+from .auth import authorize_socket_command, require_current_user
 from .state import ServerState
 
 router = APIRouter()
@@ -158,15 +158,8 @@ async def websocket_browser_live(websocket: WebSocket):
     Frames stay inside the authenticated TCode connection.  The browser
     container's CDP endpoint is never exposed to the client.
     """
-    if auth_required():
-        user = current_user_from_websocket(websocket)
-        if user is None:
-            await websocket.close(code=4401)
-            return
-        if user.tenant_status != "active":
-            await websocket.close(code=4423)
-            return
-        websocket.state.current_user = user
+    if not await authorize_socket_command(websocket):
+        return
 
     browser_session_id = str(
         websocket.query_params.get("browser_session_id") or ""
@@ -245,6 +238,8 @@ async def websocket_browser_live(websocket: WebSocket):
             }
             signature = json.dumps(state_payload, sort_keys=True, ensure_ascii=False)
             if signature != last_state_signature:
+                if not await authorize_socket_command(websocket):
+                    return
                 await websocket.send_json(state_payload)
                 last_state_signature = signature
 
@@ -252,11 +247,15 @@ async def websocket_browser_live(websocket: WebSocket):
             if frame_seq > last_frame_seq and paths.frame.is_file():
                 frame = await asyncio.to_thread(paths.frame.read_bytes)
                 if 0 < len(frame) <= max_frame_bytes:
+                    if not await authorize_socket_command(websocket):
+                        return
                     await websocket.send_bytes(frame)
                     last_frame_seq = frame_seq
 
             now = asyncio.get_running_loop().time()
             if now - last_heartbeat >= 15:
+                if not await authorize_socket_command(websocket):
+                    return
                 await websocket.send_json(
                     {
                         "type": "browser_heartbeat",
@@ -279,6 +278,8 @@ async def websocket_browser_live(websocket: WebSocket):
                 message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
             except asyncio.TimeoutError:
                 continue
+            if not await authorize_socket_command(websocket):
+                return
             action = str(message.get("action") or "").strip()
             if state.get("desktop_browser") is True:
                 await websocket.send_json({"type": "browser_control_error", "error": "请在 Tcode 浏览器窗口中操作；此面板展示每次动作后的页面观察。"})

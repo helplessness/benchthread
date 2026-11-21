@@ -1,4 +1,5 @@
 import { createSignal, createRoot, createEffect } from 'solid-js';
+import { browserLiveStore } from './browserLive';
 import { generateId } from '../utils/id';
 import { toVisibleTeamAgentName, usesFixedScheduler } from '../utils/teamRegistry';
 import { preferenceKeys, readPreference } from '../utils/userPreferences';
@@ -661,6 +662,7 @@ function createSessionStore() {
     setSessions([]);
     setCurrentSessionId(null);
     setMessages([]);
+    browserLiveStore.clear();
     setContinuedAsyncJobs({});
     setWorkflowProposalRuns({});
     setSessionRuntimeById({});

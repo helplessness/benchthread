@@ -4,6 +4,13 @@ BenchThread（原 TCode）是一个可自托管的 AI 研究工作台。把文�
 
 目前处于开源 Alpha，尚未验收生产多租户部署。界面与截图可能仍显示 TCode；`tcode`、`tcode-server` 和 Python 包名 `tcode-agent` 不变。
 
+## 项目特色
+
+- **远程工具能接文件，也能把结果带回工作区**：给自己的 FastMCP 工具接入 [Artifact Python SDK](packages/artifact-sdk/README.md#最小-fastmcp-示例)，就可以用文件引用传参，不用让远端机器识别你电脑上的路径。[用 `echo_file` 跑通一次完整往返](packages/artifact-sdk/README.md#echo_file-快速开始)。不做计算时，也可以直接说「从实验室文件服务下载 `results/report.csv` 到当前工作区」，[无需绑定 MCP](docs/RUNNING.md#不绑定-mcp-使用-artifact)。
+- **计算可以在远端继续**：接入支持可恢复任务的服务后，可用原任务 ID 查进度、取结果，不必重新提交。
+- **研究过程可以回查**：在同一个工作区整理文献、假说、实验和证据，查看交互图表与分子结构。
+- **任务由你把关**：设置目标和预算，必要时审核工具参数。结果验收会标明未通过或缺证据的部分，不等于科学结论已证实。
+
 ## 快速开始
 
 **选择入口：** [Linux Web](#linux-web发出第一条消息) · [macOS 桌面（Apple Silicon）](desktop/README.md#打开方式) · [Windows Web（实验性）](docs/Windows-Web快速启动.md#1-首次准备) · [Docker Web](docs/RUNNING.md#docker-本机体验)
@@ -96,6 +103,7 @@ ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 user@server
 | **连接普通 MCP** | [普通 MCP：配置与验证](tcode_agent/MCP_QUICKSTART.md#配置一个服务) | 先启动实际工具服务，再在 BenchThread 配置地址和认证；不需要 Job Protocol 或 Docker。 |
 | **启用远程异步计算** | [Job Protocol 与执行端：启动和验收](docs/RUNNING.md#远程异步计算) | 配网关、后台执行和跟踪；实际执行计算的 MCP 服务需单独准备。 |
 | **让远程工具收发文件** | [最小 FastMCP 示例代码](packages/artifact-sdk/README.md#最小-fastmcp-示例) · [用 `echo_file` 跑通第一次往返](packages/artifact-sdk/README.md#echo_file-快速开始) · [Artifact 部署指南](docs/RUNNING.md#文件服务artifact) | 只在传文件时需要。安装文件 SDK 不等于启动文件服务。 |
+| **只想提供文件，不运行工具** | [独立启动 Artifact](packages/artifact-sdk/README.md#仅启动-artifact) · [在聊天中按服务名浏览和传文件](docs/RUNNING.md#不绑定-mcp-使用-artifact) | 不需要 FastMCP 或 Job Protocol；文件主机运行服务，BenchThread 后端配置地址、凭据和访问权限。 |
 
 其他入口：[运行指南](docs/RUNNING.md) · [配置指南](docs/CONFIGURATION.md) · [网页搜索配置](docs/CONFIGURATION.md#网页搜索可选) · [启动排查](docs/RUNNING.md#启动排查)。
 
@@ -154,10 +162,6 @@ TCODE_SANDBOX_EGRESS_PROXY_CONTAINER=tcode-egress-proxy
 4. 换到 **Web 账号**，按[方式 B](#方式-b带登录启动)启动或重启 Web，读取同一份配置，不加 `--local`。`/health` 只确认 Runner 就绪，能否执行请按上面的 Web 步骤验证。
 
 ## 功能进度
-
-- **研究过程可以回查**：在工作区整理文献、假说、实验和证据；查看交互图表与分子结构。
-- **任务由你把关**：设置目标和预算、复用工作流，必要时审核工具参数。结果验收会标明未通过或缺证据的部分，不等于科学结论已证实。
-- **计算可以在远端继续**：接入支持可恢复任务的远端服务后，可用原任务 ID 查进度、取结果，不必重新提交。
 
 [完整功能、研究场景与 Roadmap](docs/FEATURES.md) · [Alpha 范围与边界](docs/PUBLIC-ALPHA.md)
 

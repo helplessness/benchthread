@@ -55,16 +55,17 @@ def _personal_services(owner):
 
 
 def _file_endpoint(key, owner):
+    from ...server import personal_artifacts
+    if key in personal_artifacts.personal_entries():
+        return personal_artifacts.endpoint(key, owner)
     binding = _personal_services(owner).get(key)
     if binding is None:
         return artifact_service(key)
     from ...mcp.manager_auto import MCPManager
-    from ...server.desktop_config import remote_url, local_development_services
-    from urllib.parse import urlsplit
+    from ...server.desktop_config import personal_url, local_development_services
     entry = binding[1]
     url = entry['url'].rstrip('/')
-    if (not remote_url(url, allow_loopback=local_development_services()) or not url.endswith('/mcp')
-            or (urlsplit(url).scheme != 'https' and urlsplit(url).hostname not in {'127.0.0.1','localhost','::1'})):
+    if not personal_url(url, allow_loopback=local_development_services()) or not url.endswith('/mcp'):
         raise ValueError('invalid personal service URL')
     values = [v for k,v in entry.get('headers', {}).items() if k.lower() == 'authorization']
     if len(values) != 1:
@@ -80,18 +81,23 @@ def _service_candidates(name, owner, access_variable="TCODE_ARTIFACT_IMPORT_ACCE
     grants = json.loads(os.environ.get(access_variable) or "{}")
     allowed = {}
     for key, service in services.items():
+        if service.get('auth_mode') == 'personal-tokens':
+            continue
         users = grants.get(key, {}).get(owner["tenant_id"], [])
         if isinstance(users, list) and owner["user_id"] in users:
             allowed[key] = service.get("name") or key
     personal = _personal_services(owner)
     allowed.update({key: binding[0] for key, binding in personal.items()})
+    if any(v.get('auth_mode') == 'personal-tokens' for v in services.values()):
+        from ...server import personal_artifacts
+        allowed.update(personal_artifacts.bindings(owner['tenant_id'], owner['user_id']))
     if service_id:
         return {service_id: allowed[service_id]} if service_id in allowed else {}
     if not name.strip():
         default = os.environ.get("TMCP_ARTIFACT_SERVICE_ID", "")
-        if not default and personal:
-            return {key: allowed[key] for key in personal}
-        return {default: allowed[default]} if default in allowed else {}
+        if access_variable == 'TCODE_ARTIFACT_UPLOAD_ACCESS' and default in allowed:
+            return {default: allowed[default]}
+        return allowed
     query = name.strip().casefold()
     exact = {key: label for key, label in allowed.items() if query == label.strip().casefold()}
     return exact or {key: label for key, label in allowed.items() if query in label.casefold()}
@@ -183,7 +189,7 @@ class ArtifactImportTool(_ArtifactFileTool):
         return ("Import one file from an authorized Artifact file service into the current workspace. "
                 "Use the configured display name (service_name) and exact remote relative file path (path). "
                 "For a file chosen from artifact_browse, pass its service_id, path, and artifact_id. "
-                "Omit service_name to use the configured default. Ambiguous service names require the user's choice. "
+                "Omit service_name to choose from authorized services. Ambiguous service names require the user's choice. "
                 "This works independently of MCP bindings. Use the returned workspace path for subsequent operations.")
 
     @property
@@ -274,7 +280,7 @@ class ArtifactBrowseTool(ArtifactImportTool):
     id = "artifact_browse"
     description = (
         "List immediate files and subdirectories in a configured Artifact service, independently of MCP. "
-        "Use its display name or omit service_name for the default. An empty directory lists the root. "
+        "Use its display name or omit service_name to choose from authorized services. An empty directory lists the root. "
         "Use next_offset and service_id to fetch the next page. Show the kind of each entry, and use display_path "
         "where provided so a directory ends in '/' and differs from a same-named file. A legacy entry with "
         "importable=false can still be read by its original Artifact reference. For a supported file the user "

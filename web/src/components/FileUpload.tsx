@@ -1,4 +1,6 @@
 import { createSignal, Show, For, onMount, onCleanup } from 'solid-js';
+import FeedbackDialog from './FeedbackDialog';
+import { desktop } from '../desktop';
 import { installUploadFeedback } from '../utils/uploadFeedback';
 import { sessionStore } from '../stores/session';
 import { composerIdentity } from '../stores/composer';
@@ -29,6 +31,14 @@ export default function FileUpload(props: FileUploadProps) {
   const [uploading, setUploading] = createSignal(false);
   const [failures, setFailures] = createSignal<Array<{ file: File; error: string }>>([]);
   const [progress, setProgress] = createSignal('');
+  const [serviceChoices, setServiceChoices] = createSignal<{id: string; name?: string}[]>([]);
+  let resolveChoice: ((id: string) => void) | undefined;
+  function chooseService(id: string) {
+    resolveChoice?.(id);
+    resolveChoice = undefined;
+    setServiceChoices([]);
+  }
+  onCleanup(() => chooseService(''));
   let uploadingInFlight = false;
   let inputRef: HTMLInputElement | undefined;
   let folderInputRef: HTMLInputElement | undefined;
@@ -75,10 +85,20 @@ export default function FileUpload(props: FileUploadProps) {
           if (folderFiles.some(file => file.size > 100 * 1024 * 1024)) throw new Error('单文件不能超过 100MB');
           const firstRelative = String((folderFiles[0] as any).webkitRelativePath || '').trim();
           const folderName = firstRelative.split('/')[0] || 'folder';
+          const config = await fetch(desktop ? '/api/desktop/services/config' : '/api/artifact-services/config');
+          if (!config.ok) throw new Error('无法读取文件服务设置');
+          const settings = await config.json();
+          let uploadService = settings.artifact_default_service_id || '';
+          if (!uploadService) {
+            const choices = Object.entries(settings.artifact_services || {}).map(([id, entry]) => ({id, name: (entry as {name?: string}).name}));
+            if (!choices.length) throw new Error('请先在设置中添加 Artifact 文件服务');
+            uploadService = await new Promise<string>(resolve => { resolveChoice = resolve; setServiceChoices(choices); });
+            if (!uploadService || !targetIsCurrent() || composerIdentity() !== identity) return;
+          }
           const createResp = await fetch('/api/artifacts/bundles', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: folderName, session_id: sessionId }),
+            body: JSON.stringify({ name: folderName, session_id: sessionId, service_id: uploadService }),
           });
           if (!createResp.ok) throw new Error(`创建文件夹 Bundle 失败: ${await createResp.text()}`);
           const created = await createResp.json();
@@ -221,6 +241,10 @@ export default function FileUpload(props: FileUploadProps) {
 
   return (
     <div class="flex flex-col gap-2">
+      <Show when={serviceChoices().length}><FeedbackDialog title="选择本次上传的文件服务" onClose={() => chooseService('')}>
+        <For each={serviceChoices()}>{item => <button type="button" onClick={() => chooseService(item.id)}>{item.name || item.id}（{item.id}）</button>}</For>
+        <footer class="feedback-dialog-actions"><button type="button" onClick={() => chooseService('')}>取消</button></footer>
+      </FeedbackDialog></Show>
       <div
         ref={dropTarget}
         class={`upload-drop-target border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${

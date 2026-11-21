@@ -176,10 +176,15 @@ async def configure(workdir, owner, name, entry, old):
 def configured_alias(name, context):
     """Owner-scoped name mapping only; this never grants route permission."""
     from ._utils import _context_control_workdir, _context_workspace_claims
-    if name.startswith('plugin-'):
-        claims = _context_workspace_claims(context)
-        owner = f"{claims.get('tenant_id', '')}/{claims.get('user_id', '')}"
-        with targets.store(_context_control_workdir(context)) as db:
+    if not name.startswith('plugin-'):
+        return name
+    return owner_alias(name, _context_control_workdir(context), _context_workspace_claims(context))
+
+
+def owner_alias(name, workdir, claims):
+    if name.startswith('plugin-') and claims.get('tenant_id') and claims.get('user_id'):
+        owner = f"{claims['tenant_id']}/{claims['user_id']}"
+        with targets.store(workdir) as db:
             rows = db.execute('SELECT target,data FROM bindings WHERE owner=? AND plugin=?', (owner, ORIGIN)).fetchall()
         for alias, raw in rows:
             if json.loads(raw).get('server') == name:

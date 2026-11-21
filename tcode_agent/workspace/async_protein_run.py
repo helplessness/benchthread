@@ -943,6 +943,7 @@ def settle_result(
         result_output,
         destination / "artifacts" / "bundles",
         automatic=True,
+        target_server=target_server,
     )
     copied, skipped = _copy_registered_artifacts(
         workspace=workspace,

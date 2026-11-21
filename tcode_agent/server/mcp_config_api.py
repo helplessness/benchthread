@@ -15,7 +15,7 @@ from ..mcp.manager_auto import MCPManager
 from ..mcp.personal_binding import allows_owner, is_personal
 from ..runtime.workspace_registry import registry_workspace
 from .auth import auth_required, require_current_user, workdir_utils
-from .desktop_config import local_development_services, remote_url
+from .desktop_config import local_development_services, personal_url, remote_url
 from .state import ServerState
 
 router = APIRouter(prefix="/api/mcp/config", tags=["mcp-config"])
@@ -32,7 +32,6 @@ def _check_binding(entry, request):
 
 async def _personal_artifact_id(mcp_url, headers):
     """Verify the sibling Artifact endpoint without accepting a server-provided URL."""
-    import httpx
     from .desktop_config import remote_services_paused
 
     parts = urlsplit(mcp_url)
@@ -40,7 +39,7 @@ async def _personal_artifact_id(mcp_url, headers):
         raise HTTPException(409, "远端服务已暂停")
     if not parts.path.rstrip('/').endswith('/mcp') or not remote_url(mcp_url, allow_loopback=local_development_services()):
         raise HTTPException(400, "个人文件服务需要以 /mcp 结尾的 SDK 地址")
-    if parts.scheme != 'https' and parts.hostname not in {'localhost', '127.0.0.1', '::1'}:
+    if not personal_url(mcp_url, allow_loopback=local_development_services()):
         raise HTTPException(400, "跨主机个人凭据连接需要 HTTPS")
     credentials = [v for k, v in headers.items() if k.lower() == 'authorization']
     if len(credentials) != 1:
@@ -48,10 +47,18 @@ async def _personal_artifact_id(mcp_url, headers):
     resolved = MCPManager._resolve_header_environment({'Authorization': credentials[0]})['Authorization']
     if not re.fullmatch(r'Bearer [!-~]{1,512}', resolved, re.I):
         raise HTTPException(400, "需要有效的 Bearer 个人令牌")
-    target = mcp_url.rstrip('/')[:-4] + '/artifact/health'
+    data = await verify_personal_artifact(mcp_url.rstrip('/')[:-4] + '/artifact', resolved[7:])
+    return data['service_id']
+
+
+async def verify_personal_artifact(base_url, token):
+    """Both clients authenticate against the configured Artifact, never a redirect."""
+    import httpx
+    if not isinstance(token, str) or not re.fullmatch(r'[!-~]{1,512}', token):
+        raise HTTPException(400, "请输入有效的个人令牌")
     try:
         async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
-            res = await client.get(target, headers={'Authorization': resolved})
+            res = await client.get(base_url + '/health', headers={'Authorization': 'Bearer ' + token})
             res.raise_for_status()
             data = res.json()
         if (not isinstance(data, dict) or data.get('auth_mode') != 'personal-tokens'
@@ -60,7 +67,7 @@ async def _personal_artifact_id(mcp_url, headers):
             raise ValueError('invalid service metadata')
     except (httpx.HTTPError, ValueError):
         raise HTTPException(400, "未验证同源个人文件服务，请检查凭据及服务是否启用了个人令牌模式") from None
-    return data['service_id']
+    return data
 
 
 def _config_path() -> Path:

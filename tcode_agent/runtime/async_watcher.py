@@ -888,14 +888,14 @@ async def _inject_result(
             output_abs_path = str(continuation.get("output_abs_path") or "").strip()
             if output_abs_path:
                 result_sources.append(output_abs_path)
+            from ..mcp.custom_targets import owner_alias
+            target = str(reg.get("target_server") or issue.get("tool_server") or "")
             settled = await asyncio.to_thread(
                 settle_result,
                 run_link,
                 identifier=identifier,
                 status=str(continuation.get("status") or "completed"),
-                target_server=str(
-                    reg.get("target_server") or issue.get("tool_server") or ""
-                ),
+                target_server=owner_alias(target, workdir, issue_workspace),
                 target_tool=str(
                     reg.get("target_tool") or issue.get("tool_name") or ""
                 ),

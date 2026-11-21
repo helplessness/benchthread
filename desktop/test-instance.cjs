@@ -33,6 +33,8 @@ function createTestInstance(temp, inherited, credentials) {
   Object.assign(environment, {
     HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'),
     TCODE_DESKTOP_TEST_INSTANCE: '1', TCODE_CONFIG_ROOT: path.join(root, 'runtime/config'),
+  });
+  if (credentials) Object.assign(environment, {
     TCODE_AUTH_REQUIRED: '1', TCODE_BOOTSTRAP_EMAIL: credentials.email,
     TCODE_BOOTSTRAP_PASSWORD: credentials.password, TCODE_BOOTSTRAP_USER_ID: credentials.userId || 'desktop-test',
   });

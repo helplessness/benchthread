@@ -125,6 +125,7 @@ export const browserLiveStore = createRoot(() => {
     sessions,
     upsert,
     upsertFromAgentEvent,
+    clear() { setSessions([]); persistSessions([]); },
     activeForParent,
     setHidden,
   };

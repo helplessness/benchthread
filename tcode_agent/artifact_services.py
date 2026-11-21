@@ -28,10 +28,15 @@ def artifact_service(service_id: str = "", *, target_server: str = "",
     default_id = os.environ.get("TMCP_ARTIFACT_SERVICE_ID", default_service_id).strip()
     if not isinstance(service_id, str):
         raise ValueError("Artifact service_id must be a string")
-    routed = routes.get(target_server, "")
+    routed = routes.get(target_server, "") if target_server else ""
     if not isinstance(routed, str):
         raise ValueError('Artifact target route must be a service ID')
-    selected = service_id or routed or default_id
+    if target_server:
+        if not routed or target_server == "*":
+            raise ValueError(f'请在「设置 → Artifact 文件服务」为 MCP {target_server} 绑定文件服务后再传输文件')
+        if service_id and service_id != routed:
+            raise ValueError(f'MCP {target_server} 的文件来源与绑定服务不一致')
+    selected = routed or service_id or default_id
     if not isinstance(selected, str) or (selected and not _SERVICE_ID.fullmatch(selected)):
         raise ValueError("Artifact service_id is invalid")
     if default_id and not _SERVICE_ID.fullmatch(default_id):
@@ -40,6 +45,10 @@ def artifact_service(service_id: str = "", *, target_server: str = "",
         entry = services[selected]
         if not isinstance(entry, dict):
             raise ValueError(f"Artifact service '{selected}' must be an object")
+        if entry.get('auth_mode') == 'personal-tokens':
+            if target_server:
+                raise ValueError(f'请为 MCP {target_server} 绑定共享 Artifact 服务')
+            raise ValueError('个人文件服务仅能使用当前登录账号绑定的凭据')
         url = entry.get("url", "")
         token_name = entry.get("token_env", "")
         if not isinstance(token_name, str) or (token_name and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_name)):
@@ -47,8 +56,10 @@ def artifact_service(service_id: str = "", *, target_server: str = "",
         token = os.environ.get(token_name, "") if token_name else ""
         if token_name and not token:
             raise ValueError(f"Artifact service '{selected}' credential is not configured")
-    elif selected and selected != default_id:
+    elif selected and (services or selected != default_id):
         raise ValueError(f"Unknown Artifact service_id: {selected}")
+    elif not selected and services:
+        raise ValueError('请选择文件服务或设置普通上传的默认服务')
     else:
         url = default_url
         token = default_token

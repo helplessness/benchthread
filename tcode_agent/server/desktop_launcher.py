@@ -60,12 +60,19 @@ def bind_socket(runtime: Path) -> socket.socket:
 class DesktopGate:
     """An additional desktop transport boundary, not a replacement for auth."""
 
-    def __init__(self, app, *, token: str, port: int, tracker_token: str = ""):
+    def __init__(self, app, *, token: str, port: int, tracker_token: str = "", local_user=None):
         self.app = app
+        self.local_user = local_user
+        if local_user is not None:
+            self.set_automatic_entry()
         self.token = token
         self.host = f"127.0.0.1:{port}"
         self.origin = f"http://{self.host}"
         self.tracker_token = tracker_token
+
+    def set_automatic_entry(self, enabled=None):
+        from .auth import desktop_automatic_entry
+        self.automatic_entry = desktop_automatic_entry(self.local_user, enabled=enabled)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in {"http", "websocket"}:
@@ -93,18 +100,33 @@ class DesktopGate:
                 await send({"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json")]})
                 await send({"type": "http.response.body", "body": b'{"detail":"Desktop transport authentication required"}'})
             return
-        if valid_cookie and scope.get("path") == "/api/auth/desktop-accounts":
+        if valid_cookie and scope.get("method") == "GET" and scope.get("path") == "/api/auth/desktop-accounts":
             scope.setdefault("state", {})["desktop_gate"] = self
+        if valid_cookie and self.local_user is not None:
+            path = scope.get("path", "").rstrip("/")
+            if path == "/api/tenants" or path.startswith("/api/tenants/"):
+                if scope["type"] == "websocket":
+                    return await send({"type": "websocket.close", "code": 1008})
+                await send({"type": "http.response.start", "status": 404, "headers": []})
+                return await send({"type": "http.response.body", "body": b""})
+            from .auth import DESKTOP_ACCOUNT_COOKIE
+            state = scope.setdefault("state", {})
+            state["desktop_gate"] = self
+            if self.automatic_entry and DESKTOP_ACCOUNT_COOKIE not in cookie:
+                state["current_user"] = self.local_user
+                state["desktop_default_identity"] = True
         return await self.app(scope, receive, send)
 
 
 def configure_environment(project: Path, runtime: Path, port: int) -> None:
     os.environ["TCODE_DESKTOP_MANAGED"] = "1"
-    # A packaged desktop app is a single-user local process protected by the
-    # per-launch loopback gate.  It must not depend on a developer bootstrap
-    # password that cannot exist on a clean installation.
-    if getattr(sys, "frozen", False):
-        os.environ.setdefault("TCODE_AUTH_REQUIRED", "0")
+    # Explicit login fixtures start at the login screen, like an authenticated Web deployment.
+    account_fixture = os.environ.get("TCODE_DESKTOP_TEST_INSTANCE") == "1" and os.environ.get("TCODE_AUTH_REQUIRED") == "1"
+    os.environ["TCODE_DESKTOP_SINGLE_USER"] = "0" if account_fixture else "1"
+    if not account_fixture:
+        # Keep ownership checks active for both automatic entry and named accounts.
+        os.environ.pop("TCODE_ENTERPRISE_MODE", None)
+        os.environ["TCODE_AUTH_REQUIRED"] = "1"
     runtime.mkdir(parents=True, exist_ok=True)
     os.environ["TCODE_WORKDIR"] = str(runtime)
     # Private Web configuration can contain an absolute workspace root. Do not
@@ -249,6 +271,11 @@ async def _serve(token, project, runtime, computer, browser, stack):
     sock = bind_socket(runtime)
     port = sock.getsockname()[1]
     configure_environment(project, runtime, port)
+    local_user = None
+    if os.environ["TCODE_DESKTOP_SINGLE_USER"] == "1":
+        from .auth import desktop_local_user
+        local_user = desktop_local_user()
+        os.environ["TCODE_DEFAULT_USER_ID"] = local_user.user_id
     from ..runtime.computer import configure_computer_broker
     configure_computer_broker(computer)
     from ..browser.desktop import configure_desktop_browser
@@ -267,7 +294,7 @@ async def _serve(token, project, runtime, computer, browser, stack):
     from .desktop_api import desktop_router
     app.include_router(desktop_router(token))
 
-    gate = DesktopGate(app, token=token, port=port, tracker_token=tracker_token)
+    gate = DesktopGate(app, token=token, port=port, tracker_token=tracker_token, local_user=local_user)
     server = uvicorn.Server(uvicorn.Config(
         gate, host="127.0.0.1", port=port, log_config=uvicorn_log_config(desktop=True),
         timeout_graceful_shutdown=5,

@@ -1,6 +1,7 @@
 import {hypothesisMapLink,type HypothesisFocus} from './api/hypothesisMap';
-import { getDesktopAccounts, type DesktopAccounts } from './api/auth';
+import { enterLocalWorkspace, getDesktopAccounts, registerDesktopAccount, type DesktopAccounts } from './api/auth';
 import { displayWorkspacePath } from './utils/filePreview';
+import AccountMenu from './components/AccountMenu';
 import { confirmAction, showFeedback } from './components/FeedbackDialog';
 import { researchChangesLink, type ResearchChangeFocus } from './api/researchChanges';
 import { listResearchProjects } from './api/research';
@@ -65,6 +66,7 @@ const PaperWikiWorkspace = lazy(() => import('./components/PaperWikiWorkspace'))
 const ResearchWorkspace = lazy(() => import('./components/ResearchWorkspace'));
 const ResourceLibraryWorkspace = lazy(() => import('./components/ResourceLibraryWorkspace'));
 const PaperLibraryPreviewPanel = lazy(() => import('./components/PaperLibraryPreviewPanel'));
+const DesktopAccountActions = lazy(() => import('./desktop-app/DesktopAccountActions'));
 const TenantManagementPanel = lazy(() => import('./components/TenantManagementPanel'));
 const ProteinRunsWorkspace = lazy(() => import('./components/ProteinRunsWorkspace'));
 const HumanReviewPanel = lazy(() => import('./components/HumanReviewPanel'));
@@ -386,10 +388,11 @@ export default function App(props: AppProps) {
   let workspaceInitGeneration = 0;
   let workspaceInitAbort: AbortController | null = null;
   const [currentUser, setCurrentUser] = createSignal<AuthUser | null>(null);
-  const [loginEmail, setLoginEmail] = createSignal('admin@example.com');
+  const [loginEmail, setLoginEmail] = createSignal(isDesktop ? '' : 'admin@example.com');
   const [loginPassword, setLoginPassword] = createSignal('');
   const [loginPasswordVisible, setLoginPasswordVisible] = createSignal(false);
   const [loginError, setLoginError] = createSignal('');
+  const [registering, setRegistering] = createSignal(false);
   const [loginSubmitting, setLoginSubmitting] = createSignal(false);
   const [desktopAccounts, setDesktopAccounts] = createSignal<DesktopAccounts>({ accounts: [], local_workspace: false, can_register: false });
   const [desktopIdentityFailed, setDesktopIdentityFailed] = createSignal(false);
@@ -704,12 +707,30 @@ export default function App(props: AppProps) {
   });
   onCleanup(() => { workspaceInitGeneration += 1; workspaceInitAbort?.abort(); });
 
+  const changeAuthForm = (register: boolean) => {
+    setRegistering(register);
+    setLoginEmail('');
+    setLoginPassword('');
+    setLoginPasswordVisible(false);
+    setLoginError('');
+  };
+
   const handleLogin = async (event: SubmitEvent) => {
     event.preventDefault();
+    if (loginSubmitting()) return;
     setLoginError('');
     setLoginSubmitting(true);
+    let created = false;
+    const email = loginEmail().trim();
+    const password = loginPassword();
     try {
-      const user = await loginApi(loginEmail(), loginPassword());
+      if (registering()) {
+        await registerDesktopAccount(email, password);
+        created = true;
+        setRegistering(false);
+      }
+      const user = await loginApi(email, password);
+      if (isDesktop) { window.location.reload(); return; }
       clearNavigationRequests();
       if (sessionStore.bindIdentityScope(`${user.user_id}:${user.tenant_id}`)) {
         resetSessionRequestCache();
@@ -734,7 +755,7 @@ export default function App(props: AppProps) {
         }
       }
     } catch (e) {
-      setLoginError(e instanceof Error ? e.message : '登录失败');
+      setLoginError(created ? '账号已创建，请点击登录重试' : e instanceof Error ? e.message : '请求失败，请重试');
     } finally {
       setLoginSubmitting(false);
     }
@@ -1259,10 +1280,10 @@ export default function App(props: AppProps) {
         onSubmit={handleLogin}
       >
         <div class="mb-5">
-          <h1 class="text-xl font-semibold text-[#f7fafc]">登录 Tcode</h1>
-          <p class="mt-1 text-sm text-[#9faeb7]">使用已配置的账号进入工作区。</p>
+          <h1 class="text-xl font-semibold text-[#f7fafc]">{registering() ? '注册本机账号' : '登录 Tcode'}</h1>
+          <p class="mt-1 text-sm text-[#9faeb7]">{registering() ? '账号保存在这台电脑上，有独立的工作区和会话。' : '使用已配置的账号进入工作区。'}</p>
         </div>
-        <Show when={isDesktop && desktopAccounts().accounts.length > 0}>
+        <Show when={isDesktop && !registering() && desktopAccounts().accounts.length > 0}>
           <label class="mb-3 block">最近登录的账号
             <select class="block w-full" value={desktopAccounts().accounts.includes(loginEmail()) ? loginEmail() : ''}
               onChange={event => { setLoginEmail(event.currentTarget.value); setLoginPassword(''); setLoginError(''); }}>
@@ -1293,7 +1314,9 @@ export default function App(props: AppProps) {
             type={loginPasswordVisible() ? 'text' : 'password'}
             value={loginPassword()}
             onInput={(event) => setLoginPassword(event.currentTarget.value)}
-            autocomplete="current-password"
+            autocomplete={registering() ? "new-password" : "current-password"}
+            minlength={registering() ? 12 : undefined}
+            placeholder={registering() ? "至少 12 个字符" : undefined}
             required
           />
           <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 rounded px-2 py-1 text-xs" aria-label={loginPasswordVisible() ? '隐藏密码' : '显示密码'} aria-pressed={loginPasswordVisible()} aria-controls="login-password" onClick={() => setLoginPasswordVisible(value => !value)}>{loginPasswordVisible() ? '隐藏' : '显示'}</button>
@@ -1307,14 +1330,22 @@ export default function App(props: AppProps) {
           type="submit"
           disabled={loginSubmitting()}
         >
-          {loginSubmitting() ? '登录中...' : '登录'}
+          {registering() ? (loginSubmitting() ? '正在创建…' : '创建并登录') : (loginSubmitting() ? '登录中...' : '登录')}
         </button>
+        <Show when={isDesktop && desktopAccounts().can_register}>
+          <button class="desktop-login-form-link" type="button" disabled={loginSubmitting()}
+            onClick={() => changeAuthForm(!registering())}>{registering() ? '返回登录' : '注册本机账号'}</button>
+        </Show>
+        <Show when={isDesktop && !registering() && desktopAccounts().local_workspace}>
+          <button type="button" disabled={loginSubmitting()} onClick={() => void enterLocalWorkspace().then(() => window.location.reload())
+            .catch(() => setLoginError('无法进入本机工作区，请重试'))}>使用本机工作区</button>
+        </Show>
       </form>
     </div>
   );
 
   return (
-    <Show when={!authChecking()} fallback={<AppLoading label="正在确认登录状态…" />}>
+    <Show when={!authChecking()} fallback={<AppLoading label={isDesktop ? "正在打开本机工作区…" : "正在确认登录状态…"} />}>
       <Show when={identity()} keyed fallback={desktopIdentityFailed() ? <div role="alert" class="settings-page"><h2>暂时无法打开本机工作区</h2><button class="settings-save" onClick={()=>window.location.reload()}>重新连接</button></div> : loginView}>
         <Show when={!workspaceInitializing()} fallback={<AppLoading label={workspaceInitStage()} />}>
         <StudioShell page={mainSection()} onNavigate={navigate}
@@ -1342,12 +1373,13 @@ export default function App(props: AppProps) {
             requestAnimationFrame(()=>companionTabList?.querySelector('.companion-tab[data-active=true]')?.scrollIntoView({block:'nearest', inline:'nearest'}));
           }}
           inspectorTitle="伴随查看" inspectorRequest={inspectorRequest()} inspectorCloseRequest={inspectorCloseRequest()} onInspectorVisibility={setInspectorVisible}
-          actions={<>
-            <Show when={!isDesktop}><button onClick={() => { openCompanion('assets'); navigate('console'); }}>文件改动</button></Show>
-            <Show when={!isDesktop}><button onClick={() => navigate('subagents')}>协作{sessionStore.subagentStates().length ? ` · ${sessionStore.subagentStates().length}` : ''}</button></Show>
-            <Show when={!isDesktop}><button onClick={openSkillCenter} title="管理和查看可用 Skills" data-testid="skill-center-trigger">Skill Center · {skills().length}</button></Show>
-            <button onClick={()=>setShowTenantManagement(true)} title={currentUser()?.email}>账号与租户</button>
-            <button onClick={()=>void handleLogout()} title="退出登录">退出</button>
+          actions={isDesktop ? <Suspense><DesktopAccountActions user={currentUser()!} accounts={desktopAccounts().accounts}
+            onOpenSettings={() => { setSettingsSection('account'); navigate('settings'); }}/></Suspense> : <>
+            <button onClick={() => { openCompanion('assets'); navigate('console'); }}>文件改动</button>
+            <button onClick={() => navigate('subagents')}>协作{sessionStore.subagentStates().length ? ` · ${sessionStore.subagentStates().length}` : ''}</button>
+            <button onClick={openSkillCenter} title="管理和查看可用 Skills" data-testid="skill-center-trigger">Skill Center · {skills().length}</button>
+            <AccountMenu identity={currentUser()!.email || currentUser()!.user_id} managementLabel="账号与租户"
+              onManage={() => setShowTenantManagement(true)} onLogout={handleLogout} />
           </>}
           sidebar={<Suspense fallback={<LazyPanelFallback label="正在加载会话列表..." />}>
             <SessionList embedded width={280} openCreateRequest={sessionLauncherRequest()}
@@ -1427,8 +1459,10 @@ export default function App(props: AppProps) {
                 <WorkspaceSlot active={companionView()===tab && page()==='library'}><Suspense fallback={<LazyPanelFallback/>}><ResourceLibraryWorkspace workspaceId={currentWorkspaceId() || undefined} active={companionView()===tab}/></Suspense></WorkspaceSlot>
                 <WorkspaceSlot active={companionView()===tab && page()==='wiki'}><Suspense fallback={<LazyPanelFallback/>}><PaperWikiWorkspace workspaceId={currentWorkspaceId() || undefined} active={companionView()===tab}/></Suspense></WorkspaceSlot>
                 <WorkspaceSlot active={companionView()===tab && page()==='ontology'}><Suspense fallback={<LazyPanelFallback/>}><OntologyWorkspace workspaceId={currentWorkspaceId() || undefined} currentModelRef={sessionStore.currentSession()?.model || undefined}/></Suspense></WorkspaceSlot>
-                <WorkspaceSlot active={companionView()===tab && page()==='mcp'}><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection="mcp" workspaceId={currentWorkspaceId() || undefined}/></Suspense></WorkspaceSlot>
-                <WorkspaceSlot active={companionView()===tab && page()==='settings'}><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection={settingsSection()} workspaceId={currentWorkspaceId() || undefined}/></Suspense></WorkspaceSlot>
+                <WorkspaceSlot active={companionView()===tab && page()==='mcp'}><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection="mcp" workspaceId={currentWorkspaceId() || undefined}
+                  account={currentUser()?.password_mode ? currentUser()! : undefined}/></Suspense></WorkspaceSlot>
+                <WorkspaceSlot active={companionView()===tab && page()==='settings'}><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection={settingsSection()} workspaceId={currentWorkspaceId() || undefined}
+                  account={currentUser()?.password_mode ? currentUser()! : undefined}/></Suspense></WorkspaceSlot>
                 <WorkspaceSlot active={companionView()===tab && page()==='plugins'}><Suspense fallback={<LazyPanelFallback/>}><PluginPanel embedded width={360} workdir={currentSession()?.workdir} onHide={()=>closeCompanion(tab)}/></Suspense></WorkspaceSlot>
               </>;
             }}</For>
@@ -1497,12 +1531,14 @@ export default function App(props: AppProps) {
         </StudioShell>
         <Show when={showSettingsWindow()}><dialog class="tcode-settings-window" aria-label="设置" ref={element=>queueMicrotask(()=>element.isConnected && element.showModal())} onCancel={event=>{event.preventDefault();setShowSettingsWindow(false);}}>
           <header><b>设置</b><button aria-label="关闭设置窗口" onClick={()=>setShowSettingsWindow(false)}>×</button></header>
-          <div><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection={settingsSection()} workspaceId={currentWorkspaceId() || undefined}/></Suspense></div>
+          <div><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection={settingsSection()}
+            workspaceId={currentWorkspaceId() || undefined} account={currentUser() || undefined}
+            onPasswordSaved={() => setCurrentUser(user => user && { ...user, password_mode: 'change' })}/></Suspense></div>
         </dialog></Show>
         <Show when={showHistoryModal()}><Suspense fallback={<LazyPanelFallback/>}><ArchivedSessionsModal onClose={()=>setShowHistoryModal(false)}/></Suspense></Show>
         <Show when={showCommandPalette()}><Suspense fallback={null}><CommandPalette items={commandItems()} workspaceId={currentWorkspaceId()} onHit={openSearchHit} onClose={()=>setShowCommandPalette(false)}/></Suspense></Show>
         <Show when={showSkillLibrary()}><Suspense fallback={<LazyPanelFallback/>}><SkillLibrary workspaceId={currentWorkspaceId()} initialSkill={searchSkill()} initialAgent={currentSession()?.agent_name || sessionStore.selectedAgentName()} onClose={()=>{setShowSkillLibrary(false);void loadStatus();}}/></Suspense></Show>
-        <Show when={showTenantManagement() && currentUser()}><Suspense fallback={<LazyPanelFallback/>}><TenantManagementPanel currentUser={currentUser()!} onClose={()=>{if(currentUser()?.tenant_status!=='inactive')setShowTenantManagement(false);}} onTenantSwitched={handleTenantSwitched}/></Suspense></Show>
+        <Show when={!isDesktop && showTenantManagement() && currentUser()}><Suspense fallback={<LazyPanelFallback/>}><TenantManagementPanel currentUser={currentUser()!} onClose={()=>{if(currentUser()?.tenant_status!=='inactive')setShowTenantManagement(false);}} onTenantSwitched={handleTenantSwitched}/></Suspense></Show>
         <Suspense><AsyncCompletionNotifications/></Suspense>
         </Show>
       </Show>

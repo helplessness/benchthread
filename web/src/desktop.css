@@ -15,9 +15,6 @@ html {
 .studio-breadcrumb {font-size:12px}
 .studio-tools>button,.studio-layout-menu summary {background:transparent;border-color:transparent;font-size:12px;padding:7px 10px}
 .studio-tools>button:hover,.studio-layout-menu summary:hover {background:#e9eee8}
-.desktop-actions>div {display:flex;flex-direction:column;gap:6px}
-.desktop-actions>div>button {text-align:left;border:0;padding:9px 10px}
-.desktop-actions>div>button:hover {background:#edf1ec}
 .studio-explorer {background:#eef1ed}
 .studio-explorer>header {height:44px;font-size:12px;border-bottom:0;padding:0 18px}
 .studio-resource-nav {height:auto;max-height:26%;min-height:72px;flex:0 1 auto;padding:0 12px 10px;overflow:auto}
@@ -58,6 +55,7 @@ html {
 .desktop-login form {background:#fff!important;border-color:#dce3d8!important;border-radius:14px;padding:36px;box-shadow:0 14px 50px #2637240a!important}
 .desktop-login input {background:#f9faf8!important;color:#28332c!important;border-color:#d5ded0!important;border-radius:6px}
 .desktop-login button[type=submit] {background:#486442!important;color:white!important;border:0;border-radius:6px}
+.desktop-login-form-link {display:block;margin:10px auto 0;padding:6px 12px;color:#405e3b;text-decoration:underline;text-underline-offset:3px}
 .desktop-login-intro {max-width:420px;color:#34442f}
 .desktop-login-intro>span {font-size:13px;font-weight:600;letter-spacing:1px}
 .desktop-login-intro h2 {font-size:44px;line-height:1.4;letter-spacing:-1.5px;font-weight:500;margin:36px 0 22px}

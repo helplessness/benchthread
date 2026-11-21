@@ -381,12 +381,18 @@ def _artifact_app(data_dir, service_id, token, max_file_bytes, max_store_bytes, 
         info = {'status': 'ok', 'mode': 'restricted', 'service_id': store.service_id}
         if internal:
             info['auth_mode'] = 'personal-tokens'
+            info['account_id'] = internal  # Opaque, stable across token rotation.
         return info
 
     def bundle_scope(request, workspace_id, owner_id):
         # Workspace alone is allowed as a legacy SDK hint, never as an identity.
         if not owner_id:
             return None
+        if internal:
+            # The namespace and owner come from authentication, never the submitted claim.
+            if not workspace_id or len(workspace_id) > 257 or not workspace_id.isprintable():
+                raise _Problem(400, 'Invalid workspace')
+            return workspace_id, internal
         if not request.state.artifact_trusted_proxy:
             raise _Problem(403, 'Bundle owner assertions require the trusted proxy credential')
         # BenchThread owner IDs can be two 128-character IDs joined by a colon.
@@ -474,7 +480,7 @@ def _personal_artifact_app(data_dir, service_id, max_file_bytes, max_store_bytes
     @lru_cache(maxsize=64)
     def owner_app(owner):
         return _artifact_app(root / '.personal-files' / owner, identity.service_id, internal_key,
-                             max_file_bytes, max_store_bytes, internal=True)
+                             max_file_bytes, max_store_bytes, internal=owner)
 
     async def dispatch(scope, receive, send):
         headers = Headers(scope=scope)
@@ -502,7 +508,12 @@ def _personal_artifact_app(data_dir, service_id, max_file_bytes, max_store_bytes
         forwarded = [(k, v) for k, v in scope['headers'] if k.lower() not in
                      (b'authorization', b'x-artifact-token')]
         forwarded.append((b'x-artifact-token', internal_key.encode('ascii')))
-        return await owner_app(owner)({**scope, 'headers': forwarded}, receive, send)
+        async def private_send(message):
+            if message['type'] == 'http.response.start':
+                headers = [(k,v) for k,v in message['headers'] if k.lower() != b'cache-control']
+                message = {**message, 'headers': [*headers, (b'cache-control', b'private, no-store')]}
+            await send(message)
+        return await owner_app(owner)({**scope, 'headers': forwarded}, receive, private_send)
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.mount('/', dispatch)

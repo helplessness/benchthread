@@ -6,6 +6,7 @@ Routes retain their original paths and are registered by app.py.
 import asyncio
 import json
 import shutil
+from uuid import uuid4
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,12 +18,15 @@ from ..scheduled_tasks import get_scheduled_task_service
 from ..session.manager import SessionManager
 from . import workdirs as workdir_utils
 from .auth import (
-    AUTH_COOKIE_NAME,
+    auth_cookie_name,
+    auth_required,
+    change_account_password,
+    desktop_password_setup_pending,
+    current_user_from_request,
+    previously_used_desktop_accounts,
     CurrentUserContext,
     add_tenant_member,
     authenticate,
-    auth_required,
-    previously_used_desktop_accounts,
     clear_auth_cookie,
     clear_login_session,
     create_login_session,
@@ -48,16 +52,29 @@ from .wiki_shares import WikiShareStore
 router = APIRouter()
 
 
+def _session_user(user: CurrentUserContext) -> dict[str, Any]:
+    result = serialize_user(user)
+    if auth_required() and user.email and user.tenant_status == "active":
+        result["password_mode"] = "change"
+    return result
+
+
 @router.post("/api/auth/login")
 async def auth_login(payload: dict[str, Any], request: Request):
     email = str(payload.get("email") or "").strip()
     password = str(payload.get("password") or "")
     if not email or not password:
         raise HTTPException(400, "email and password are required")
+    gate = getattr(request.state, "desktop_gate", None)
+    if gate and current_user_from_request(request) and email.lower() not in previously_used_desktop_accounts():
+        raise HTTPException(409, "请先退出当前账号，再登录其他账号")
     user = authenticate(email, password)
     session_id = create_login_session(user)
+    if gate:
+        gate.set_automatic_entry(False)
+    clear_login_session(str(request.cookies.get(auth_cookie_name()) or ""))
     response = Response(
-        content=json.dumps({"user": serialize_user(user)}),
+        content=json.dumps({"user": _session_user(user)}),
         media_type="application/json",
     )
     set_auth_cookie(request, response, session_id)
@@ -66,7 +83,10 @@ async def auth_login(payload: dict[str, Any], request: Request):
 
 @router.post("/api/auth/logout")
 async def auth_logout(request: Request):
-    clear_login_session(str(request.cookies.get(AUTH_COOKIE_NAME) or ""))
+    gate = getattr(request.state, "desktop_gate", None)
+    if gate:
+        gate.set_automatic_entry(False)
+    clear_login_session(str(request.cookies.get(auth_cookie_name()) or ""))
     response = Response(
         content=json.dumps({"status": "ok"}),
         media_type="application/json",
@@ -77,16 +97,84 @@ async def auth_logout(request: Request):
 
 @router.get("/api/auth/desktop-accounts")
 async def desktop_accounts(request: Request):
+    gate = getattr(request.state, "desktop_gate", None)
+    if not gate:
+        raise HTTPException(404)
+    return {
+        "accounts": previously_used_desktop_accounts(),
+        "local_workspace": gate.local_user is not None and not gate.local_user.email,
+        "can_register": gate.local_user is not None and current_user_from_request(request) is None,
+    }
+
+
+@router.post("/api/auth/desktop-accounts", status_code=201)
+async def register_desktop_account(payload: dict[str, Any], request: Request):
+    gate = getattr(request.state, "desktop_gate", None)
+    if not gate:
+        raise HTTPException(404)
+    if current_user_from_request(request):
+        raise HTTPException(409, "请先退出当前账号")
+    email = payload.get("email")
+    password = payload.get("password")
+    if not isinstance(email, str) or not isinstance(password, str):
+        raise HTTPException(400, "请填写邮箱和密码")
+    account = create_user_account(
+        tenant_id=gate.local_user.tenant_id,
+        user_id=f"local-{uuid4().hex}",
+        email=email,
+        password=password,
+        role="member",
+    )
+    return {"user": serialize_user(account)}
+
+
+@router.post("/api/auth/local-workspace")
+async def enter_local_workspace(request: Request):
+    gate = getattr(request.state, "desktop_gate", None)
+    if not gate or gate.local_user.email:
+        raise HTTPException(404)
+    if current_user_from_request(request):
+        raise HTTPException(409, "请先退出当前账号")
+    gate.set_automatic_entry(True)
+    response = Response(status_code=204)
+    clear_auth_cookie(response)
+    return response
+
+
+@router.post("/api/auth/desktop-password", status_code=204)
+async def desktop_password(payload: dict[str, Any], request: Request):
     if not getattr(request.state, "desktop_gate", None):
         raise HTTPException(404)
-    return {"accounts": previously_used_desktop_accounts() if auth_required() else [],
-            "local_workspace": False, "can_register": False}
+    return await account_password(payload, request)
+
+
+@router.post("/api/auth/password", status_code=204)
+async def account_password(payload: dict[str, Any], request: Request):
+    if not auth_required():
+        raise HTTPException(403, "请先登录账号")
+    user = require_current_user(request)
+    new_password = payload.get("new_password")
+    current_password = payload.get("current_password", "")
+    if not isinstance(new_password, str) or not isinstance(current_password, str):
+        raise HTTPException(400, "请填写有效的密码")
+    automatic_identity = bool(getattr(request.state, "desktop_gate", None)
+                              and getattr(request.state, "desktop_default_identity", False))
+    change_account_password(user, new_password, current_password, automatic_identity=automatic_identity,
+                            session_id=request.cookies.get(auth_cookie_name(), ""))
+    return Response(status_code=204)
 
 
 @router.get("/api/auth/me")
 async def auth_me(request: Request):
     user = require_current_user(request)
-    return {"user": serialize_user(user)}
+    result = _session_user(user)
+    if getattr(request.state, "desktop_default_identity", False):
+        result["desktop_default"] = True
+    if getattr(request.state, "desktop_gate", None) and user.email and user.tenant_status == "active":
+        initial_setup = result.get("desktop_default") and desktop_password_setup_pending(user)
+        result["password_mode"] = "setup" if initial_setup else "change"
+        result["desktop_password_mode"] = result["password_mode"]
+    return {"user": result}
 
 
 @router.get("/api/tenants")
@@ -195,12 +283,12 @@ async def tenant_restore(tenant_id: str, request: Request):
 async def tenant_switch(tenant_id: str, request: Request):
     actor = require_current_user(request)
     user = switch_login_session_tenant(
-        session_id=str(request.cookies.get(AUTH_COOKIE_NAME) or ""),
+        session_id=str(request.cookies.get(auth_cookie_name()) or ""),
         user_id=actor.user_id,
         tenant_id=tenant_id,
     )
     request.state.current_user = user
-    return {"user": serialize_user(user)}
+    return {"user": _session_user(user)}
 
 
 @router.get("/api/tenants/{tenant_id}/members")

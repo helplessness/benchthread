@@ -47,7 +47,12 @@ def local_development_services() -> bool:
             and os.environ.get("TCODE_DESKTOP_DEV_LOCAL_SERVICES") == "1")
 
 
-def artifact_configuration(entry: dict, *, allow_loopback: bool | None = None) -> dict:
+def personal_url(url, *, allow_loopback):
+    return remote_url(url, allow_loopback=allow_loopback) and (
+        urlsplit(url).scheme == 'https' or urlsplit(url).hostname in {'localhost', '127.0.0.1', '::1'})
+
+
+def artifact_configuration(entry: dict, *, allow_loopback: bool | None = None, saving: bool = False) -> dict:
     """Editable endpoint metadata only; never return credential values."""
     if not isinstance(entry, dict):
         raise ValueError('Artifact 配置必须是对象')
@@ -80,13 +85,25 @@ def artifact_configuration(entry: dict, *, allow_loopback: bool | None = None) -
         if not isinstance(name, str) or len(name) > 120:
             raise ValueError('Artifact 服务名称过长或无效')
         cleaned[key] = {'url': url.rstrip('/'), 'name': name, 'token_env': token_env}
-    if not isinstance(default, str) or (services and default not in services) or (not services and default):
+        mode = service.get('auth_mode', 'shared')
+        if mode == 'personal-tokens':
+            if (os.environ.get('TCODE_DESKTOP_MANAGED') == '1' or token_env
+                    or not personal_url(url, allow_loopback=True)):
+                raise ValueError('Web 个人绑定需要 HTTPS（本机除外），不能配置共享凭据')
+            cleaned[key]['auth_mode'] = mode
+        elif mode != 'shared':
+            raise ValueError('未知的文件服务认证方式')
+    if not isinstance(default, str) or (default and default not in services):
         raise ValueError('请选择已配置的默认 Artifact 服务')
     if not isinstance(routes, dict) or any(
         not isinstance(target, str) or not target.strip() or not isinstance(service, str) or service not in cleaned
         for target, service in routes.items()
     ):
         raise ValueError('MCP 绑定必须指向已配置的 Artifact 服务')
+    if saving and '*' in routes:
+        raise ValueError('请填写具体的 MCP 名称，或留空')
+    if any(cleaned[key].get('auth_mode') == 'personal-tokens' for key in routes.values()):
+        raise ValueError('Web 个人绑定暂不支持异步 MCP 文件传输')
     return {'artifact_services': cleaned, 'artifact_default_service_id': default,
             'artifact_target_services': routes}
 
@@ -189,9 +206,9 @@ def prepare_services(project: Path, runtime: Path, *, managed_job_url: str = "")
         os.environ.update(TMCP_ARTIFACT_SERVICES=json.dumps(artifacts['artifact_services']),
                           TMCP_ARTIFACT_SERVICE_ID=artifacts['artifact_default_service_id'],
                           TMCP_ARTIFACT_TARGET_SERVICES=json.dumps(artifacts['artifact_target_services']))
-        if artifacts['artifact_default_service_id']:
-            desktop_entry = {**desktop_entry, 'artifact_service_url': artifacts['artifact_services'][artifacts['artifact_default_service_id']]['url']}
-    configured_artifact = str(desktop_entry.get("artifact_service_url") or os.environ.get("TCODE_DESKTOP_ARTIFACT_SERVICE_URL", "")) if isinstance(desktop_entry, dict) else os.environ.get("TCODE_DESKTOP_ARTIFACT_SERVICE_URL", "")
+        configured_artifact = artifacts['artifact_services'].get(artifacts['artifact_default_service_id'], {}).get('url', '')
+    else:
+        configured_artifact = str(desktop_entry.get('artifact_service_url', os.environ.get('TCODE_DESKTOP_ARTIFACT_SERVICE_URL', ''))) if isinstance(desktop_entry, dict) else ''
     if remote_services_paused():
         configured_artifact = ''
     os.environ["TCODE_DESKTOP_ARTIFACT_SERVICE_URL"] = configured_artifact

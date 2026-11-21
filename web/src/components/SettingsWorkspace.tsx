@@ -22,25 +22,29 @@ import WebModelSettings from './WebModelSettings';
 import FeishuSettings from './FeishuSettings';
 import WebSearchSettings from './WebSearchSettings';
 import InternetContentSettings from './InternetContentSettings';
+import AccountSecuritySettings from './AccountSecuritySettings';
+import type { AuthUser } from '../api/auth';
+import PersonalArtifactBinding from './PersonalArtifactBinding';
 
-export type SettingsSection = 'general' | 'notifications' | 'models' | 'collaboration' | 'structure' | 'knowledge' | 'mcp' | 'desktop' | 'feishu' | 'websearch' | 'internet-content';
+export type SettingsSection = 'account' | 'general' | 'notifications' | 'models' | 'collaboration' | 'structure' | 'knowledge' | 'mcp' | 'desktop' | 'feishu' | 'websearch' | 'internet-content';
 type HeaderRow = { name: string; value: string };
 const settingsGroups = ['应用偏好', '任务与研究', '服务与集成'] as const;
 const sections: { id: SettingsSection; label: string; detail: string; group: typeof settingsGroups[number] }[] = [
   { id: 'general', label: '常规', detail: '界面与交互', group: '应用偏好' },
+  { id: 'account', label: '账号与安全', detail: '当前账号与登录密码', group: '应用偏好' },
   { id: 'notifications', label: '通知', detail: '任务完成提醒', group: '应用偏好' },
   { id: 'models', label: '模型与执行', detail: '模型供应商、推理、调度与验证', group: '任务与研究' },
   { id: 'collaboration', label: '协作与 Agent', detail: '办公室与调度', group: '任务与研究' },
   { id: 'structure', label: '三维结构', detail: 'Mol* 与 Agent 视图', group: '任务与研究' },
   { id: 'knowledge', label: '本体知识', detail: '工作区知识源', group: '任务与研究' },
   { id: 'mcp', label: 'MCP 服务', detail: '连接与远程工具', group: '服务与集成' },
-  { id: 'desktop', label: '文件服务', detail: '远端服务、Artifact 与绑定', group: '服务与集成' },
+  { id: 'desktop', label: 'Artifact 文件服务', detail: '远端服务与 MCP 绑定', group: '服务与集成' },
   { id: 'websearch', label: '网页搜索', detail: 'SearXNG 与 Brave Search', group: '服务与集成' },
   { id: 'internet-content', label: '互联网渠道', detail: '内容读取与渠道检查', group: '服务与集成' },
   { id: 'feishu', label: '飞书接入', detail: '机器人与任务通知', group: '服务与集成' },
 ];
 
-export default function SettingsWorkspace(props: { initialSection?: SettingsSection; workspaceId?: string } = {}) {
+export default function SettingsWorkspace(props: { initialSection?: SettingsSection; workspaceId?: string; account?: AuthUser; onPasswordSaved?: () => void } = {}) {
   const [section, setSection] = createSignal<SettingsSection>(props.initialSection || 'mcp');
   const [query, setQuery] = createSignal('');
   createEffect(() => setSection(props.initialSection || 'mcp'));
@@ -76,9 +80,31 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
   const [resultVerificationReady, setResultVerificationReady] = createSignal(false);
   const [savedVerification, setSavedVerification] = createSignal<VerificationSettings>();
   const [learningEditable, setLearningEditable] = createSignal(true);
-  type ArtifactEntry = { service_id: string; name: string; url: string; token_env: string; targets: string };
+  type ArtifactEntry = { service_id: string; name: string; url: string; token_env: string; targets: string; auth_mode?: 'personal-tokens' };
+  const [personalAvailable, setPersonalAvailable] = createSignal(false);
+  const [myBindings, setMyBindings] = createSignal<string[]>([]);
+  const [savedBindings, setSavedBindings] = createSignal<string[]>([]);
   const [artifactServices, setArtifactServices] = createSignal<ArtifactEntry[]>([]);
   const [defaultArtifact, setDefaultArtifact] = createSignal('');
+  const [artifactEditor, setArtifactEditor] = createSignal<number | null>(null);
+  const [savedArtifacts, setSavedArtifacts] = createSignal<ArtifactEntry[]>([]);
+  const [savedDefault, setSavedDefault] = createSignal('');
+  const removedBindings = () => savedBindings().filter(id =>
+    !savedArtifacts().some(entry => entry.service_id === id && entry.auth_mode === 'personal-tokens'));
+  function updateBinding(id: string, bound: boolean) {
+    const update = (ids: string[]) => [...ids.filter(key => key !== id), ...(bound ? [id] : [])];
+    setMyBindings(update);
+    setSavedBindings(update);
+  }
+  const artifactDirty = () => savedArtifacts() !== artifactServices() || savedDefault() !== defaultArtifact();
+  const rememberArtifacts = () => {
+    setSavedArtifacts(artifactServices());
+    setSavedDefault(defaultArtifact());
+  };
+  const addArtifact = () => {
+    setArtifactEditor(artifactServices().length);
+    setArtifactServices(items => [...items, { service_id: '', name: '', url: '', token_env: '', targets: '' }]);
+  };
   const [artifactSaving, setArtifactSaving] = createSignal(false);
   const [artifactEditable, setArtifactEditable] = createSignal(true);
   type ArtifactCheck = { state: string; reason: string; tested_at?: string };
@@ -101,11 +127,12 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
   const artifactConfigUrl = desktop ? '/api/desktop/services/config' : '/api/artifact-services/config';
   const updateArtifact = (index: number, patch: Partial<ArtifactEntry>) => {
     const old = artifactServices()[index];
-    if (patch.service_id !== undefined && defaultArtifact() === old.service_id) setDefaultArtifact(patch.service_id);
+    if (patch.service_id !== undefined && old.service_id && defaultArtifact() === old.service_id) setDefaultArtifact(patch.service_id);
     setArtifactServices(items => items.map((item, i) => i === index ? { ...item, ...patch } : item));
   };
   const [desktopConfigAvailable, setDesktopConfigAvailable] = createSignal(false);
   const [servers, setServers] = createSignal<MCPConfigServer[]>([]);
+  const [mcpListState, setMcpListState] = createSignal<'loading' | 'ready' | 'failed'>('loading');
   const [canEdit, setCanEdit] = createSignal(false);
   const [configFile, setConfigFile] = createSignal('');
   const [editing, setEditing] = createSignal<string | null>(null);
@@ -131,8 +158,8 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
   const loadMcp = async () => {
     try {
       const data = await getMCPConfig(props.workspaceId);
-      setServers(data.servers); setCanEdit(data.can_edit); setConfigFile(data.config_file);
-    } catch (error) { setStatus(error instanceof Error ? error.message : 'MCP 配置加载失败'); }
+      setServers(data.servers); setCanEdit(data.can_edit); setConfigFile(data.config_file); setMcpListState('ready');
+    } catch (error) { setMcpListState('failed'); setStatus(error instanceof Error ? error.message : 'MCP 配置加载失败'); }
   };
   onMount(() => {
     void getChatRuntimes(sessionStore.currentSessionId() || undefined).then(data => {
@@ -165,11 +192,15 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
       const services = data.artifact_services || (data.artifact_service_url ? { default: { url: data.artifact_service_url } } : {});
       setArtifactServices(Object.entries(services).map(([service_id, value]) => {
         const entry = value as Partial<ArtifactEntry>;
-        return { service_id, name: entry.name || service_id, url: entry.url || '', token_env: entry.token_env || '',
+        return { service_id, name: entry.name || service_id, url: entry.url || '', token_env: entry.token_env || '', auth_mode: entry.auth_mode,
           targets: Object.entries(data.artifact_target_services || {}).filter(([, id]) => id === service_id).map(([target]) => target).join(', ') };
       }));
-      setDefaultArtifact(data.artifact_default_service_id || (data.artifact_service_url ? 'default' : ''));
+      setDefaultArtifact(data.artifact_default_service_id ?? (data.artifact_service_url ? 'default' : ''));
       setArtifactEditable(data.can_edit !== false);
+      setPersonalAvailable(data.personal_available === true);
+      setMyBindings(data.personal_bound || []);
+      setSavedBindings(data.personal_saved || []);
+      rememberArtifacts();
       setDesktopConfigAvailable(true);
     }).catch(() => setStatus('远端服务配置暂不可用'));
   });
@@ -215,23 +246,27 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
   };
   const saveArtifact = async () => {
     if (artifactSaving() || !artifactEditable()) return;
-    const services: Record<string, { name: string; url: string; token_env: string }> = Object.create(null);
+    const services: Record<string, { name: string; url: string; token_env: string; auth_mode?: string }> = Object.create(null);
     const routes: Record<string, string> = Object.create(null);
     for (const item of artifactServices()) {
       const id = item.service_id.trim();
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id) || id in services) { setStatus('服务 ID 无效或重复，请使用 1–64 位字母、数字、点、下划线或连字符。'); return; }
-      services[id] = { name: item.name.trim() || id, url: item.url.trim(), token_env: item.token_env.trim() };
+      services[id] = { name: item.name.trim() || id, url: item.url.trim(), token_env: item.token_env.trim(), auth_mode: item.auth_mode };
       for (const target of item.targets.split(/[,，\n]/).map(value => value.trim()).filter(Boolean)) {
+        if (target === '*') { setStatus('请填写具体的 MCP 名称，或留空。'); return; }
         if (target in routes) { setStatus(`MCP ${target} 只能绑定一个 Artifact 服务。`); return; }
         routes[target] = id;
       }
     }
-    if (artifactServices().length && !(defaultArtifact().trim() in services)) { setStatus('请选择默认 Artifact 服务。'); return; }
+    if (defaultArtifact() && !(defaultArtifact().trim() in services)) { setStatus('请选择默认 Artifact 服务。'); return; }
     setArtifactSaving(true); setStatus('正在保存…');
     try {
       const response = await fetch(artifactConfigUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ artifact_services: services, artifact_default_service_id: defaultArtifact().trim(), artifact_target_services: routes }) });
       const data = await response.json().catch(() => ({}));
-      if (response.ok) savedStatus(`Artifact 配置已保存，重启${desktop ? '本地服务' : 'TCode 服务'}后生效；请先等待运行中的任务结束。`);
+      if (response.ok) {
+        rememberArtifacts(); setArtifactEditor(null);
+        savedStatus(`Artifact 配置已保存，重启${desktop ? '本地服务' : 'TCode 服务'}后生效；请先等待运行中的任务结束。`);
+      }
       else setStatus(String(data.detail || '保存失败'));
     } catch { setStatus('保存失败，请检查本地服务连接；当前编辑内容已保留。'); }
     finally { setArtifactSaving(false); }
@@ -314,7 +349,7 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
   const removeServer = async (serverName: string) => {
     if (!await confirmAction(`删除 MCP“${serverName}”？`)) return;
     setBusy(true);
-    try { await deleteMCPConfig(serverName, props.workspaceId); await loadMcp(); setStatus('MCP 已删除'); }
+    try { await deleteMCPConfig(serverName, props.workspaceId); resetEditor(); await loadMcp(); setStatus('MCP 已删除'); }
     catch (error) { setStatus(error instanceof Error ? error.message : '删除失败'); }
     finally { setBusy(false); }
   };
@@ -326,7 +361,7 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
   const visibleSections = () => {
     const value = query().trim().toLowerCase();
     const available = sections.filter(item => (
-      (item.id !== 'knowledge' || Boolean(props.workspaceId))
+      (item.id !== 'account' || Boolean(props.account)) && (item.id !== 'knowledge' || Boolean(props.workspaceId))
     ));
     return value ? available.filter(item => `${item.label}${item.detail}${item.group}`.toLowerCase().includes(value)) : available;
   };
@@ -339,6 +374,34 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
     if (content) content.scrollTop = 0;
   });
 
+  function McpServiceRow(props: { server: MCPConfigServer }) {
+    const server = props.server;
+    const [testing, setTesting] = createSignal(false);
+    const [check, setCheck] = createSignal<{ ok: boolean; message: string }>();
+    async function test() {
+      setTesting(true); setCheck(undefined);
+      try {
+        const result = await testMCPConnection(server.name);
+        setCheck({ ok: true, message: `连接正常 · 发现 ${result.tools} 个工具` });
+      } catch (error) {
+        setCheck({ ok: false, message: error instanceof Error ? error.message : '连接测试失败' });
+      } finally { setTesting(false); }
+    }
+    return <article class="service-row" aria-label={server.name}>
+      <div class="service-summary">
+        <h4>{server.name}<small>{server.enabled ? '已启用' : '已停用'}</small></h4>
+        <p>{server.managed_message || server.url}</p>
+        <small>{server.editable === false ? '平台托管' : server.invocation_mode === 'direct' ? '直接调用' : server.invocation_mode === 'async' ? `异步任务 · ${server.submit_via}` : '自动判断'}</small>
+        <Show when={server.file_transfer}><p>{server.file_transfer_status === 'adapter_required' ? '文件传输需要服务器适配器' : server.file_transfer_status === 'registered' ? '文件传输已注册，读取需授权' : server.file_transfer_status === 'disabled' ? '文件传输已停用' : '文件传输待启用，请编辑后保存'}</p></Show>
+      </div>
+      <div class="service-actions">
+        <button type="button" class="service-test" disabled={!canEdit() || !server.enabled || testing()} title={!server.enabled ? '启用服务后可测试连接' : '验证 MCP 握手与工具发现'} onClick={()=>void test()}>{testing() ? '测试中…' : '测试连接'}</button>
+        <Show when={server.editable !== false && canEdit()}><button type="button" onClick={()=>editServer(server)}>编辑</button></Show>
+      </div>
+      <Show when={check()}>{result=><p class="service-result" data-state={result().ok ? 'connected' : 'failed'} role="status">{result().message}</p>}</Show>
+    </article>;
+  }
+
   return <div class="settings-workspace">
     <nav class="settings-nav" aria-label="设置分类">
       <label class="settings-search">
@@ -350,27 +413,36 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
           <div class="settings-nav-group">
             <h2>{group}</h2>
             <For each={visibleSections().filter(item=>item.group===group)}>{item=>
-              <button type="button" aria-current={section()===item.id ? 'page' : undefined} data-active={section()===item.id} onClick={()=>setSection(item.id)}>{item.label}</button>
+              <button type="button" aria-current={section()===item.id ? 'page' : undefined} onClick={()=>setSection(item.id)}>
+                {item.label}
+                <Show when={section()===item.id}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></Show>
+              </button>
             }</For>
           </div>
         </Show>}</For>
         <Show when={!visibleSections().length}><p class="settings-empty" role="status">没有匹配的设置</p></Show>
       </div>
-      <select class="settings-category-picker" aria-label="设置分类"
-        value={visibleSections().some(item=>item.id===section()) ? section() : ''}
-        disabled={!visibleSections().length}
-        onChange={event=>{if (event.currentTarget.value) setSection(event.currentTarget.value as SettingsSection);}}>
-        <Show when={!visibleSections().some(item=>item.id===section())}>
-          <option value="" disabled>{visibleSections().length ? '选择匹配的设置' : '没有匹配的设置'}</option>
-        </Show>
-        <For each={settingsGroups}>{group=><Show when={visibleSections().some(item=>item.group===group)}>
-          <optgroup label={group}><For each={visibleSections().filter(item=>item.group===group)}>{item=>
-            <option value={item.id} selected={section()===item.id}>{item.label}</option>
-          }</For></optgroup>
-        </Show>}</For>
-      </select>
+      <div class="settings-compact-nav">
+        <span>{visibleSections().find(item=>item.id===section())?.group ?? '搜索结果'}</span>
+        <select class="settings-category-picker" aria-label="设置分类"
+          value={visibleSections().some(item=>item.id===section()) ? section() : ''}
+          disabled={!visibleSections().length}
+          onChange={event=>{if (event.currentTarget.value) setSection(event.currentTarget.value as SettingsSection);}}>
+          <Show when={!visibleSections().some(item=>item.id===section())}>
+            <option value="" disabled>{visibleSections().length ? '选择匹配的设置' : '没有匹配的设置'}</option>
+          </Show>
+          <For each={settingsGroups}>{group=><Show when={visibleSections().some(item=>item.group===group)}>
+            <optgroup label={group}><For each={visibleSections().filter(item=>item.group===group)}>{item=>
+              <option value={item.id} selected={section()===item.id}>{item.label}</option>
+            }</For></optgroup>
+          </Show>}</For>
+        </select>
+      </div>
     </nav>
     <main class="settings-main" ref={content}>
+      <Show when={section() === 'account' && props.account}>{user =>
+        <AccountSecuritySettings user={user()} onPasswordSaved={() => props.onPasswordSaved?.()} />
+      }</Show>
       <Show when={section()==='general'}><div class="settings-page"><h2>常规</h2><div class="settings-section"><h3>外观</h3><section class="settings-group">{toggle('生成智能 UI','关闭后，新请求以普通方式回答，已有图解和交互页面仍可查看。',generateIntelligentUI(),setGenerateIntelligentUI,!canvasPreferenceReady() || busy())}{selectRow('智能 UI 风格','应用于图解和交互页面；不会重写已有图的配色或几何。',<select aria-label="智能 UI 风格" value={canvasStyle()} disabled={!canvasPreferenceReady() || busy()} onChange={event => setCanvasStyle(event.currentTarget.value as CanvasStyle | 'default')}><option value="default">跟随默认（{canvasDefault() === 'clay' ? '粘土拟态' : '清爽说明书'}）</option><option value="clay">粘土拟态</option><option value="manual">清爽说明书</option></select>)}{toggle('紧凑布局','缩小导航、列表与面板的间距，在同一屏显示更多内容。',compact(),setCompact)}{toggle('减少界面动效','关闭非必要的过渡与动画，状态反馈仍会保留。',reduceMotion(),setReduceMotion,false,'同时影响办公室人物动画、侧边栏悬停放大和页面过渡，不会隐藏任务运行状态。')}</section></div><button class="settings-save" disabled={busy() || !canvasPreferenceReady()} onClick={saveLocal}>保存更改</button></div></Show>
       <Show when={section()==='notifications'}><div class="settings-page"><h2>通知</h2><div class="settings-section"><h3>任务提醒</h3><section class="settings-group"><Show when={desktop}>{toggle('系统通知','异步任务完成、失败或取消时发送桌面系统通知。',notify(),setNotify,false,'需要操作系统授予 TCode 通知权限，仅桌面端可用。')}</Show>{toggle('应用内提醒','在窗口右下角显示最多三条任务完成卡片。',inAppNotify(),setInAppNotify)}</section></div><button class="settings-save" onClick={saveNotifications}>保存更改</button></div></Show>
       <Show when={section()==='models'}><div class="settings-page"><h2>模型与执行</h2><p>设置当前任务和后续新任务的默认模型与运行方式。</p>
@@ -440,52 +512,66 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
         </section></div></Show>
         <button class="settings-save" disabled={busy() || !props.workspaceId || !sessionStore.currentSessionId()} onClick={()=>void saveKnowledge()}>保存更改</button>
       </div></Show>
-      <Show when={section()==='mcp'}><div class="settings-page settings-page-wide"><div class="settings-title-row"><div><h2>MCP 服务</h2><p>常规 MCP 直接调用远端工具；插件异步 MCP 请在下方专用配置区启用。本地 Job Protocol 是任务网关，不是计算服务器。</p></div><Show when={canEdit()}><button class="btn" onClick={()=>editServer()}>添加常规 MCP</button></Show></div>
-        <section class="mcp-config-list"><Show when={servers().length} fallback={<p class="settings-muted">还没有 MCP 服务。点击「添加常规 MCP」开始配置。</p>}><For each={servers()}>{server => {
-    const [testing, setTesting] = createSignal(false);
-    const [check, setCheck] = createSignal<{ ok: boolean; message: string }>();
-    async function test() {
-      setTesting(true); setCheck(undefined);
-      try {
-        const result = await testMCPConnection(server.name);
-        setCheck({ ok: true, message: `连接正常 · 发现 ${result.tools} 个工具` });
-      } catch (error) {
-        setCheck({ ok: false, message: error instanceof Error ? error.message : '连接测试失败' });
-      } finally { setTesting(false); }
-    }
-    return <article class="mcp-config-row"><span aria-hidden="true" class={`mcp-state ${server.enabled ? 'on' : ''}`}/><div><b>{server.name}</b><small data-mcp-state={server.enabled ? 'enabled' : 'disabled'}>{server.enabled ? '已启用' : '已停用'}</small><span title={server.managed_message || server.url}>{server.managed_message || server.url}</span><small>{server.editable === false ? '平台托管，只读' : `${server.transport} · ${server.invocation_mode === 'direct' ? '直接调用' : server.invocation_mode === 'async' ? `异步任务（经 ${server.submit_via}）` : '自动判断'}${server.header_names.length ? ` · ${server.header_names.length} 个认证头` : ''}`}</small><Show when={server.file_transfer}><small>{server.file_transfer_status === 'adapter_required' ? '文件传输尚未接通 · 需要服务器适配器' : server.file_transfer_status === 'registered' ? '已注册文件传输 · 读取仍需授权' : server.file_transfer_status === 'disabled' ? '文件传输已停用' : '当前工作区尚未启用文件传输 · 编辑后保存'}</small></Show></div><button type="button" disabled={!canEdit() || !server.enabled || testing()} onClick={()=>void test()}>{testing() ? '测试中…' : '测试连接'}</button><Show when={check()}>{result=><p role="status">{result().message}</p>}</Show><Show when={server.editable !== false}><div class="mcp-actions"><button onClick={()=>editServer(server)} disabled={!canEdit()}>编辑</button><button onClick={()=>void removeServer(server.name)} disabled={!canEdit() || busy()}>删除</button></div></Show></article>;
-    }}</For></Show></section>
+      <Show when={section()==='mcp'}><div class="settings-page settings-page-wide service-page">
+        <div class="settings-title-row"><div><h2>MCP 服务</h2></div><Show when={canEdit()}><button class="settings-save service-add" onClick={()=>editServer()}>添加常规 MCP</button></Show></div>
+        <h3 class="service-list-title">常规服务 <Show when={mcpListState()==='ready'}><span>{servers().length}</span></Show></h3>
+        <section class="service-list" aria-label="常规 MCP 服务列表">
+          <Show when={mcpListState()==='ready'} fallback={<p class="service-empty">{mcpListState()==='failed' ? '无法读取服务列表。' : '正在读取服务…'}</p>}>
+            <For each={servers()} fallback={<p class="service-empty">暂无常规 MCP 服务。{canEdit() && '点击「添加常规 MCP」连接第一个服务。'}</p>}>{server=><McpServiceRow server={server}/>}</For>
+          </Show>
+        </section>
         <Show when={editing() !== null}><FeedbackDialog title={editing() ? `编辑 ${editing()}` : '添加常规 MCP'} onClose={() => { if (!busy()) resetEditor(); }}><section class="settings-form mcp-editor"><div class="mcp-form-grid"><label>服务名称<input value={name()} disabled={Boolean(editing())} onInput={e=>setName(e.currentTarget.value)} placeholder="例如 literature-search"/></label><label>传输方式<select value={transport()} onChange={e=>setTransport(e.currentTarget.value as 'streamable-http'|'sse')}><option value="streamable-http">Streamable HTTP</option><option value="sse">SSE</option></select></label></div><label>MCP 地址<input value={url()} onInput={e=>setUrl(e.currentTarget.value)} placeholder="https://mcp.example.com/mcp"/></label><label>调用方式<select value={invocationMode()} onChange={e=>setInvocationMode(e.currentTarget.value as 'auto'|'direct'|'async')}><option value="auto">自动判断（遵循服务器策略）</option><option value="direct">直接调用</option><option value="async">异步执行（通过 Job Protocol）</option></select></label><Show when={invocationMode()==='async'}><p class="settings-callout">内置工具保持现有路由。自定义服务可在下方配置文件传输，无需制作插件；读取和计算仍遵循现有授权。</p><MCPFileTransferEditor value={fileTransfer()} onChange={setFileTransfer} disabled={busy()} connection={() => ({name: name(), url: url(), transport: transport(), headers: Object.fromEntries(headers().filter(r => r.name.trim() && r.value).map(r => [r.name.trim(), r.value]))})}/></Show><Show when={invocationMode() !== 'async' && fileTransfer()}><p role="alert">请先切回异步执行并关闭输入文件传输，再改为直接调用。</p></Show>
           <Show when={desktop}>
             <label><input type="checkbox" checked={personalFiles()} disabled={busy()} onChange={e=>{setPersonalFiles(e.currentTarget.checked);setPersonalToken('')}}/> 使用此 MCP 自带的个人文件服务</label>
             <Show when={personalFiles()}><label>个人访问令牌<input type="password" autocomplete="new-password" value={personalToken()} onInput={e=>setPersonalToken(e.currentTarget.value)} placeholder={existingHeaders().some(h=>h.toLowerCase()==='authorization')?'已保存，留空保留':'填写服务提供者签发的 Token'}/></label>
               <p class="settings-muted">保存时验证同一地址下的文件服务。聊天中可按服务名称列出和下载自己的文件。</p></Show>
-          </Show>{toggle('启用此 MCP','关闭后保留配置，但不会连接或暴露工具。',enabled(),setEnabled)}<details><summary>高级设置</summary><div class="mcp-form-grid"><label>连接超时（毫秒）<input type="number" value={connectTimeout()} onInput={e=>setConnectTimeout(Number(e.currentTarget.value))}/></label><label>调用超时（毫秒）<input type="number" value={timeout()} onInput={e=>setTimeout(Number(e.currentTarget.value))}/></label></div><Show when={existingHeaders().length}><p class="settings-muted">已保存的请求头：{existingHeaders().join('、')}。留空会保留原值。</p></Show><For each={headers()}>{(row,index)=><div class="mcp-header-row"><input value={row.name} onInput={e=>updateHeader(index(),'name',e.currentTarget.value)} placeholder="Header 名称"/><input type="password" value={row.value} onInput={e=>updateHeader(index(),'value',e.currentTarget.value)} placeholder="值（保存后不回显）"/><button onClick={()=>setHeaders(rows=>rows.filter((_,i)=>i!==index()))}>移除</button></div>}</For><p class="settings-muted">固定值直接填写；环境变量使用 <code>{'${ENV_NAME}'}</code>，可与 Bearer 前缀组合，凭据不提供给 Agent。</p><button class="settings-link" onClick={addHeader}>添加固定值／环境变量请求头</button><DynamicHeadersEditor value={dynamicHeaders()} onChange={setDynamicHeaders} disabled={busy()}/></details><div class="mcp-editor-actions"><button onClick={resetEditor}>取消</button><button class="btn" disabled={busy()} onClick={()=>void saveServer()}>保存并连接</button></div><Show when={status()}><p role="status">{status()}</p></Show></section></FeedbackDialog></Show>
-        <details class="settings-service-details"><summary>高级：配置文件与重新加载</summary><div class="settings-config-path" title={configFile()}>常规 MCP 配置文件：{configFile() || '读取中…'} <Show when={canEdit()}><button onClick={()=>void reloadMCPConfig().then(()=>setStatus('MCP 连接已重新加载')).catch(error=>setStatus(error.message))}>重新加载</button></Show></div></details><PluginAsyncTargetsSettings workspaceId={props.workspaceId}/><details class="settings-service-details"><summary>高级：连接诊断与代理路由</summary><div class="settings-embedded-panel"><MCPAndSkillsPanel embedded width={640}/></div></details></div></Show>
-      <Show when={section()==='desktop'}><div class="settings-page"><h2>文件服务</h2><p>Job Protocol 在“MCP”分类配置。这里可配置多个 Artifact 文件服务，并将不同 MCP 的输入上传到对应服务。</p><Show when={desktopConfigAvailable()} fallback={<section><p>{status() || '正在读取配置…'}</p></section>}><section class="settings-form"><h3>Artifact 文件服务（{artifactServices().length}）</h3><p class="settings-muted">服务 ID 是产物的永久来源标识，跨机器应保持一致；已有任务引用的服务不要删除或改 ID。未绑定的 MCP 使用默认服务。</p>
-        <Show when={!artifactEditable()}><p role="status">只读：请联系部署管理员修改全局 Artifact 配置。</p></Show>
-        <div class="artifact-settings-list" role="region" aria-label="Artifact 服务配置列表" tabIndex={0}>
-          <Index each={artifactServices()}>{(entry, index) => <fieldset disabled={artifactSaving() || !artifactEditable()}><legend>{entry().name || entry().service_id || `新服务 ${index + 1}`}</legend>
-            <label><span>服务 ID<span aria-hidden="true">（必填）</span></span><input required value={entry().service_id} onInput={e => updateArtifact(index, { service_id: e.currentTarget.value })} placeholder="例如 store-eu" /></label>
+          </Show>{toggle('启用此 MCP','关闭后保留配置，但不会连接或暴露工具。',enabled(),setEnabled)}<details><summary>高级设置</summary><div class="mcp-form-grid"><label>连接超时（毫秒）<input type="number" value={connectTimeout()} onInput={e=>setConnectTimeout(Number(e.currentTarget.value))}/></label><label>调用超时（毫秒）<input type="number" value={timeout()} onInput={e=>setTimeout(Number(e.currentTarget.value))}/></label></div><Show when={existingHeaders().length}><p class="settings-muted">已保存的请求头：{existingHeaders().join('、')}。留空会保留原值。</p></Show><For each={headers()}>{(row,index)=><div class="mcp-header-row"><input value={row.name} onInput={e=>updateHeader(index(),'name',e.currentTarget.value)} placeholder="Header 名称"/><input type="password" value={row.value} onInput={e=>updateHeader(index(),'value',e.currentTarget.value)} placeholder="值（保存后不回显）"/><button onClick={()=>setHeaders(rows=>rows.filter((_,i)=>i!==index()))}>移除</button></div>}</For><p class="settings-muted">固定值直接填写；环境变量使用 <code>{'${ENV_NAME}'}</code>，可与 Bearer 前缀组合，凭据不提供给 Agent。</p><button class="settings-link" onClick={addHeader}>添加固定值／环境变量请求头</button><DynamicHeadersEditor value={dynamicHeaders()} onChange={setDynamicHeaders} disabled={busy()}/></details><div class="mcp-editor-actions"><Show when={editing()}>{serverName=><button class="service-remove" disabled={busy()} onClick={()=>void removeServer(serverName())}>删除服务</button>}</Show><button onClick={resetEditor}>取消</button><button class="btn" disabled={busy()} onClick={()=>void saveServer()}>保存并连接</button></div><Show when={status()}><p role="status">{status()}</p></Show></section></FeedbackDialog></Show>
+        <PluginAsyncTargetsSettings workspaceId={props.workspaceId}/><details class="settings-service-details"><summary>高级：配置文件与重新加载</summary><div class="settings-config-path" title={configFile()}>常规 MCP 配置文件：{configFile() || '读取中…'} <Show when={canEdit()}><button onClick={()=>void reloadMCPConfig().then(()=>setStatus('MCP 连接已重新加载')).catch(error=>setStatus(error.message))}>重新加载</button></Show></div></details><details class="settings-service-details"><summary>高级：连接诊断与代理路由</summary><div class="settings-embedded-panel"><MCPAndSkillsPanel embedded width={640}/></div></details></div></Show>
+      <Show when={section()==='desktop'}><div class="settings-page settings-page-wide service-page">
+        <div class="settings-title-row"><div><h2>Artifact 文件服务</h2></div>
+          <Show when={desktopConfigAvailable() && artifactEditable()}><button class="settings-save service-add" disabled={artifactSaving() || artifactServices().length >= 64} onClick={addArtifact}>添加服务</button></Show>
+        </div>
+        <Show when={desktopConfigAvailable()} fallback={<p class="service-empty">{status() || '正在读取配置…'}</p>}>
+        <h3 class="service-list-title">文件服务 <span>{artifactServices().length}</span></h3>
+        <Show when={!artifactEditable()}><p class="settings-muted">服务地址由部署管理员管理；个人令牌由你自己绑定。</p></Show>
+        <section class="service-list" aria-label="Artifact 服务配置列表">
+          <Index each={artifactServices()} fallback={<p class="service-empty">暂无文件服务。{artifactEditable() && '点击「添加服务」配置文件存储。'}</p>}>{(entry, index) => <article class="service-row">
+            <div class="service-summary"><h4>{entry().name || entry().service_id || '新文件服务'}
+              <Show when={entry().service_id && entry().service_id === defaultArtifact()}><small>普通上传默认</small></Show>
+              <Show when={!savedArtifacts().includes(entry())}><small>待保存</small></Show>
+            </h4><p>{entry().url}</p><Show when={entry().targets}><p>绑定 MCP · {entry().targets}</p></Show></div>
+            <div class="service-actions">
+              <Show when={!entry().auth_mode}><button type="button" class="service-test" disabled={artifactSaving() || !artifactEditable() || !entry().service_id || !entry().url || artifactChecks().get(entry())?.state === 'checking'} onClick={() => void testArtifact(entry())}>{artifactChecks().get(entry())?.state === 'checking' ? '测试中…' : '测试连接'}</button></Show>
+              <Show when={artifactEditable()}><button type="button" aria-expanded={artifactEditor()===index} onClick={()=>setArtifactEditor(artifactEditor()===index ? null : index)}>{artifactEditor()===index ? '收起' : '编辑'}</button></Show>
+            </div>
+            <Show when={artifactChecks().get(entry())}>{check=><p class="service-result" role="status" data-state={check().state}>
+              {({ connected: '连接正常', reachable: '可达 · 认证未验证', failed: '测试失败', checking: '测试中…' } as Record<string,string>)[check().state] || '未验证'}{check().reason && ` · ${check().reason}`}
+              <Show when={check().tested_at}>{time=><time dateTime={time()}>{new Date(time()).toLocaleTimeString()}</time>}</Show>
+            </p>}</Show>
+            <Show when={personalAvailable() && entry().auth_mode && savedArtifacts().includes(entry()) ? entry() : undefined} keyed>{item =>
+              <PersonalArtifactBinding id={item.service_id} url={item.url} bound={myBindings().includes(item.service_id)} saved={savedBindings().includes(item.service_id)}
+                changed={bound => updateBinding(item.service_id, bound)}/>
+            }</Show>
+            <Show when={artifactEditor()===index}><div class="artifact-settings-list settings-form"><fieldset disabled={artifactSaving() || !artifactEditable()}><legend>连接配置</legend>
+            <label><span>服务 ID<span aria-hidden="true">（必填）</span></span><input ref={input => queueMicrotask(() => input.focus())} required value={entry().service_id} onInput={e => updateArtifact(index, { service_id: e.currentTarget.value })} placeholder="例如 store-eu" /></label>
             <label>显示名称<input value={entry().name} onInput={e => updateArtifact(index, { name: e.currentTarget.value })} /></label>
             <label><span>服务地址<span aria-hidden="true">（必填）</span></span><input type="url" required value={entry().url} onInput={e => updateArtifact(index, { url: e.currentTarget.value })} placeholder="https://artifacts.example.com" /></label>
-            <label>凭据环境变量名（可选，不是令牌本身）<input value={entry().token_env} onInput={e => updateArtifact(index, { token_env: e.currentTarget.value })} placeholder="ARTIFACT_STORE_TOKEN" /></label>
+            <Show when={personalAvailable()}><label><input type="checkbox" checked={!!entry().auth_mode}
+              onChange={e => updateArtifact(index, {auth_mode: e.currentTarget.checked ? 'personal-tokens' : undefined})}/>按 Web 登录账号绑定个人令牌（仅同步文件）</label></Show>
+            <label>凭据环境变量名（个人模式请留空）<input value={entry().token_env} onInput={e => updateArtifact(index, { token_env: e.currentTarget.value })} placeholder="ARTIFACT_STORE_TOKEN" /></label>
             <label>绑定的 MCP 名称（逗号分隔，可选）<input value={entry().targets} onInput={e => updateArtifact(index, { targets: e.currentTarget.value })} /></label>
-            <label class="artifact-default"><input type="radio" name="default-artifact-service" checked={defaultArtifact() === entry().service_id && !!entry().service_id} onChange={() => setDefaultArtifact(entry().service_id)} />默认文件服务</label>
-            <button type="button" class="btn" disabled={!entry().service_id || !entry().url || artifactChecks().get(entry())?.state === 'checking'} onClick={() => void testArtifact(entry())}>测试连接</button>
-            <p role="status">
-              <span aria-hidden="true" style={{ color: artifactChecks().get(entry())?.state === 'connected' ? 'var(--tcode-success)' : artifactChecks().get(entry())?.state === 'failed' ? 'var(--tcode-danger)' : 'var(--tcode-text-muted)' }}>●</span>
-              {' '}{({ connected: '连接正常', reachable: '可达 · 认证未验证', failed: '测试失败', checking: '测试中' } as Record<string, string>)[artifactChecks().get(entry())?.state || ''] || '未验证'}
-              <Show when={artifactChecks().get(entry())?.tested_at}>{time => <> · <time dateTime={time()}>{new Date(time()).toLocaleString()}</time></>}</Show>
-              <Show when={artifactChecks().get(entry())?.reason}>{reason => <> · {reason()}</>}</Show>
-            </p>
-            <button class="btn" onClick={() => { if (defaultArtifact() === entry().service_id) setDefaultArtifact(''); setArtifactServices(items => items.filter((_, i) => i !== index)); }}>移除此配置（不删除远端文件）</button>
-          </fieldset>}</Index>
-        </div>
-        <Show when={!artifactServices().length}><p>尚未配置文件服务，请添加一个。</p></Show>
-        <p class="settings-muted">各计算 MCP 也需配置相同的服务 ID 和可达地址。凭据由本地服务进程的环境变量提供；此处不显示令牌。</p>
-        <div class="artifact-settings-actions"><button class="btn" disabled={!artifactEditable() || artifactSaving() || artifactServices().length >= 64} onClick={() => setArtifactServices(items => [...items, { service_id: '', name: '', url: '', token_env: '', targets: '' }])}>添加服务</button><button class="settings-save" disabled={!artifactEditable() || artifactSaving()} onClick={()=>void saveArtifact()}>{artifactSaving() ? '保存中…' : '保存 Artifact 配置'}</button></div>
-      </section></Show></div></Show>
+            <label class="artifact-default"><input type="checkbox" disabled={!entry().service_id.trim()} checked={defaultArtifact() === entry().service_id && !!entry().service_id} onChange={e => setDefaultArtifact(e.currentTarget.checked ? entry().service_id : '')} />用作普通上传的默认服务（可选）</label>
+            <p class="service-hint">{entry().auth_mode ? '保存并重启 Web 后，每位用户可在此绑定自己的令牌。' : '服务 ID 用于定位已有文件。共享凭据取自服务进程的环境变量。需要传文件的 MCP 请逐个填写名称，留空表示不绑定。'}</p>
+            <button class="service-remove" onClick={() => { if (defaultArtifact() === entry().service_id) setDefaultArtifact(''); setArtifactServices(items => items.filter((_, i) => i !== index)); setArtifactEditor(null); }}>移除此配置（保留远端文件）</button>
+          </fieldset></div></Show></article>}</Index>
+        </section>
+        <Show when={personalAvailable() && removedBindings().length > 0}>
+          <h3 class="service-list-title">已失效的个人绑定</h3>
+          <For each={removedBindings()}>{id => <PersonalArtifactBinding id={id} bound={false} saved
+            changed={bound => updateBinding(id, bound)} />}</For>
+        </Show>
+        <Show when={artifactDirty()}><div class="service-save-bar"><span>有待保存的更改</span><button class="settings-save" disabled={!artifactEditable() || artifactSaving()} onClick={()=>void saveArtifact()}>{artifactSaving() ? '保存中…' : '保存 Artifact 配置'}</button></div></Show>
+        </Show></div></Show>
       <Show when={status()}><div class="settings-status" data-success={statusSuccess()} role="status"><Show when={statusSuccess()}><svg class="tcode-success-check" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m7 12 3 3 7-7"/></svg></Show>{status()}</div></Show>
     </main>
   </div>;

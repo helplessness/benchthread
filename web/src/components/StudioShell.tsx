@@ -73,7 +73,6 @@ export default function StudioShell(props: StudioShellProps) {
   let previousWorkspace = '';
   let root!: HTMLDivElement;
   let menu!: HTMLDetailsElement;
-  let actionsMenu!: HTMLDetailsElement;
   let noticeMenu!: HTMLDetailsElement;
   let sidebarSplit: {start:number;share:number;height:number;pointerId:number}|undefined;
   let dragging: {id:ResizablePanel;start:number;size:number;prior:number;priorInspector:number;handle:HTMLElement;pointerId:number;raw:number;velocity:number;time:number}|undefined;
@@ -216,8 +215,8 @@ export default function StudioShell(props: StudioShellProps) {
     const observer=new ResizeObserver(()=>{finishDrag(true);stopSpring();setDrawerLiveWidth(null);setViewport({width:root.clientWidth,height:root.clientHeight});});observer.observe(root);
     const blur=()=>finishDrag(true);
     const release=()=>finishDrag();
-    const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){closeInspectorPicker();finishDrag(true);if(menu.open){menu.open=false;menu.querySelector('summary')?.focus();}if(actionsMenu?.open){actionsMenu.open=false;actionsMenu.querySelector('summary')?.focus();}if(noticeMenu?.open){noticeMenu.open=false;noticeMenu.querySelector('summary')?.focus();}}};
-    const click=(event:MouseEvent)=>{if(!menu.contains(event.target as Node))menu.open=false;if(actionsMenu && !actionsMenu.contains(event.target as Node))actionsMenu.open=false;if(noticeMenu && !noticeMenu.contains(event.target as Node))noticeMenu.open=false;};
+    const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){closeInspectorPicker();finishDrag(true);if(menu.open){menu.open=false;menu.querySelector('summary')?.focus();}if(noticeMenu?.open){noticeMenu.open=false;noticeMenu.querySelector('summary')?.focus();}}};
+    const click=(event:MouseEvent)=>{if(!menu.contains(event.target as Node))menu.open=false;if(noticeMenu && !noticeMenu.contains(event.target as Node))noticeMenu.open=false;};
     const dismissPicker = (event: PointerEvent) => {
       if (inspectorPickerOpen() && !inspectorPicker?.contains(event.target as Node)) closeInspectorPicker();
     };
@@ -299,7 +298,7 @@ export default function StudioShell(props: StudioShellProps) {
           <button onClick={()=>{setLayout(defaults());setFocused(false);save();}}>恢复默认布局</button>
           <small>比例与开关按账号保存在{isDesktop()?'此电脑':'此浏览器'}</small>
         </div></details>
-        <Show when={isDesktop()} fallback={props.actions}><details ref={actionsMenu} class="studio-layout-menu desktop-actions"><summary>更多操作</summary><div onClick={event=>{if((event.target as HTMLElement).closest('button'))actionsMenu.open=false;}}>{props.actions}</div></details></Show>
+        {props.actions}
       </div>
     </header>
     <nav class="studio-rail" aria-label="活动导航" hidden={hidden('rail')}>
@@ -348,6 +347,6 @@ export default function StudioShell(props: StudioShellProps) {
     <aside id="studio-inspector" class="studio-context" data-browser={browserOpen()} data-collaboration={!browserOpen() && (props.inspectorTitle === '协作' || props.inspectorTitle === '伴随查看')} hidden={hidden('inspector')} aria-label={props.inspectorTitle || '会话上下文'}><header><b>{props.inspectorTitle || '会话上下文'}</b><button aria-label="收起右侧面板" onClick={()=>toggle('inspector')}>×</button></header><div>{props.inspector}</div></aside>
     <section id="studio-dock" class="studio-execution" hidden={hidden('dock')} aria-label="底部执行区"><header><nav><For each={studioPages.filter(p=>['jobs','review','workflow','subagents'].includes(p.id))}>{item=><button onClick={()=>props.onNavigate(item.id)}>{item.label}</button>}</For></nav><button aria-label="收起执行区" onClick={()=>toggle('dock')}>×</button></header><div>{props.dock}</div></section>
     {divider('tree')}{divider('inspector')}{divider('dock')}
-    <footer class="studio-status" hidden={focused() || settingsMode()}><span>{props.sessionTitle}</span><span>{props.status}</span><span>本地后端 · 当前账号工作区</span></footer>
+    <footer class="studio-status" hidden={focused() || settingsMode()}><span>{props.sessionTitle}</span><span>{props.status}</span><span>{isDesktop() ? '本机工作区' : '本地后端 · 当前账号工作区'}</span></footer>
   </div>;
 }

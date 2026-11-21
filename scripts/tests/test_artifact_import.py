@@ -83,9 +83,11 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
         approvals.append((kind, patterns))
         return True
 
+    chosen_label = "测试"
+
     async def choice(payload):
         assert len(payload["options"]) == 2
-        return next(option for option in payload["options"] if "测试" in option)
+        return next(option for option in payload["options"] if chosen_label in option)
 
     monkeypatch.setattr(artifact_import.httpx, "AsyncClient", client)
     monkeypatch.setattr(artifact_import.SessionManager, "get", session_get)
@@ -95,7 +97,7 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
     })
 
     async def exercise():
-        nonlocal fault
+        nonlocal fault, chosen_label
         for key in apps:
             async with client(base_url=f"http://{key}", headers={"X-Artifact-Token": token}) as fixture:
                 bundle = (await fixture.post("/api/v1/bundles", json={})).json()["bundle_id"]
@@ -130,12 +132,12 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
                 ((403, {"X-Artifact-Error": "another_error"}), "文件服务拒绝访问"),
                 ((401, {"X-Artifact-Error": "shared_reader_required"}), "文件服务认证失败"),
                 ((503, {"X-Artifact-Error": "shared_reader_required"}), "文件服务返回错误")):
-            assert (await browse.execute({}, context)).error == expected
-            assert (await tool.execute({"path": "results/a.csv"}, context)).error == expected
+            assert (await browse.execute({"service_id":"lab-production"}, context)).error == expected
+            assert (await tool.execute({"path": "results/a.csv", "service_id":"lab-production"}, context)).error == expected
         fault = None
-        root_page = json.loads((await browse.execute({}, context)).output)
+        root_page = json.loads((await browse.execute({"service_id":"lab-production"}, context)).output)
         assert root_page["entries"] == [{"kind": "directory", "path": "results", "display_path": "results/"}]
-        assert not (await tool.execute({"path": "results/a.csv"}, context)).error
+        assert not (await tool.execute({"path": "results/a.csv", "service_id":"lab-production"}, context)).error
         assert (root / "imports/a.csv").read_bytes() == b"lab-production"
         page = json.loads((await browse.execute({
             "directory": "results/", "service_name": "实验室", "limit": 1,
@@ -171,7 +173,7 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
             uploaded = await fixture.put("/api/v1/files/by-path", params={"path": "uploads/c.csv"},
                                          files={"file": ("c.csv", b"new upload")})
             uploaded.raise_for_status()
-        named_page = json.loads((await browse.execute({"directory": "uploads"}, context)).output)
+        named_page = json.loads((await browse.execute({"directory": "uploads", "service_id": "lab-production"}, context)).output)
         assert named_page["entries"] == [{
             "path": "uploads/c.csv", "kind": "file", "size": 10, "artifact_id": uploaded.json()["artifact_id"],
         }]
@@ -195,9 +197,11 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
         assert not (await upload.execute({**upload_args, "service_name": "实验室"}, context)).error
         assert calls[-1] == ("lab-testing", "/api/v1/files/by-path")
         assert (await upload.execute({**upload_args, "local_path": "imports/b.csv"}, context)).error
-        imported = await tool.execute({"path": "exports/report.csv"}, context)
+        imported = await tool.execute({"path": "exports/report.csv", "service_id": "lab-production"}, context)
         assert not imported.error
         assert (root / "imports/report.csv").read_bytes() == b"lab-production"
+
+        chosen_label = "生产"
 
         # Exercise the same desktop binding and transfer code as the app, without a host service.
         from tcode_agent.server import desktop_api, workdirs
@@ -228,7 +232,7 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
                 result = await upload.execute({"local_path": "/workspace/upload/evidence.txt",
                                                "remote_path": "exports/receipt.txt"}, ctx)
                 assert not result.error, result.error
-                assert not (await tool.execute({"path":"exports/receipt.txt", "local_path":"results/receipt.txt"}, ctx)).error
+                assert not (await tool.execute({"path":"exports/receipt.txt", "service_id":"lab-production", "local_path":"results/receipt.txt"}, ctx)).error
                 assert (source_dir / "results/receipt.txt").read_bytes() == b"uploaded copy"
                 from tcode_agent.runtime.sandbox.project_network_exec import transfer_argv, run_project_transfer
                 from tcode_agent.tools.builtin.exec import ExecParameters

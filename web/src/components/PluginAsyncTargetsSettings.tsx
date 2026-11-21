@@ -43,8 +43,10 @@ export default function PluginAsyncTargetsSettings(props: { workspaceId?: string
       if (busy()) return;
       setBusy(true); setFailed(false); setStatus(action === 'check' ? '正在检查网关和远端工具…' : '正在保存…');
       try {
-        await request(`/${encodeURIComponent(target.plugin)}/async-targets/${encodeURIComponent(target.target)}/${action}`,
-          { url: url().trim(), token_env: tokenEnv().trim(), dynamic_headers: dynamicHeaders(), approved: approved() });
+        const connection = editorOpen()
+          ? { url: url().trim(), token_env: tokenEnv().trim(), dynamic_headers: dynamicHeaders(), approved: approved() }
+          : { url: target.url, token_env: target.token_env, dynamic_headers: target.dynamic_headers || {}, approved: false };
+        await request(`/${encodeURIComponent(target.plugin)}/async-targets/${encodeURIComponent(target.target)}/${action}`, connection);
         if (action === 'check') setStatus('连接与工具检查通过。文件服务可达性仍需通过一次实际文件任务验证。');
         else await load();
       } catch (e) { setFailed(true); setStatus(e instanceof Error ? e.message : '操作失败，请重试'); }
@@ -54,7 +56,9 @@ export default function PluginAsyncTargetsSettings(props: { workspaceId?: string
       <h4>{target.plugin} / {target.target} · {target.active ? '已启用' : '未启用'}</h4>
       <Show when={target.has_draft}><p role="status">本地草稿已保存，尚未应用；现有已启用配置与任务不变。</p></Show>
       <p>{target.execution.mode === 'remote-job' ? `远端持久任务：可按原任务 ID 恢复${target.execution.cancelTool ? '，支持远端取消' : ''}` : '普通长调用：仅后台等待，断连后结果可能未知'}。工具：{target.tools.join('、')}</p>
+      <button type="button" disabled={busy() || !target.url} onClick={() => void act('check')}>测试连接</button>
       <button type="button" onClick={() => setEditorOpen(true)}>配置连接</button>
+      <Show when={!editorOpen() && status()}><p role={failed() ? 'alert' : 'status'}>{status()}</p></Show>
       <Show when={target.error}><p role="alert">{target.error}</p></Show>
     </article>
     <Show when={editorOpen()}><FeedbackDialog title={`配置 ${target.plugin} / ${target.target}`} onClose={() => { if (!busy()) setEditorOpen(false); }}>
@@ -76,18 +80,17 @@ export default function PluginAsyncTargetsSettings(props: { workspaceId?: string
     </FeedbackDialog></Show></>;
   }
   return <section class="plugin-async-settings" aria-label="插件异步 MCP 配置">
-    <h3>插件异步 MCP</h3>
-    <details><summary>高级：接入协议与部署说明</summary><p>运行链路：TCode → 用户本地 Job Protocol → 第三方计算 MCP。不要只在上面的常规 MCP 表单中选择“异步”，那不会自动注册第三方计算目标。</p>
-    <p>先安装声明 <code>asyncTargets</code> 的插件，再在这里配置并授权。已有任务结果不会因停用而删除。</p></details>
-    <button type="button" onClick={() => void load()} disabled={loading()}>刷新插件目标</button>
+    <div class="service-plugin-header"><h3 class="service-list-title">插件异步 MCP <Show when={catalog()}>{data=><span>{data().targets.length}</span>}</Show></h3>
+      <button type="button" onClick={() => void load()} disabled={loading()}>刷新插件目标</button></div>
     <Show when={error()}><p role="alert">{error()}</p></Show>
     <Show when={catalog()}>{data => <>
-      <details><summary>高级：网关与配置存储</summary><p>Job Protocol：<code>{data().gateway_url}</code>（默认在用户本地运行）</p><p class="settings-config-path">{data().config_file}</p></details>
-      <Show when={!data().management_configured}><p role="alert">注册令牌未配置：在 TCode 和 Job Protocol 中设置相同的 TMCP_TARGET_REGISTRY_TOKEN。桌面端托管启动会自动配置。</p></Show>
+      <Show when={data().targets.length && !data().management_configured}><p role="alert">注册令牌未配置：在 TCode 和 Job Protocol 中设置相同的 TMCP_TARGET_REGISTRY_TOKEN。</p></Show>
       <Show when={data().targets.length} fallback={<p>当前工作区没有声明异步计算目标的插件。安装插件后点击刷新。</p>}>
         <For each={data().targets}>{target => <Card target={target} />}</For>
       </Show>
-      <p class="settings-muted">文件传输：使用部署方配置的 Artifact 服务；第三方服务器必须能访问该地址，不能使用用户本地的 127.0.0.1。</p>
     </>}</Show>
+    <details><summary>高级：接入协议与部署说明</summary><p>安装声明 <code>asyncTargets</code> 的插件后，在此配置并授权。任务经 Job Protocol 提交，计算服务器需能访问绑定的 Artifact 文件服务。</p>
+      <Show when={catalog()}>{data=><><p>网关：<code>{data().gateway_url}</code></p><p class="settings-config-path">{data().config_file}</p><Show when={!data().management_configured}><p>注册令牌待配置（TMCP_TARGET_REGISTRY_TOKEN）。</p></Show></>}</Show>
+    </details>
   </section>;
 }

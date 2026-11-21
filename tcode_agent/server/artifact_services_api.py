@@ -18,8 +18,43 @@ from ..tools.builtin.artifact_import import (
 from .auth import require_current_user
 from .desktop_config import artifact_configuration
 from . import workdirs
+from . import personal_artifacts
 
 router = APIRouter(prefix='/api/artifact-services', include_in_schema=False)
+
+
+@router.api_route('/personal/{service_id}', methods=['PUT', 'DELETE'])
+async def personal_binding(request: Request, service_id: str):
+    if not personal_artifacts.enabled():
+        raise HTTPException(403, '个人绑定需要登录 Web')
+    actor = require_current_user(request)
+    origin = request.headers.get('origin')
+    if (request.headers.get('sec-fetch-site') in {'cross-site', 'same-site'}
+            or origin and origin != f'{request.url.scheme}://{request.url.netloc}'):
+        raise HTTPException(403, '请从当前站点修改个人绑定')
+    if request.method == 'DELETE':
+        personal_artifacts.remove(actor.tenant_id, actor.user_id, service_id)
+        return {'bound': False}
+    if request.headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':
+        raise HTTPException(415, '需要 JSON 请求')
+    from .mcp_config_api import verify_personal_artifact
+    import re
+    try:
+        data = await request.json()
+        if not isinstance(data, dict) or set(data) != {'token', 'expected_url'}:
+            raise ValueError('只接受个人令牌及已显示的服务地址')
+        url = personal_artifacts.address(service_id)
+        if data['expected_url'] != url:
+            raise ValueError('当前生效地址与页面不一致；请管理员重启 Web 后再绑定')
+        health = await verify_personal_artifact(url, data['token'])
+        account = health.get('account_id')
+        if (health['service_id'] != service_id or not isinstance(account, str)
+                or not re.fullmatch('[0-9a-f]{32}', account) or health.get('read_only')):
+            raise ValueError('未验证个人文件空间或服务 ID；请确认地址并更新 Artifact SDK')
+        personal_artifacts.save(actor.tenant_id, actor.user_id, service_id, url, account, data['token'])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {'bound': True}
 
 
 class BrowseFromChat(ArtifactBrowseParameters):
@@ -89,6 +124,12 @@ async def import_from_chat(request: Request, payload: ImportFromChat):
 def _config_path() -> Path:
     from ..config.manager import ConfigManager
     return Path(ConfigManager.resolve_config_root()) / 'artifact-services.json'
+
+
+def _saved_settings():
+    source = _config_path()
+    entry = json.loads(source.read_text(encoding='utf-8')) if source.exists() else {}
+    return artifact_configuration(entry, allow_loopback=True)
 
 
 def load_artifact_services() -> None:
@@ -171,6 +212,9 @@ async def artifact_service_status() -> list[dict]:
         item = {'service_id': key, 'name': entry['name'], 'url': entry['url'],
                 'state': 'checking', 'default': key == settings['artifact_default_service_id']}
         items.append(item)
+        if entry.get('auth_mode') == 'personal-tokens':
+            item['state'] = 'unverified'
+            return
         async with limit:
             selected = key if os.environ.get('TMCP_ARTIFACT_SERVICES', '').strip() not in {'', '{}'} else ''
             item['state'] = await _probe_artifact_service(entry['url'], selected)
@@ -193,10 +237,14 @@ async def status(request: Request):
 @router.get('/config')
 async def read_config(request: Request):
     user = require_current_user(request)
-    source = _config_path()
     try:
-        entry = json.loads(source.read_text(encoding='utf-8')) if source.exists() else {}
-        return {**artifact_configuration(entry, allow_loopback=True), 'can_edit': _can_edit(user)}
+        settings = _saved_settings()
+        saved = personal_artifacts.saved_addresses(user.tenant_id, user.user_id)
+        return {**settings, 'can_edit': _can_edit(user),
+                'personal_available': personal_artifacts.enabled(),
+                'personal_bound': [k for k, url in saved.items() if settings['artifact_services'].get(k, {}).get('auth_mode') == 'personal-tokens'
+                                   and settings['artifact_services'][k]['url'] == url],
+                'personal_saved': list(saved)}
     except (ValueError, TypeError, OSError) as exc:
         raise HTTPException(409, 'Artifact 配置无效，请检查服务器配置文件') from exc
 
@@ -213,7 +261,7 @@ async def save_config(request: Request):
             'artifact_services': payload['artifact_services'],
             'artifact_default_service_id': payload.get('artifact_default_service_id', ''),
             'artifact_target_services': payload.get('artifact_target_services', {}),
-        }, allow_loopback=True)
+        }, allow_loopback=True, saving=True)
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, str(exc)) from exc
     source = _config_path()

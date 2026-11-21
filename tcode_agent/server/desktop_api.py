@@ -252,7 +252,7 @@ def desktop_router(token: str) -> APIRouter:
                 "job_protocol": {"state": state, "url": job_url, "managed": managed},
                 "artifact": {"state": artifact_state, "url": artifact_url},
                 "artifacts": artifacts,
-                "artifact_configured": artifact_configured,
+                "artifact_configured": bool(artifacts) or artifact_configured,
                 "dev_local_services": local_development_services(),
                 "local_execution": "offline-single-process" if os.environ.get("TCODE_DESKTOP_NATIVE_READY") == "1" else "unavailable", "local_runner_required": False}
 
@@ -273,7 +273,7 @@ def desktop_router(token: str) -> APIRouter:
             "can_edit": user.role in {'owner', 'admin'},
             "job_protocol_url": str(job.get("url") or ""),
             "job_protocol_enabled": job.get("enabled", True) is not False,
-            "artifact_service_url": str(desktop_entry.get("artifact_service_url") or os.environ.get("TCODE_DESKTOP_ARTIFACT_SERVICE_URL", "")),
+            "artifact_service_url": str(desktop_entry.get("artifact_service_url", os.environ.get("TCODE_DESKTOP_ARTIFACT_SERVICE_URL", ""))),
             "transport": str(job.get("transport") or "streamable-http"),
             "restart_required": False,
         }
@@ -328,7 +328,7 @@ def desktop_router(token: str) -> APIRouter:
                     'artifact_services': payload['artifact_services'],
                     'artifact_default_service_id': payload.get('artifact_default_service_id', ''),
                     'artifact_target_services': payload.get('artifact_target_services', {}),
-                })
+                }, saving=True)
             except (ValueError, TypeError) as exc:
                 raise HTTPException(400, str(exc)) from exc
             default_entry = artifact_changes['artifact_services'].get(artifact_changes['artifact_default_service_id'], {})

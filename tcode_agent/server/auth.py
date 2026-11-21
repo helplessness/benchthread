@@ -17,6 +17,7 @@ from ..sqlite_runtime import SQLITE_CONNECTION_LOCK, connect as sqlite_connect
 from . import workdirs as workdir_utils
 
 AUTH_COOKIE_NAME = "tcode_auth_session"
+DESKTOP_ACCOUNT_COOKIE = "tcode_desktop_account"
 _AUTH_LOCK = SQLITE_CONNECTION_LOCK
 _SESSION_TTL_SECONDS = max(
     3600,
@@ -42,6 +43,14 @@ class CurrentUserContext:
 def auth_required() -> bool:
     raw = str(os.environ.get("TCODE_ENTERPRISE_MODE", os.environ.get("TCODE_AUTH_REQUIRED", "1")) or "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
+
+
+def _desktop_single_user() -> bool:
+    return os.environ.get("TCODE_DESKTOP_MANAGED") == "1" and os.environ.get("TCODE_DESKTOP_SINGLE_USER") == "1"
+
+
+def auth_cookie_name() -> str:
+    return DESKTOP_ACCOUNT_COOKIE if _desktop_single_user() else AUTH_COOKIE_NAME
 
 
 def _storage_base() -> Path:
@@ -240,11 +249,111 @@ def ensure_auth_store() -> None:
                 )
                 """
             )
+            conn.execute('''CREATE TABLE IF NOT EXISTS artifact_bindings (
+                tenant TEXT NOT NULL,user TEXT NOT NULL,service TEXT NOT NULL,url TEXT NOT NULL,
+                account TEXT NOT NULL,secret BLOB NOT NULL,PRIMARY KEY(tenant,user,service),UNIQUE(url,account))''')
             conn.commit()
-            _ensure_bootstrap_user(conn)
+            if not _desktop_single_user():
+                _ensure_bootstrap_user(conn)
+
+
+def desktop_local_user() -> CurrentUserContext:
+    """Keep a single existing desktop owner's scope without merging accounts."""
+    ensure_auth_store()
+    tenant = workdir_utils.default_tenant_id()
+    local = workdir_utils.default_user_id()
+    with _connect() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS desktop_default_identity (tenant_id TEXT PRIMARY KEY, user_id TEXT NOT NULL)")
+        saved = conn.execute("SELECT user_id FROM desktop_default_identity WHERE tenant_id=?", (tenant,)).fetchone()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(desktop_default_identity)")}
+        if "automatic_entry" not in columns:
+            conn.execute("ALTER TABLE desktop_default_identity ADD COLUMN automatic_entry INTEGER NOT NULL DEFAULT 1")
+        if "password_configured" not in columns:
+            conn.execute("ALTER TABLE desktop_default_identity ADD COLUMN password_configured INTEGER NOT NULL DEFAULT 0")
+        if saved:
+            local = saved["user_id"]
+        else:
+            owner = conn.execute("""
+                SELECT u.id FROM users u
+                JOIN tenant_memberships m ON m.user_id = u.id
+                JOIN tenants t ON t.id = m.tenant_id
+                WHERE (SELECT COUNT(*) FROM users) = 1 AND m.tenant_id = ?
+                  AND m.role = 'owner' AND u.status = 'active'
+                  AND m.status = 'active' AND t.status = 'active'
+            """, (tenant,)).fetchone()
+            if owner:
+                local = owner["id"]
+            else:
+                suffix = 0
+                while conn.execute("SELECT 1 FROM users WHERE id=?", (local,)).fetchone():
+                    suffix += 1
+                    local = f"local-desktop-{suffix}"
+            now = _now()
+            conn.execute("INSERT OR IGNORE INTO tenants (id, name, slug, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)",
+                         (tenant, "本机", tenant, now, now))
+            conn.execute("INSERT INTO desktop_default_identity (tenant_id, user_id) VALUES (?, ?)", (tenant, local))
+        account = conn.execute("""
+            SELECT u.email, u.name, m.role, u.status AS user_status, m.status AS membership_status,
+                   t.status AS tenant_status FROM users u
+            LEFT JOIN tenant_memberships m ON m.user_id = u.id AND m.tenant_id = ?
+            LEFT JOIN tenants t ON t.id = m.tenant_id WHERE u.id = ?
+        """, (tenant, local)).fetchone()
+        if account:
+            active = all(account[key] == "active" for key in ("user_status", "membership_status", "tenant_status"))
+            return CurrentUserContext(local, tenant, account["email"], account["name"], account["role"] or "member",
+                                      "active" if active else "inactive")
+    return CurrentUserContext(local, tenant, "", "本机工作区", "owner")
+
+
+def desktop_automatic_entry(user: CurrentUserContext, *, enabled: bool | None = None) -> bool:
+    with _connect() as conn:
+        if enabled is not None:
+            conn.execute("UPDATE desktop_default_identity SET automatic_entry=? WHERE tenant_id=?",
+                         (enabled, user.tenant_id))
+        row = conn.execute("SELECT automatic_entry FROM desktop_default_identity WHERE tenant_id=?", (user.tenant_id,)).fetchone()
+        allowed = bool(row and row["automatic_entry"] and user.tenant_status == "active")
+        if allowed and user.email:
+            conn.execute("UPDATE users SET last_login_at=? WHERE id=? AND last_login_at IS NULL", (_now(), user.user_id))
+        return allowed
+
+
+def _desktop_password_setup_pending(conn: sqlite3.Connection, user: CurrentUserContext) -> bool:
+    return conn.execute("""
+        SELECT 1 FROM desktop_default_identity
+        WHERE tenant_id=? AND user_id=? AND automatic_entry=1 AND password_configured=0
+    """, (user.tenant_id, user.user_id)).fetchone() is not None
+
+
+def desktop_password_setup_pending(user: CurrentUserContext) -> bool:
+    with _connect() as conn:
+        return _desktop_password_setup_pending(conn, user)
+
+
+def change_account_password(user: CurrentUserContext, new_password: str, current_password: str,
+                            *, automatic_identity: bool, session_id: str) -> None:
+    if not user.email or user.tenant_status != "active":
+        raise HTTPException(403, "请使用有效的登录账号")
+    if len(new_password) < 12:
+        raise HTTPException(400, "新密码至少需要 12 个字符")
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT password_hash FROM users WHERE id=? AND status='active'", (user.user_id,)).fetchone()
+        if row is None:
+            raise HTTPException(403, "账号不可用")
+        initial_setup = automatic_identity and _desktop_password_setup_pending(conn, user)
+        if not initial_setup and not _verify_password(current_password, row["password_hash"]):
+            raise HTTPException(403, "当前密码不正确")
+        conn.execute("UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+                     (_hash_password(new_password), _now(), user.user_id))
+        if _desktop_single_user():
+            conn.execute("UPDATE desktop_default_identity SET password_configured=1 WHERE user_id=?", (user.user_id,))
+        conn.execute("DELETE FROM auth_sessions WHERE user_id=? AND id<>?", (user.user_id, session_id))
 
 
 def previously_used_desktop_accounts() -> list[str]:
+    if not auth_required():
+        return []
+    ensure_auth_store()
     with _connect() as conn:
         return [row["email"] for row in conn.execute("""
             SELECT u.email FROM users u WHERE u.status='active' AND u.last_login_at IS NOT NULL
@@ -321,6 +430,8 @@ def create_user_account(
         user_id or normalized_email.split("@", 1)[0],
         workdir_utils.default_user_id(),
     )
+    if _desktop_single_user() and normalized_user == workdir_utils.default_user_id():
+        raise HTTPException(409, "该标识已用于默认本机身份，请更换邮箱前缀")
     now = _now()
     with _AUTH_LOCK:
         try:
@@ -398,6 +509,8 @@ def authenticate(email: str, password: str) -> CurrentUserContext:
             ).fetchone()
             if membership is None:
                 raise HTTPException(403, "User has no active tenant membership")
+            if _desktop_single_user() and membership["tenant_status"] != "active":
+                raise HTTPException(403, "该账号所属空间已停用")
             conn.execute(
                 "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
                 (_now(), _now(), user["id"]),
@@ -437,10 +550,11 @@ def clear_login_session(session_id: str) -> None:
             conn.commit()
 
 
-def user_from_session_id(session_id: str) -> Optional[CurrentUserContext]:
+def user_from_session_id(session_id: str, *, touch: bool = True) -> Optional[CurrentUserContext]:
     if not session_id:
         return None
-    ensure_auth_store()
+    if touch:
+        ensure_auth_store()
     now = _now()
     with _AUTH_LOCK:
         with _connect() as conn:
@@ -462,11 +576,9 @@ def user_from_session_id(session_id: str) -> Optional[CurrentUserContext]:
                 conn.execute("DELETE FROM auth_sessions WHERE id = ?", (session_id,))
                 conn.commit()
                 return None
-            conn.execute(
-                "UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?",
-                (now, session_id),
-            )
-            conn.commit()
+            if touch:
+                conn.execute("UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?", (now, session_id))
+                conn.commit()
             return CurrentUserContext(
                 user_id=str(row["user_id"]),
                 tenant_id=str(row["tenant_id"]),
@@ -486,7 +598,7 @@ def current_user_from_request(request: Request) -> Optional[CurrentUserContext]:
     existing = getattr(request.state, "current_user", None)
     if isinstance(existing, CurrentUserContext):
         return existing
-    user = user_from_session_id(str(request.cookies.get(AUTH_COOKIE_NAME) or ""))
+    user = user_from_session_id(str(request.cookies.get(auth_cookie_name()) or ""))
     if user is not None:
         request.state.current_user = user
     return user
@@ -496,7 +608,30 @@ def current_user_from_websocket(websocket: WebSocket) -> Optional[CurrentUserCon
     # 与 HTTP 保持一致：关闭鉴权时不让陈旧 Cookie 影响本地 WebSocket 会话。
     if not auth_required():
         return None
-    return user_from_session_id(str(websocket.cookies.get(AUTH_COOKIE_NAME) or ""))
+    gate = getattr(websocket.state, "desktop_gate", None)
+    if gate and getattr(websocket.state, "desktop_default_identity", False):
+        return gate.local_user if gate.automatic_entry else None
+    return user_from_session_id(str(websocket.cookies.get(auth_cookie_name()) or ""),
+                                touch=not getattr(websocket.state, "current_user", None))
+
+
+async def authorize_socket_command(websocket: WebSocket) -> bool:
+    """Revalidate the login before dispatch, including on already-open sockets."""
+    if not auth_required():
+        return True
+    user = current_user_from_websocket(websocket)
+    previous = getattr(websocket.state, "current_user", None)
+    if user is None:
+        await websocket.close(code=4401)
+        return False
+    if previous and previous.user_id != user.user_id:
+        await websocket.close(code=4401)
+        return False
+    if user.tenant_status != "active" or (previous and previous.tenant_id != user.tenant_id):
+        await websocket.close(code=4423)
+        return False
+    websocket.state.current_user = user
+    return True
 
 
 def require_current_user(request: Request) -> CurrentUserContext:
@@ -519,7 +654,7 @@ def set_auth_cookie(request: Request, response: Response, session_id: str) -> No
     secure = str(os.environ.get("TCODE_AUTH_COOKIE_SECURE", "") or "").strip().lower()
     secure_cookie = secure in {"1", "true", "yes", "on"} or str(request.url.scheme).lower() == "https"
     response.set_cookie(
-        key=AUTH_COOKIE_NAME,
+        key=auth_cookie_name(),
         value=session_id,
         httponly=True,
         secure=secure_cookie,
@@ -530,7 +665,7 @@ def set_auth_cookie(request: Request, response: Response, session_id: str) -> No
 
 
 def clear_auth_cookie(response: Response) -> None:
-    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    response.delete_cookie(auth_cookie_name(), path="/")
 
 
 def serialize_user(user: CurrentUserContext) -> dict[str, Any]:
@@ -779,6 +914,8 @@ def list_shareable_tenant_members(
     share picker. Tenant administration details remain owner/admin-only.
     """
 
+    if _desktop_single_user():
+        return []
     ensure_auth_store()
     with _AUTH_LOCK, _connect() as conn:
         actor = _tenant_membership(conn, tenant_id, actor_user_id)

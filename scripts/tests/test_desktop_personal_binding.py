@@ -84,7 +84,7 @@ def test_save_and_discover_check_original_owner_before_using_headers(tmp_path, m
     req = SimpleNamespace(json=AsyncMock(return_value={'name':'mine','url':entry['url']}))
     for tenant,user in [('lab','bob'),('other','alice')]:
         req.user = SimpleNamespace(tenant_id=tenant,user_id=user)
-        for action in (api._put_mcp_config('mine',req), api.discover_mcp_files(req)):
+        for action in (api._put_mcp_config('mine',req), api.discover_mcp_files(req), api.test_mcp_service('mine', req)):
             with pytest.raises(HTTPException) as denied:
                 asyncio.run(action)
             assert denied.value.status_code == 403

@@ -34,7 +34,7 @@ lines.once('line', port => {
       models: { 'smoke-model': { name: 'Mock model' } },
     } } });
     write('desktop-mcp.json', { $desktop: { managed_job_protocol: false,
-      artifact_services: { fixture: { url: base } }, artifact_default_service_id: 'fixture' },
+      artifact_services: { fixture: { url: base } }, artifact_default_service_id: '', artifact_target_services: {'boltz-mcp':'fixture'} },
       'job-protocol-mcp': { url: base + '/mcp', transport: 'streamable-http' } });
     write('human_review.json', { enabled: true, required_review_tools: {
       'boltz-mcp': { tools: ['boltz_mcp_server'] },

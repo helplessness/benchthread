@@ -38,6 +38,8 @@ def _artifact_endpoint(service_id: str = '', *, target_server: str = '') -> tupl
             default_token=token,
         )
     except ValueError as exc:
+        if target_server:
+            raise ArtifactMaterializationError(str(exc)) from exc
         if os.environ.get('TCODE_DESKTOP_MANAGED') == '1':
             raise ArtifactMaterializationError('请检查 Artifact 服务配置或 TCODE_DESKTOP_ARTIFACT_SERVICE_URL') from exc
         raise
@@ -316,6 +318,7 @@ def materialize_output_bundle(
     selected_paths: Optional[list[str]] = None,
     expected_file: Optional[dict[str, Any]] = None,
     rename_conflicts: bool = True,
+    target_server: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """Download and verify an ``output_bundle`` below ``destination``.
 
@@ -328,7 +331,9 @@ def materialize_output_bundle(
         return None
     bundle_id = bundle_ref["bundle_id"]
     service_id = bundle_ref.get('service_id', '')
-    selected, configured_url, headers = _artifact_endpoint(service_id)
+    if target_server == '':
+        raise ArtifactMaterializationError('无法识别产物所属 MCP，请选择来源服务后取回文件')
+    selected, configured_url, headers = _artifact_endpoint(service_id, target_server=target_server) if target_server else _artifact_endpoint(service_id)
     if selected and base_url and base_url.rstrip('/') != configured_url:
         raise ArtifactMaterializationError('Artifact service_id conflicts with base_url')
     service_url = str(base_url or configured_url).rstrip("/")

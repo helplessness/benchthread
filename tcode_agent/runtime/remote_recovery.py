@@ -201,7 +201,11 @@ async def reconcile_task(task_id: str, workdir: str) -> None:
                     assert_workspace_active(server_root, resolve_workspace_context(**{key: workspace[key] for key in ("tenant_id", "user_id", "workspace_id")}))
                     local_root = resolve_user_workdir_path(server_root, workspace["workspace_id"], tenant_id=workspace["tenant_id"], user_id=workspace["user_id"])
                     destination = local_root / "artifacts" / "jobs" / hashlib.sha256(task_id.encode()).hexdigest()[:20]
-                    saved = await asyncio.to_thread(materialize_output_bundle, raw, destination, preserve_existing=True, automatic=True)
+                    from ..mcp.custom_targets import owner_alias
+                    target = task.get("tool_server") or (task.get("submit_input") or {}).get("target_server") or ""
+                    target = owner_alias(target, workdir, workspace)
+                    saved = await asyncio.to_thread(materialize_output_bundle, raw, destination, preserve_existing=True,
+                                                    automatic=True, target_server=target)
                     patch.update(output_root=saved["root"], artifacts=[item["path"] for item in saved["files"]])
                     # Card preview comes from actual materialized files, not the remote manifest.
                     patch["returned_file_preview"] = [

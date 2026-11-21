@@ -18,12 +18,12 @@ app.setPath('userData', path.join(app.getPath('appData'), 'TCode Desktop'));
 const projectRoot = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, '..');
 const smoke = process.argv.includes('--smoke-test');
 const testInstance = process.argv.includes('--test-instance') ? createTestInstance(app.getPath('temp'), process.env,
-  readTestLogin(process.env.TCODE_DESKTOP_TEST_LOGIN_CONFIG || path.join(projectRoot, '.tcode-local/symphony_route.env'))) : undefined;
+  process.env.TCODE_DESKTOP_TEST_LOGIN_CONFIG ? readTestLogin(process.env.TCODE_DESKTOP_TEST_LOGIN_CONFIG) : undefined) : undefined;
 if (testInstance) {
   app.setName('TCode Desktop Test');
   app.setPath('userData', testInstance.root);
   app.setPath('sessionData', testInstance.root);
-  console.log(`独立测试实例目录：${testInstance.root}（使用原配置账号，数据与登录状态独立）`);
+  console.log(`独立测试实例目录：${testInstance.root}（数据与正式实例独立）`);
 }
 if (smoke) app.setPath('userData', app.isPackaged
   ? path.join(app.getPath('temp'), 'tcode-desktop-smoke')
@@ -600,12 +600,19 @@ if (!app.requestSingleInstanceLock()) {
         for (const key of Object.keys(details.requestHeaders)) {
           if (key.toLowerCase() === 'cookie') {
             details.requestHeaders[key] = details.requestHeaders[key].split(';').filter(
-              item => !/^(tcode_desktop_gate|tcode_auth_session)=/.test(item.trim()),
+              item => !/^(tcode_desktop_gate|tcode_desktop_account|tcode_auth_session)=/.test(item.trim()),
             ).join(';');
           }
         }
       }
       callback({ requestHeaders: details.requestHeaders });
+    });
+    desktopSession.webRequest.onCompleted(details => {
+      if (origin && details.method === 'POST' && details.statusCode === 200 && isLocalNavigation(details.url, origin)
+          && ['/api/auth/login', '/api/auth/logout'].includes(new URL(details.url).pathname)) {
+        computer?.revoke('account_changed');
+        void browser?.reset().catch(error => console.error('切换账号后清理浏览器失败', error.message));
+      }
     });
     desktopSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     desktopSession.setPermissionCheckHandler(() => false);

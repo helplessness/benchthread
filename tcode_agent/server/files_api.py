@@ -710,9 +710,20 @@ def _artifact_proxy_headers(service_id: str = '') -> dict[str, str]:
     return _artifact_headers(service_id)
 
 
-def _artifact_proxy_endpoint(service_id: str):
+def _artifact_proxy_endpoint(service_id: str, request: Request):
     from ..artifact_transport import _artifact_endpoint
+    from . import personal_artifacts
+    from .auth import require_current_user
     try:
+        selected = service_id or os.environ.get('TMCP_ARTIFACT_SERVICE_ID', '').strip()
+        if not selected and os.environ.get('TMCP_ARTIFACT_SERVICES'):
+            raise HTTPException(400, '请为本次上传选择文件服务，或在设置中指定普通上传的默认服务')
+        if selected in personal_artifacts.personal_entries():
+            actor = require_current_user(request)
+            try:
+                return personal_artifacts.endpoint(selected, {'tenant_id': actor.tenant_id, 'user_id': actor.user_id})
+            except ValueError as exc:
+                raise HTTPException(403, str(exc)) from None
         return _artifact_endpoint(service_id)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(400, 'Artifact 服务配置无效或来源未配置') from exc
@@ -744,7 +755,11 @@ async def _artifact_upload_scope(request: Request, session_id: str) -> tuple[str
     return workspace_id or "local", normalized_session, owner_id
 
 
-def _artifact_proxy_error(response) -> HTTPException:
+def _artifact_proxy_error(response, service_id: str) -> HTTPException:
+    from .personal_artifacts import personal_entries
+    if service_id in personal_entries():
+        # Don't proxy provider diagnostics that may contain personal credentials.
+        return HTTPException(response.status_code, '个人文件服务拒绝请求或文件不可用')
     try:
         detail = response.json().get("detail")
     except Exception:
@@ -763,7 +778,7 @@ async def upload_artifact(
     import httpx
 
     workspace_id, normalized_session, owner_id = await _artifact_upload_scope(request, session_id)
-    selected, base_url, headers = _artifact_proxy_endpoint(service_id)
+    selected, base_url, headers = _artifact_proxy_endpoint(service_id, request)
     timeout = float(os.environ.get("TMCP_ARTIFACT_PROXY_TIMEOUT_SECONDS", "900") or 900)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
@@ -773,7 +788,7 @@ async def upload_artifact(
             headers=headers,
         )
     if response.is_error:
-        raise _artifact_proxy_error(response)
+        raise _artifact_proxy_error(response, selected)
     result = _artifact_proxy_result(response, selected)
     result["session_id"] = normalized_session or None
     return result
@@ -787,7 +802,7 @@ async def create_artifact_bundle(request: Request, payload: dict[str, Any]):
     workspace_id, normalized_session, owner_id = await _artifact_upload_scope(
         request, str(payload.get("session_id") or "")
     )
-    selected, base_url, headers = _artifact_proxy_endpoint(str(payload.get('service_id') or ''))
+    selected, base_url, headers = _artifact_proxy_endpoint(str(payload.get('service_id') or ''), request)
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             f"{base_url}/api/v1/bundles",
@@ -795,7 +810,7 @@ async def create_artifact_bundle(request: Request, payload: dict[str, Any]):
             headers=headers,
         )
     if response.is_error:
-        raise _artifact_proxy_error(response)
+        raise _artifact_proxy_error(response, selected)
     result = _artifact_proxy_result(response, selected)
     result["session_id"] = normalized_session or None
     return result
@@ -815,7 +830,7 @@ async def upload_artifact_bundle_file(
     workspace_id, _normalized_session, owner_id = await _artifact_upload_scope(
         request, session_id
     )
-    selected, base_url, headers = _artifact_proxy_endpoint(service_id)
+    selected, base_url, headers = _artifact_proxy_endpoint(service_id, request)
     timeout = float(os.environ.get("TMCP_ARTIFACT_PROXY_TIMEOUT_SECONDS", "900") or 900)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.put(
@@ -829,7 +844,7 @@ async def upload_artifact_bundle_file(
             headers=headers,
         )
     if response.is_error:
-        raise _artifact_proxy_error(response)
+        raise _artifact_proxy_error(response, selected)
     return _artifact_proxy_result(response, selected)
 
 
@@ -842,7 +857,7 @@ async def complete_artifact_bundle(
     workspace_id, _normalized_session, owner_id = await _artifact_upload_scope(
         request, str(payload.get("session_id") or "")
     )
-    selected, base_url, headers = _artifact_proxy_endpoint(str(payload.get('service_id') or ''))
+    selected, base_url, headers = _artifact_proxy_endpoint(str(payload.get('service_id') or ''), request)
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             f"{base_url}/api/v1/bundles/{bundle_id}/complete",
@@ -854,5 +869,5 @@ async def complete_artifact_bundle(
             headers=headers,
         )
     if response.is_error:
-        raise _artifact_proxy_error(response)
+        raise _artifact_proxy_error(response, selected)
     return _artifact_proxy_result(response, selected)

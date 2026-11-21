@@ -37,6 +37,12 @@ def recover_task_artifacts(*, control, task, bundle_id, service_id=''):
             if parts[:3] != prefix or run_id not in parts[3:] or ".." in parts:
                 raise ValueError("产物包的文件归属与当前任务不符，不能关联。")
 
+    if not service_id:
+        from ..mcp.custom_targets import owner_alias
+        target = owner_alias(task.get('tool_server') or (task.get('submit_input') or {}).get('target_server') or '', control, workspace)
+        if not target:
+            raise ValueError('请指定产物来源服务后再取回文件')
+        service_id, _, _ = artifact_transport._artifact_endpoint(target_server=target)
     selected, service, headers = artifact_transport._artifact_endpoint(service_id)
     metadata = artifact_transport._request_json(f"{service}/api/v1/bundles/{bundle_id}",
                                                **({'headers': headers} if selected else {}))

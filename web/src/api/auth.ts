@@ -3,6 +3,8 @@
 const API_BASE = '';
 
 export interface AuthUser {
+  desktop_default?: boolean;
+  password_mode?: 'setup' | 'change';
   user_id: string;
   tenant_id: string;
   email: string;
@@ -140,6 +142,36 @@ export async function getDesktopAccounts(): Promise<DesktopAccounts> {
   return response.json();
 }
 
+export async function registerDesktopAccount(email: string, password: string): Promise<void> {
+  const response = await fetch('/api/auth/desktop-accounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!response.ok) {
+    const { detail } = await response.json().catch(() => ({}));
+    if (detail === 'User id or email already exists') throw new Error('这个邮箱已注册，请返回登录');
+    throw new Error(typeof detail === 'string' ? detail : '注册失败，请重试');
+  }
+}
+
+export async function changeAccountPassword(currentPassword: string, newPassword: string): Promise<void> {
+  const response = await fetch('/api/auth/password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (!response.ok) {
+    const { detail } = await response.json().catch(() => ({}));
+    throw new Error(typeof detail === 'string' ? detail : '保存密码失败，请重试');
+  }
+}
+
+export async function enterLocalWorkspace(): Promise<void> {
+  const response = await fetch('/api/auth/local-workspace', { method: 'POST' });
+  if (!response.ok) throw new Error('无法进入本机工作区，请重试');
+}
+
 export async function login(email: string, password: string): Promise<AuthUser> {
   const resp = await fetch(`${API_BASE}/api/auth/login`, {
     method: 'POST',
@@ -155,7 +187,8 @@ export async function login(email: string, password: string): Promise<AuthUser> 
 }
 
 export async function logout(): Promise<void> {
-  await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' });
+  const response = await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' });
+  if (!response.ok) throw new Error('退出失败，请重试');
 }
 
 export async function getCurrentUser(): Promise<AuthUser | null> {

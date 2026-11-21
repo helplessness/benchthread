@@ -90,7 +90,7 @@ from .issue_records import (
     _same_resolved_workdir,
 )
 from .agent_selection import normalize_primary_agent_name
-from .auth import CurrentUserContext, auth_required, current_user_from_websocket
+from .auth import CurrentUserContext, auth_required, authorize_socket_command
 from .chat_event_presenter import (
     send_frontend_tool_events as _send_frontend_tool_events,
 )
@@ -212,15 +212,8 @@ async def websocket_chat(websocket: WebSocket):
         failures are serialized to the socket and do not escape the endpoint.
     """
 
-    if auth_required():
-        user = current_user_from_websocket(websocket)
-        if user is None:
-            await websocket.close(code=4401)
-            return
-        if user.tenant_status != "active":
-            await websocket.close(code=4423)
-            return
-        websocket.state.current_user = user
+    if not await authorize_socket_command(websocket):
+        return
     await websocket.accept()
 
     session_id = None
@@ -285,6 +278,9 @@ async def websocket_chat(websocket: WebSocket):
                     transport.closed = True
                     break
                 raise
+            if not await authorize_socket_command(websocket):
+                transport.closed = True
+                break
             try:
                 data = validate_chat_frame(data)
             except ChatInputLimitError as exc:

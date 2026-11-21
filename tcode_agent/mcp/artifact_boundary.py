@@ -245,6 +245,19 @@ async def upload_file_as_artifact(
     return {"kind": "artifact", "artifact_id": artifact_id, **({'service_id': selected} if selected else {})}
 
 
+def _reference_services(value):
+    if isinstance(value, list):
+        for item in value:
+            yield from _reference_services(item)
+    elif isinstance(value, dict):
+        if ((value.get('kind') == 'artifact' and value.get('artifact_id'))
+                or (value.get('kind') in ('artifact_bundle', 'bundle') and value.get('bundle_id'))):
+            yield value.get('service_id', '')
+        else:
+            for item in value.values():
+                yield from _reference_services(item)
+
+
 async def prepare_mcp_artifact_arguments(
     server_name: str,
     tool_name: str,
@@ -263,11 +276,20 @@ async def prepare_mcp_artifact_arguments(
         return {**prepared, CONTEXT: values}, uploads
 
     target_server = _nested_target_server(arguments) if server_name == 'job-protocol-mcp' else server_name
+    from ..artifact_transport import _artifact_endpoint
+    from .custom_targets import configured_alias, pinned_target, validate_read_bindings, open_authorized_input, verify_authorized_directory
+    artifact_target = target_server
+    if target_server.startswith('plugin-'):
+        from ..artifact_services import _mapping
+        if target_server not in _mapping('TMCP_ARTIFACT_TARGET_SERVICES'):
+            artifact_target = configured_alias(target_server, context)
+    if artifact_target:
+        for source in _reference_services(arguments):
+            _artifact_endpoint(source, target_server=artifact_target)
     if not target_server.startswith('plugin-') and not requires_lazy_artifact_transport(server_name, tool_name, arguments):
         return arguments, []
 
     workspace_id = _context_workspace_id(context)
-    from .custom_targets import pinned_target, validate_read_bindings, open_authorized_input, verify_authorized_directory
     custom = pinned_target(context, target_server)
     read_bindings = {}
     try:
@@ -369,6 +391,7 @@ async def prepare_mcp_artifact_arguments(
             cache_key = resolved.resolve(strict=True).as_posix()
         artifact_ref = uploaded_by_path.get(cache_key)
         if artifact_ref is None:
+            service_id, _, _ = _artifact_endpoint(target_server=artifact_target)
             if context is not None:
                 await context.report_progress(
                     {
@@ -383,8 +406,6 @@ async def prepare_mcp_artifact_arguments(
                 options['_open_file'] = lambda item: open_authorized_input(grant, item)
                 if directory:
                     options['_check_directory'] = lambda: verify_authorized_directory(grant)
-            from ..artifact_transport import _artifact_endpoint
-            service_id, _, _ = _artifact_endpoint(target_server=target_server)
             if service_id:
                 options['service_id'] = service_id
             artifact_ref = (await _upload_directory(resolved, workspace_id, **options) if directory
