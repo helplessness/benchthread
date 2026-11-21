@@ -608,7 +608,11 @@ export default function App(props: AppProps) {
       let user: AuthUser | null = null;
       try {
         user = await getCurrentUser();
-        if (isDesktop) setDesktopAccounts(await getDesktopAccounts());
+        if (isDesktop) {
+          void getDesktopAccounts().then(setDesktopAccounts).catch(error => {
+            console.warn('无法读取最近账号列表：', error);
+          });
+        }
         if (user) {
           if (sessionStore.bindIdentityScope(`${user.user_id}:${user.tenant_id}`)) {
             resetSessionRequestCache();

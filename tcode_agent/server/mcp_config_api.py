@@ -244,8 +244,13 @@ async def test_mcp_service(name: str, request: Request):
     transport = entry.get("transport", "streamable-http")
     if transport not in {"streamable-http", "sse"} or not entry.get("url"):
         raise HTTPException(400, "该服务未配置可测试的 HTTP 或 SSE 地址")
-    from fastmcp import Client
-    from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+    try:
+        from fastmcp import Client
+        from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+    except ModuleNotFoundError as exc:
+        if exc.name != "fastmcp":
+            raise
+        raise HTTPException(503, "当前后端未安装 fastmcp，未执行连接测试。请在服务端安装可选依赖 fastmcp 后重试。") from None
     try:
         headers = MCPManager._resolve_header_environment(entry.get("headers") or {})
         protocol = SSETransport if transport == "sse" else StreamableHttpTransport
