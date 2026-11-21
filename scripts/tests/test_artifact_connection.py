@@ -13,6 +13,7 @@ from tcode_agent.server import artifact_services_api as api
     ("restricted", 200, "connected"),
     ("local_trusted", 200, "reachable"),
     ("restricted", 401, "failed"),
+    ("restricted", 403, "failed"),
 ])
 def test_artifact_health_never_exposes_credentials(monkeypatch, mode, status, expected):
     url = "https://artifact.example.org"
@@ -25,7 +26,8 @@ def test_artifact_health_never_exposes_credentials(monkeypatch, mode, status, ex
         role="admin", tenant_id=api.workdirs.default_tenant_id()))
     remote = MagicMock()
     remote.__aenter__.return_value = remote
-    remote.get = AsyncMock(return_value=httpx.Response(status, json={"status": "ok", "mode": mode}))
+    headers = {"X-Artifact-Error": "shared_reader_required"} if status == 403 else {}
+    remote.get = AsyncMock(return_value=httpx.Response(status, headers=headers, json={"status": "ok", "mode": mode}))
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: remote)
     app = FastAPI()
     app.include_router(api.router)
@@ -36,5 +38,7 @@ def test_artifact_health_never_exposes_credentials(monkeypatch, mode, status, ex
     remote.get.assert_not_called()
     response = client.post(path, json=payload)
     assert response.json()["state"] == expected
+    if status == 403:
+        assert response.json()["reason"] == "没有共享目录读取权限"
     assert "secret-value" not in response.text
     remote.get.assert_awaited_once_with(url + "/health", headers={"X-Artifact-Token": "secret-value"})

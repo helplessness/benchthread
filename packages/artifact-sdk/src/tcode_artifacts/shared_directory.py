@@ -71,8 +71,12 @@ def shared_directory_app(data_dir, service_id, source, readers, max_file_bytes, 
             except (OSError, ValueError):
                 return JSONResponse({'detail': 'Reader list unavailable'}, 503,
                                     headers={'Cache-Control': 'no-store'})
-        if not tokens.owner(token, readers=allowed):
+        identity = tokens.identity(token)
+        if not identity:
             return JSONResponse({'detail': 'Authorized reader required'}, 401)
+        if identity[1] not in allowed:
+            return JSONResponse({'detail': 'Shared directory read permission required'}, 403,
+                                headers={'X-Artifact-Error': 'shared_reader_required', 'Cache-Control': 'no-store'})
         if request.method != 'GET':
             return JSONResponse({'detail': 'Read-only share'}, 405)
         response = await call_next(request)

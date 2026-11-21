@@ -85,10 +85,13 @@ class PersonalTokens:
                 raise ValueError('unknown operation')
             return token if action != 'revoke' else None
 
-    def owner(self, token, *, readers=None):
+    def identity(self, token):
         if not token or len(token) > 512:
             return None
         with closing(sqlite3.connect(self.db)) as db:
-            row = db.execute('SELECT owner,name FROM users WHERE digest=?',
-                             (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-            return row[0] if row and (readers is None or row[1] in readers) else None
+            return db.execute('SELECT owner,name FROM users WHERE digest=?',
+                              (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+
+    def owner(self, token, *, readers=None):
+        row = self.identity(token)
+        return row[0] if row and (readers is None or row[1] in readers) else None

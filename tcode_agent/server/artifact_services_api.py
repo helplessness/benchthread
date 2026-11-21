@@ -13,7 +13,7 @@ import httpx
 from pydantic import Field
 
 from ..tools.builtin.artifact_import import (
-    ArtifactBrowseParameters, ArtifactBrowseTool, ArtifactImportParameters, ArtifactImportTool,
+    ArtifactBrowseParameters, ArtifactBrowseTool, ArtifactImportParameters, ArtifactImportTool, shared_reader_error,
 )
 from .auth import require_current_user
 from .desktop_config import artifact_configuration
@@ -145,7 +145,7 @@ async def test_service(request: Request):
         async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
             response = await client.get(f'{url}/health', headers=headers)
         if response.status_code in (401, 403):
-            return result('failed', '认证失败，请检查服务凭据与访问权限。')
+            return result('failed', shared_reader_error(response) or '认证失败，请检查服务凭据与访问权限。')
         if response.status_code != 200:
             return result('failed', f'健康接口返回 HTTP {response.status_code}，请检查服务地址和状态。')
         health = response.json()

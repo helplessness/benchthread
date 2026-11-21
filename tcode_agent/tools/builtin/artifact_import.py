@@ -97,6 +97,12 @@ def _service_candidates(name, owner, access_variable="TCODE_ARTIFACT_IMPORT_ACCE
     return exact or {key: label for key, label in allowed.items() if query in label.casefold()}
 
 
+def shared_reader_error(response):
+    if response.status_code == 403 and response.headers.get("X-Artifact-Error") == "shared_reader_required":
+        return "没有共享目录读取权限"
+    return None
+
+
 def _valid_path(path):
     return (not any(part in {"", ".", ".."} for part in path.split("/"))
             and path.isprintable() and not any(char in path for char in '\\:*?"<>|'))
@@ -238,7 +244,7 @@ class ArtifactImportTool(_ArtifactFileTool):
             else:
                 await asyncio.to_thread(publish_file, root, relative, data)
         except httpx.HTTPStatusError as exc:
-            error = {401: "文件服务认证失败", 403: "文件服务拒绝访问",
+            error = shared_reader_error(exc.response) or {401: "文件服务认证失败", 403: "文件服务拒绝访问",
                      404: "找不到该路径，或服务尚未支持按路径查询",
                      409: "有多个同路径文件，请提供包含文件包 ID 的完整路径"}.get(
                          exc.response.status_code, "文件服务返回错误")
@@ -333,7 +339,7 @@ class ArtifactBrowseTool(ArtifactImportTool):
                 items.append(item)
             label = _service_candidates("", owner, service_id=key).get(key, "文件服务")
         except httpx.HTTPStatusError as exc:
-            error = {401: "文件服务认证失败", 403: "文件服务拒绝访问",
+            error = shared_reader_error(exc.response) or {401: "文件服务认证失败", 403: "文件服务拒绝访问",
                      404: "文件服务尚未支持目录浏览或目录不可用"}.get(exc.response.status_code, "文件服务返回错误")
             return ToolResult(title=title, output="", error=error)
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
@@ -449,7 +455,7 @@ class ArtifactUploadTool(_ArtifactFileTool):
                         or receipt.get("sha256") != hashlib.sha256(data).hexdigest()):
                     raise ValueError
         except httpx.HTTPStatusError as exc:
-            error = {401: "文件服务认证失败", 403: "文件服务拒绝写入", 404: "服务尚未支持按路径上传",
+            error = shared_reader_error(exc.response) or {401: "文件服务认证失败", 403: "文件服务拒绝写入", 404: "服务尚未支持按路径上传",
                      405: "服务尚未支持按路径上传",
                      409: "远端目标路径已存在，请指定其他路径"}.get(
                          exc.response.status_code, "文件服务未确认写入，请核对远端路径")

@@ -63,6 +63,9 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
     def client(**kwargs):
         async def route(request):
             calls.append((request.url.host, request.url.path))
+            if isinstance(fault, tuple):
+                status, headers = fault
+                return httpx.Response(status, headers=headers)
             if fault == "connect":
                 raise httpx.ConnectError("fixture is offline", request=request)
             if fault == "checksum" and request.url.path.endswith("/content"):
@@ -121,6 +124,15 @@ def test_artifact_import_uses_authorized_service_and_workspace(tmp_path, monkeyp
         assert (await browse.execute({"directory": "results"}, context)).error
         assert not calls
         context.extra["__permission_ask__"] = permission
+        for fault, expected in (
+                ((403, {"X-Artifact-Error": "shared_reader_required"}), "没有共享目录读取权限"),
+                ((403, {}), "文件服务拒绝访问"),
+                ((403, {"X-Artifact-Error": "another_error"}), "文件服务拒绝访问"),
+                ((401, {"X-Artifact-Error": "shared_reader_required"}), "文件服务认证失败"),
+                ((503, {"X-Artifact-Error": "shared_reader_required"}), "文件服务返回错误")):
+            assert (await browse.execute({}, context)).error == expected
+            assert (await tool.execute({"path": "results/a.csv"}, context)).error == expected
+        fault = None
         root_page = json.loads((await browse.execute({}, context)).output)
         assert root_page["entries"] == [{"kind": "directory", "path": "results", "display_path": "results/"}]
         assert not (await tool.execute({"path": "results/a.csv"}, context)).error

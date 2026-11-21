@@ -23,14 +23,14 @@ def test_live_reader_list_controls_existing_references(tmp_path):
     acl.write_bytes(b'alice\r\n')
     ref = get('alice', 'api/v1/files').json()['entries'][0]['artifact_id']
     content = 'api/v1/artifacts/' + ref + '/content'
-    assert get('bob', content).status_code == 401
+    assert get('bob', content).status_code == 403
     replacement = tmp_path / 'new-list'
     replacement.write_text('bob\n')
     replacement.replace(acl)
-    assert get('alice', content).status_code == 401
+    assert get('alice', content).status_code == 403
     assert get('bob', content).content == b'hello'
     acl.write_bytes(b'')
-    assert get('bob', content).status_code == 401
+    assert get('bob', content).status_code == 403
     assert get('fixed', content).content == b'hello'
     for invalid in (b'fixed\n\xff', b' alice', b'x' * (1024**2 + 1)):
         acl.write_bytes(invalid)
@@ -78,9 +78,11 @@ def test_shared_directory_permissions_and_references(tmp_path):
     assert share.get(private_url, headers=alice).status_code == 404
     assert personal.get(ref+'/content', headers=alice).status_code == 404
     assert personal.get(private_url, headers=eve).status_code == 404
-    for headers in ({}, eve):
+    for headers, status in (({}, 401), ({'X-Artifact-Token':'invalid'}, 401), (eve, 403)):
         for url in ('/health', endpoint, endpoint+'/by-path?path=results/report.csv', ref, ref+'/content'):
-            assert share.get(url, headers=headers).status_code == 401
+            denial = share.get(url, headers=headers)
+            assert denial.status_code == status
+            assert denial.headers.get('X-Artifact-Error') == ('shared_reader_required' if status == 403 else None)
     for bad in ('outside/.auth/users.sqlite3', 'accidental-private-store/private-note',
                 'not-public.db', '../state', '.hidden', 'pipe'):
         assert share.get(endpoint+'/by-path', params={'path': bad}, headers=alice).status_code == 404
