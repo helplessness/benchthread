@@ -4,10 +4,10 @@ import { localJobResultRoot } from '../utils/jobResultLocation';
 import {
   cancelRuntimeJob,
   createJobPreviewTicket,
-  getJobTimeline,
-  getJobWorkspace,
+  getLegacyJobDetails,
   getRuntimeJob,
   getRuntimeJobEvents,
+  isBuiltInJob,
   recoverJobArtifacts,
   resumeJob,
   retryJob,
@@ -100,6 +100,22 @@ function relativePathFromRoot(path: string, root: string) {
   return normalizedPath;
 }
 
+export function selectJobTimeline(
+  workspace: JobWorkspace, jobId: string, runtime: JobTimelineEntry[], legacy: JobTimelineEntry[],
+) {
+  const tracker = Array.isArray(workspace.timeline) ? workspace.timeline : [];
+  if (runtime.length) {
+    // The tracker can already know the task finished while the runtime
+    // projection is still collecting the result.
+    const terminal = tracker.find(entry => ['completed', 'failed', 'cancelled', 'terminated'].includes(entry.kind || ''));
+    if (terminal && isBuiltInJob(jobId, workspace) && !runtime.some(entry => entry.kind === terminal.kind)) {
+      return tracker;
+    }
+    return runtime;
+  }
+  return legacy.length ? legacy : tracker;
+}
+
 function resolveWorkspaceJobId(workspace?: JobWorkspace | null) {
   if (!workspace) return '';
   return String(
@@ -118,6 +134,7 @@ export default function JobWorkspacePanel(props: JobWorkspacePanelProps) {
   const [runtimeJobError, setRuntimeJobError] = createSignal('');
   const [runtimeCancelLoading, setRuntimeCancelLoading] = createSignal(false);
   const [loadingWorkspace, setLoadingWorkspace] = createSignal(false);
+  const [workspaceError, setWorkspaceError] = createSignal('');
   const [openingPreview, setOpeningPreview] = createSignal(false);
   const [actionLoading, setActionLoading] = createSignal<'retry' | 'resubmit' | 'resume' | 'copy' | ''>('');
   const [actionError, setActionError] = createSignal('');
@@ -235,18 +252,16 @@ export default function JobWorkspacePanel(props: JobWorkspacePanelProps) {
   });
 
   const timelineEntries = createMemo<JobTimelineEntry[]>(() => {
+    const builtIn = isBuiltInJob(effectiveJobId(), effectiveWorkspace());
     const canonical = runtimeEvents().map((event) => ({
-      kind: event.phase || event.status,
+      kind: builtIn ? event.status || event.phase : event.phase || event.status,
       at: event.created_at ? new Date(event.created_at * 1000).toISOString() : undefined,
       title: `${event.status || 'unknown'} · Cursor ${event.cursor}`,
       source: runtimeJob()?.provider || 'task-runtime',
       details: event.phase || '',
       metadata: event.metadata,
     }));
-    if (canonical.length > 0) return canonical;
-    if (timeline().length > 0) return timeline();
-    const fromWorkspace = effectiveWorkspace().timeline;
-    return Array.isArray(fromWorkspace) ? fromWorkspace : [];
+    return selectJobTimeline(effectiveWorkspace(), effectiveJobId(), canonical, timeline());
   });
 
   const supportsResume = createMemo(() => {
@@ -398,16 +413,9 @@ export default function JobWorkspacePanel(props: JobWorkspacePanelProps) {
   };
 
   const refreshWorkspace = async (jobId: string) => {
-    const [workspaceData, timelineData] = await Promise.all([
-      getJobWorkspace(jobId),
-      getJobTimeline(jobId),
-    ]);
-    setHydratedWorkspace({
-      ...(workspaceData.workspace || {}),
-      lifecycle_status: timelineData.lifecycle_status || workspaceData.workspace?.lifecycle_status,
-      timeline: Array.isArray(timelineData.timeline) ? timelineData.timeline : workspaceData.workspace?.timeline,
-    });
-    setTimeline(Array.isArray(timelineData.timeline) ? timelineData.timeline : []);
+    const details = await getLegacyJobDetails(jobId, effectiveWorkspace());
+    setHydratedWorkspace(details);
+    setTimeline(details?.timeline || []);
   };
 
   const openPreview = async (requestedPort?: number) => {
@@ -502,6 +510,7 @@ export default function JobWorkspacePanel(props: JobWorkspacePanelProps) {
     const workspace = props.workspace || null;
     // Do not let hydration of the previous snapshot mask a new tracker state.
     setHydratedWorkspace(null);
+    setWorkspaceError('');
     if (!workspace) {
       setHydratedWorkspace(null);
       setTimeline([]);
@@ -518,21 +527,18 @@ export default function JobWorkspacePanel(props: JobWorkspacePanelProps) {
 
     let cancelled = false;
     setLoadingWorkspace(true);
-    void Promise.all([getJobWorkspace(jobId), getJobTimeline(jobId)])
-      .then(([workspaceData, timelineData]) => {
+    void getLegacyJobDetails(jobId, workspace)
+      .then((details) => {
         if (cancelled) return;
-        setHydratedWorkspace({
-          ...(workspaceData.workspace || {}),
-          lifecycle_status: timelineData.lifecycle_status || workspaceData.workspace?.lifecycle_status,
-          timeline: Array.isArray(timelineData.timeline) ? timelineData.timeline : workspaceData.workspace?.timeline,
-        });
-        setTimeline(Array.isArray(timelineData.timeline) ? timelineData.timeline : []);
+        setHydratedWorkspace(details);
+        setTimeline(details?.timeline || []);
         setActionError('');
       })
-      .catch(() => {
+      .catch((error: Error) => {
         if (cancelled) return;
         setHydratedWorkspace(null);
         setTimeline([]);
+        setWorkspaceError(error.message);
       })
       .finally(() => {
         if (!cancelled) setLoadingWorkspace(false);
@@ -770,6 +776,9 @@ export default function JobWorkspacePanel(props: JobWorkspacePanelProps) {
               </div>
             )}
           </Show>
+          <Show when={workspaceError()}>{message => (
+            <div role="alert" class="rounded-2xl border border-[#5a1e23] bg-[#201317] p-3 text-[#ffb6b0]">{message()}</div>
+          )}</Show>
           <Show when={runtimeJobError()}>
             <div class="rounded-2xl border border-[#5a1e23] bg-[#201317] p-3 text-[10px] text-[#ffb6b0] whitespace-pre-wrap break-words">
               统一任务运行时: {runtimeJobError()}

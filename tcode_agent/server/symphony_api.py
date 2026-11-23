@@ -255,10 +255,20 @@ async def list_symphony_local_issues(
         if not isinstance(workspace, dict):
             workspace = _build_issue_workspace_summary(issue_obj)
             issue_obj["workspace"] = workspace
-        job_id = str(workspace.get("job_id", "") or "").strip()
+        job_ref = workspace.get("job_ref")
+        job_ref = job_ref if isinstance(job_ref, dict) else {}
+        job_id = str(workspace.get("job_id") or "").strip()
+        candidate_id = job_id or str(job_ref.get("job_id") or "").strip()
+        broker = job_ref.get("broker")
+        built_in = broker == "tcode-local" or (not broker and candidate_id.startswith("tcode-job-"))
+        if built_in and candidate_id:
+            job_id = workspace["job_id"] = candidate_id
         if job_id:
             workspace["lifecycle_status"] = _normalize_lifecycle_status(workspace, issue_obj)
             issue_obj["timeline"] = _build_job_timeline(job_id, workspace, issue_obj)
+            if built_in:
+                workspace["issue_identifier"] = issue_obj.get("identifier", "")
+                workspace["timeline"] = issue_obj["timeline"]
         else:
             issue_obj["timeline"] = []
         enriched.append(issue_obj)

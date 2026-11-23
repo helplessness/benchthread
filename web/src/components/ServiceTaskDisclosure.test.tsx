@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import ScheduledTasksWorkspace from './ScheduledTasksWorkspace';
 import SettingsWorkspace from './SettingsWorkspace';
 import PluginAsyncTargetsSettings from './PluginAsyncTargetsSettings';
-import JobWorkspacePanel from './JobWorkspacePanel';
+import JobWorkspacePanel, { selectJobTimeline } from './JobWorkspacePanel';
 import { issueStateLabel } from './SymphonyWorkspace';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -45,5 +45,22 @@ describe('list-first services and tasks', () => {
       }} />);
       expect(html.includes('请勿重新提交')).toBe(state === 'retry_wait');
     }
+  });
+  it('renders built-in task timeline from the tracker before runtime events exist', () => {
+    const html = renderToString(() => <JobWorkspacePanel workspace={{
+      workdir: '/workspace/test', job_ref: { job_id: 'tcode-job-fixture' }, lifecycle_status: 'running',
+      timeline: [{ title: '任务已提交' }],
+    }} />);
+    expect(html).toContain('运行中');
+    expect(html).toContain('任务时间线');
+    expect(html).toContain('任务已提交');
+  });
+  it('shows tracker completion when built-in runtime events lag, without changing legacy priority', () => {
+    const workspace = { timeline: [{ kind: 'completed', title: '任务执行完成' }] };
+    const collecting = [{ kind: 'collecting' }];
+    expect(selectJobTimeline(workspace, 'tcode-job-fixture', collecting, [])).toBe(workspace.timeline);
+    expect(selectJobTimeline(workspace, 'external', collecting, [])).toBe(collecting);
+    const completed = [{ kind: 'completed' }];
+    expect(selectJobTimeline(workspace, 'tcode-job-fixture', completed, [])).toBe(completed);
   });
 });
