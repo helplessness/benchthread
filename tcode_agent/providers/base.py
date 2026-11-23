@@ -26,6 +26,8 @@ class ChatMessage:
     reasoning_blocks: Optional[list[dict[str, Any]]] = None
     # Marks a tool result as an error so Anthropic can set ``is_error``.
     is_error: Optional[bool] = None
+    # Internal prompt-assembly flag; providers only receive assembled images.
+    requires_computer_image: bool = False
 
 
 @dataclass

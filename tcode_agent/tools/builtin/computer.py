@@ -147,6 +147,7 @@ class ComputerParameters(ParameterSchema):
         ),
     )
     text: str | None = Field(default=None, max_length=100_000)
+    require_image: bool = Field(default=False, description="Only for observe: request visual evidence when the text controls cannot identify or verify the task target.")
     input_mode: Literal["insert", "replace"] | None = None
     key: str | None = Field(default=None, max_length=64)
     modifiers: list[Literal["cmd", "ctrl", "option", "shift"]] = Field(default_factory=list, max_length=4)
@@ -188,6 +189,8 @@ class ComputerParameters(ParameterSchema):
 
     @model_validator(mode="after")
     def validate_operation_contract(self) -> "ComputerParameters":
+        if self.require_image and self.operation != "observe":
+            raise ValueError("require_image is only valid for observe")
         if self.input_mode is not None and self.operation != "type_text":
             raise ValueError("input_mode is only valid for type_text")
         if self.input_mode == "replace" and (self.element_id or self.x is None or self.y is None or self.delivery_mode != "foreground"):
@@ -257,6 +260,7 @@ class ComputerDiscoverParameters(_ComputerFacadeParameters):
 
 
 class ComputerObserveParameters(_ComputerFacadeParameters):
+    require_image: bool = Field(default=False, description="Only for observe: request visual evidence when the text controls cannot identify or verify the task target.")
     operation: Literal["list_windows", "observe"]
     target_ref: str = Field(
         min_length=39, max_length=64,
@@ -477,7 +481,7 @@ class ComputerTool(Tool):
                     },
                 },
             )
-        payload = parsed.model_dump(exclude_none=True)
+        payload = parsed.model_dump(exclude_none=True, exclude={"require_image"})
         operation = payload.pop("operation")
         progress_binding = bool(
             operation in {"click_element", "open_menu", "select_option", "set_value"}
@@ -569,6 +573,12 @@ class ComputerTool(Tool):
         image = dict(public.pop("model_image", {}) or {})
         image_path = str(public.pop("model_image_path", "") or image.get("path") or "")
         image_forwarded = False
+        if parsed.require_image and not image_path and not error_code:
+            return ToolResult(title="Computer Use 未取得截图",
+                output="本次观察未取得所需截图，无法核实视觉信息；不要猜测坐标或自动重复观察。",
+                error="screenshot_unavailable", metadata={"computer_audit": audit, "model_images": [],
+                    "retryable": False, "terminal_tool_error": True, "should_end_turn": True,
+                    "requires_final_summary": True})
         if image_path:
             workdir = str((context.extra or {}).get("workdir") or os.getcwd())
             ConfigManager.load(workdir)
@@ -579,7 +589,15 @@ class ComputerTool(Tool):
             model_ref = f"{provider_id}/{model_id}" if provider_id and model_id else ""
             vision = configured_model_supports_images(config, model_ref) if model_ref else None
             service_approved = bool(provider_id and public.get("screenshot_service_authorized") == provider_id)
-            if not service_approved or vision is not True:
+            if (vision is not True and operation == "observe" and not parsed.require_image
+                    and public.get("text_observation_available") is True and not error_code):
+                public.pop("coordinate_contract", None)
+                public["_note"] = (
+                    "Only text controls were delivered. Use the current element tokens and values if they "
+                    "identify or verify the requested target. If visual evidence is necessary, observe "
+                    "this window with require_image=true. Do not guess screenshot coordinates."
+                )
+            elif not service_approved or vision is not True:
                 code = "model_vision_unsupported" if vision is False else "model_vision_unconfirmed" if vision is None else "screenshot_authorization_required"
                 guidance = (
                     f"当前模型 {model_ref} 支持图像，但应用任务确认尚未授权当前截图接收服务。截图未发送。请使用桌面电脑控制的任务确认，不要另外发起截图授权问答，也不能说模型没有视觉能力。"
@@ -591,7 +609,7 @@ class ComputerTool(Tool):
                         "model_images": [], "user_action_required": True, "retryable": False,
                         "terminal_tool_error": True, "should_end_turn": True,
                         "requires_final_summary": True})
-            if service_approved:
+            else:
                 model_images.append({
                     "path": image_path, "mime_type": image.get("mime_type", "image/png"),
                     "size": image.get("size"), "sha256": image.get("sha256"),
@@ -603,13 +621,12 @@ class ComputerTool(Tool):
                 })
                 image_forwarded = True
         if operation == "observe":
-            public["image_attached_to_model_input"] = image_forwarded
+            # Required captures are only confirmed after prompt assembly.
+            if not parsed.require_image:
+                public["image_attached_to_model_input"] = image_forwarded
             public["image_size"] = image.get("size") if image else None
             public.pop("ax_state", None)
             public.pop("accessibility_state", None)
-            coverage = str(dict(public.get("progress_evidence") or {}).get("semantic_coverage") or "unknown")
-            if image_path and not image_forwarded and coverage != "complete":
-                error_code = "vision_required"
         recovery = _recovery_metadata(operation, error_code)
         receipt = dict(public.get("action_receipt") or {})
         waiting = bool(not error_code and result.get("status") == "completed_known" and receipt.get("verification") == "pending")
@@ -638,6 +655,7 @@ class ComputerTool(Tool):
                 "computer_verification_pending": waiting,
                 "computer_audit": audit,
                 "model_images": model_images,
+                **({"requires_computer_image": True} if parsed.require_image and image_forwarded and not error_code else {}),
                 "outcome_unknown": result.get("status") == "outcome_unknown",
                 "semantic_readonly": operation in {"capabilities", "list_apps", "list_windows", "observe", "status"},
                 "computer_progress_binding": progress_binding,
@@ -742,7 +760,7 @@ class ComputerObserveTool(_ComputerFacade):
     summary = (
         "List windows for an exact app ref, or observe an exact window ref. First use list_windows, "
         "then copy one returned window ref into observe. An observe result contains actionable element_token "
-        "values and a screenshot; partial or unknown AX coverage is not a reason to keep re-observing. "
+        "values and, when available, a screenshot; partial or unknown AX coverage is not a reason to keep re-observing. "
         "Use an observed token or screenshot for one action, then observe again to verify the change. "
         "Host handles approval beside the tool call and resumes the same call after the user decides. Do not supply permission or approval fields."
     )

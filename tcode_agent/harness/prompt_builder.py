@@ -487,14 +487,22 @@ class AgentPromptBuilder:
                 }
             )
             self.agent._last_untrusted_content_scans = scans[-32:]
+        requires_computer_image = any(
+            is_computer_tool(name) and bool((getattr(call, "metadata", None) or
+                (call.get("metadata") if isinstance(call, dict) else {}) or {}).get("requires_computer_image"))
+            for name, call in zip(tool_names, message.tool_calls or [])
+        )
         images = self._tool_model_images_for_prompt(message)
         if images and self._configured_image_input_support() is not True:
-            if any(is_computer_tool(name) for name in tool_names):
+            if requires_computer_image:
+                images = []
+            elif any(is_computer_tool(name) for name in tool_names):
                 raise ValueError("当前模型未明确声明支持图像，无法接收桌面截图；请选择已配置且获准接收截图的视觉模型。")
-            routing_note = self._tool_image_fallback_note(message)
-            if routing_note:
-                content = f"{content.rstrip()}\n\n{routing_note}".strip()
-            images = []
+            else:
+                routing_note = self._tool_image_fallback_note(message)
+                if routing_note:
+                    content = f"{content.rstrip()}\n\n{routing_note}".strip()
+                images = []
         is_error = None
         for tool_call in list(getattr(message, "tool_calls", []) or []):
             state = getattr(tool_call, "state", None)
@@ -516,7 +524,24 @@ class AgentPromptBuilder:
             tool_call_id=tool_call_id,
             images=images or None,
             is_error=is_error,
+            requires_computer_image=requires_computer_image,
         )
+
+    def _assemble_tool_image_input(
+        self, messages: list[ChatMessage], current_tool_results: list[ChatMessage],
+    ) -> tuple[list[ChatMessage], bool, bool]:
+        # A previous observation need not be re-attached on every later step.
+        required = [(msg, {id(img) for img in msg.images or [] if img.get("source") == "computer_observation"})
+                    for msg in current_tool_results if msg.requires_computer_image]
+        expanded = self._expand_tool_model_images(self._normalize_tool_call_message_chain(messages))
+        delivered = {id(img) for msg in expanded for img in msg.images or []}
+        missing = False
+        for msg, candidates in required:
+            if candidates & delivered:
+                msg.content += "\n桌面截图已装入本次模型输入。"
+            else:
+                missing = True
+        return expanded, bool(required), missing
 
     @staticmethod
     def _expand_tool_model_images(messages: list[ChatMessage]) -> list[ChatMessage]:
@@ -2535,8 +2560,11 @@ class AgentPromptBuilder:
             # of hot-history compression; it does not grant tool permissions.
             messages_for_api.append(ChatMessage(role="user", content=restoration_context))
         goal_anchor_position = len(messages_for_api)
+        current_tool_results: list[ChatMessage] = []
         for msg in context_assembly.messages:
             if msg.role == "user":
+                if not (getattr(msg, "metadata", None) or {}).get("internal"):
+                    current_tool_results.clear()
                 messages_for_api.append(self._user_chat_message_for_prompt(msg))
                 continue
 
@@ -2550,6 +2578,7 @@ class AgentPromptBuilder:
                     and getattr(msg, "process_notes", None)
                 ):
                     continue
+                current_tool_results.clear()
                 formatted_tcs = None
                 if msg.tool_calls:
                     formatted_tcs = []
@@ -2609,16 +2638,15 @@ class AgentPromptBuilder:
                     tool_call_id = (
                         tc.call_id if hasattr(tc, "call_id") else tc.get("id", "")
                     )
-                messages_for_api.append(
-                    self._tool_chat_message_for_prompt(
-                        msg,
-                        tool_call_id=tool_call_id,
-                    )
-                )
+                tool_message = self._tool_chat_message_for_prompt(msg, tool_call_id=tool_call_id)
+                messages_for_api.append(tool_message)
+                current_tool_results.append(tool_message)
 
         messages_for_api[goal_anchor_position:goal_anchor_position] = self._missing_goal_anchor(messages_for_api)
-        messages_for_api = self._normalize_tool_call_message_chain(messages_for_api)
-        messages_for_api = self._expand_tool_model_images(messages_for_api)
+        messages_for_api, required_capture, missing_capture = self._assemble_tool_image_input(messages_for_api, current_tool_results)
+        capture_failure = "未取得所需的桌面截图作为视觉证据，无法核实画面。本次不会自动重试。"
+        if missing_capture:
+            return capture_failure, None, ChatResponse(content=capture_failure)
         self.agent._dump_prompt_payload(messages_for_api=messages_for_api, tools=tools)
 
         llm_tools = tools
@@ -2637,6 +2665,8 @@ class AgentPromptBuilder:
             "checkpoint": context_assembly.checkpoint_context,
         }
         if preflight_chars > max_input_chars:
+            if required_capture:
+                return capture_failure, None, ChatResponse(content=capture_failure)
             if not _preflight_rebuilt:
                 compacted = await self._emergency_compact_agent_messages()
                 if compacted:
@@ -2692,6 +2722,8 @@ class AgentPromptBuilder:
                 else:
                     if not self._is_input_too_large_error(exc):
                         raise
+                    if required_capture:
+                        return capture_failure, None, ChatResponse(content=capture_failure)
 
                     compacted = await self._emergency_compact_agent_messages()
                     if compacted:

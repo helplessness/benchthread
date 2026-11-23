@@ -1654,7 +1654,7 @@ class ComputerBroker {
     if (Number.isInteger(windowId) && windowId > 0) args.window_id = windowId;
     // Let Cua resize and retain its native pixel transform together; never
     // resize only the model attachment while leaving the capture contract intact.
-    if (operation === 'observe') return { ...args, max_dimension: 1024 };
+    if (operation === 'observe') return { ...args, max_dimension: 1024, tree_format: 'elements' };
     if (operation === 'activate_app' && !(Number.isInteger(pid) && pid > 0)) {
       args.bundle_id = String(payload.app?.bundle_id || '');
       delete args.pid;
@@ -2065,6 +2065,14 @@ class ComputerBroker {
       if (Array.isArray(value.elements)) value.elements = targetWindowElements(value.elements);
       value.actionable_element_count = Array.isArray(value.elements) ? value.elements.length : 0;
       value.actionable_elements_available = value.actionable_element_count > 0;
+      // Window chrome alone cannot describe the contents of a custom-drawn app.
+      value.text_observation_available = (value.elements || []).some(item => {
+        if (/^(AXApplication|AXWindow|AXGroup|AXUnknown|AXSplitGroup|AXScrollArea|AXMenuBar|AXMenuBarItem)$/.test(item.role)
+            || /^(AXCloseButton|AXMinimizeButton|AXZoomButton|AXFullScreenButton)$/.test(item.subrole)) return false;
+        return Boolean(item.title || item.label || item.description || item.placeholder ||
+          (item.value != null && String(item.value).length > 0) ||
+          (/^AX(TextField|TextArea|SearchField|ComboBox|CheckBox|Slider)$/.test(item.role) && item.element_token));
+      });
       if (value.capture_id) value.coordinate_contract = {
         coordinate_space: 'normalized', reference_width: value.screenshot_width, reference_height: value.screenshot_height,
         observation_ref: value.observation_ref,

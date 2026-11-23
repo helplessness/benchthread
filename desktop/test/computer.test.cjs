@@ -510,7 +510,7 @@ test('capture is consumed before dispatch and unknown effects are never replayed
 });
 
 test('pointer contract preserves delivered pixels at 1x, Retina, and resized capture scales', async () => {
-  for (const [width, height, scale, hasAX] of [[520, 452, 1, true], [1040, 904, 2, true], [780, 678, 2, true], [1040, 904, 2, false], [1568, 1100, 2, false]]) {
+  for (const [width, height, scale, hasAX, chromeOnly = false] of [[520, 452, 1, true], [1040, 904, 2, true], [780, 678, 2, true], [1040, 904, 2, false], [1568, 1100, 2, false, true]]) {
     const writes = [];
     let capture = 0;
     const bounds = { x: 496, y: 137, width: 520, height: 452 };
@@ -520,11 +520,14 @@ test('pointer contract preserves delivered pixels at 1x, Retina, and resized cap
         if (tool === 'list_windows') return { windows: [{ window_id: 7, bounds }] };
         if (tool === 'get_window_state') {
           assert.equal(args.max_dimension, 1024);
+          assert.equal(args.tree_format, 'elements');
           return {
           capture_id: `capture-${++capture}`, window_bounds: bounds,
           screenshot_width: width, screenshot_height: height, screenshot_scale: scale,
           _image: fakePng(width, height), elements: hasAX ? [{ role: 'AXButton', label: 'Item',
-            frame: { x: 535, y: 326, w: 162, h: 34 }, screenshot_frame: { x: 78, y: 378, w: 324, h: 68 } }] : [],
+            frame: { x: 535, y: 326, w: 162, h: 34 }, screenshot_frame: { x: 78, y: 378, w: 324, h: 68 } }] :
+            chromeOnly ? [{ role: 'AXWindow', title: 'Window' },
+              { role: 'AXButton', subrole: 'AXCloseButton', label: 'Close' }] : [],
           };
         }
         writes.push({ tool, args }); return {};
@@ -533,13 +536,14 @@ test('pointer contract preserves delivered pixels at 1x, Retina, and resized cap
     const request = (operation, args) => ({ ...message(broker, operation, args), request_id: crypto.randomBytes(16).toString('hex') });
     const observe = async () => (await requestAndApprove(broker, request('observe', payload), 'pixels', 'observe')).result;
     const first = await observe();
+    assert.equal(first.text_observation_available, hasAX);
     assert.equal(first.coordinate_contract.reference_width, width);
     assert.equal(first.coordinate_contract.coordinate_space, 'normalized');
     assert.equal(first.coordinate_contract.reference_height, height);
     assert.equal(first.coordinate_contract.observation_ref, first.observation_ref);
     assert.equal(first.window_bounds, undefined);
     assert.equal(first.screenshot_scale, undefined);
-    assert.equal(first.actionable_elements_available, hasAX);
+    assert.equal(first.actionable_elements_available, hasAX || chromeOnly);
     if (hasAX) {
       assert.equal(first.elements[0].frame, undefined);
       assert.ok(first.elements[0].screenshot_frame);
