@@ -18,6 +18,35 @@ import HumanReviewPanel from './HumanReviewPanel';
 import JobWorkspacePanel from './JobWorkspacePanel';
 import WorkflowWorkspacePanel from './WorkflowWorkspacePanel';
 
+export const issueStateLabel = (state?: string, issue?: SymphonyLocalIssue) => {
+  if (issue?.workspace?.recovery?.state === 'remote_outcome_unknown') return '连接中断 · 远端结果未知';
+  if (issue?.workspace?.recovery?.state === 'submission_unknown') return '提交状态待核对';
+  if (issue?.workspace?.transfer_state === 'retry_wait') return '状态待核对';
+  if (issue?.workspace?.transfer_state === 'downloading') return '计算完成 · 正在保存';
+  if (issue?.workspace?.cancellation?.state === 'pending') return '取消待确认 · 自动重试';
+  if (issue?.workspace?.recovery?.state === 'retry_wait' && !['done','completed','closed','failed','cancelled','canceled'].includes(String(state).toLowerCase())) return '状态待核对';
+  const normalized = String(state || '').trim().toLowerCase();
+  if (isDispatchingSubmission(issue)) return '派发中 · 尚未取得远端受理回执';
+  if (hasAcceptedSubmission(issue) && ['todo', 'queued', 'pending', 'open'].includes(normalized)) return '进行中 · 远端排队';
+  const labels: Record<string, string> = {
+    todo: '待处理',
+    done: '已完成',
+    completed: '已完成',
+    closed: '已关闭',
+    'in progress': '进行中',
+    running: '进行中',
+    processing: '处理中',
+    cancelled: '已取消',
+    canceled: '已取消',
+    failed: '失败',
+    queued: '排队中',
+    pending: '待处理',
+    review_pending: '待审核',
+    open: '打开',
+  };
+  return labels[normalized] || state || '?';
+};
+
 const ANNOUNCED_ISSUES_STORAGE_KEY = 'tcode_symphony_announced_issue_keys';
 const ISSUES_POLL_INTERVAL_MS = 8000;
 const ACTIVE_ISSUES_POLL_INTERVAL_MS = 3000;
@@ -342,34 +371,6 @@ export default function SymphonyWorkspace(props: {active?: boolean; jobsOnly?: b
     if (normalized === 'todo' || normalized === 'queued' || normalized === 'pending' || normalized === 'review_pending') return 'bg-[#f1a02b]/18 text-[#ffe1b3]';
     if (normalized === 'cancelled' || normalized === 'canceled' || normalized === 'failed') return 'bg-[#da3633] text-white';
     return 'bg-[#30363d] text-[#c9d1d9]';
-  };
-  const issueStateLabel = (state?: string, issue?: SymphonyLocalIssue) => {
-    if (issue?.workspace?.recovery?.state === 'remote_outcome_unknown') return '连接中断 · 远端结果未知';
-    if (issue?.workspace?.recovery?.state === 'submission_unknown') return '提交状态待核对';
-    if (issue?.workspace?.transfer_state === 'retry_wait') return '计算完成 · 保存待重试';
-    if (issue?.workspace?.transfer_state === 'downloading') return '计算完成 · 正在保存';
-    if (issue?.workspace?.cancellation?.state === 'pending') return '取消待确认 · 自动重试';
-    if (issue?.workspace?.recovery?.state === 'retry_wait' && !['done','completed','closed','failed','cancelled','canceled'].includes(String(state).toLowerCase())) return '连接中断 · 正在核对';
-    const normalized = String(state || '').trim().toLowerCase();
-    if (isDispatchingSubmission(issue)) return '派发中 · 尚未取得远端受理回执';
-    if (hasAcceptedSubmission(issue) && ['todo', 'queued', 'pending', 'open'].includes(normalized)) return '进行中 · 远端排队';
-    const labels: Record<string, string> = {
-      todo: '待处理',
-      done: '已完成',
-      completed: '已完成',
-      closed: '已关闭',
-      'in progress': '进行中',
-      running: '进行中',
-      processing: '处理中',
-      cancelled: '已取消',
-      canceled: '已取消',
-      failed: '失败',
-      queued: '排队中',
-      pending: '待处理',
-      review_pending: '待审核',
-      open: '打开',
-    };
-    return labels[normalized] || state || '?';
   };
 
   const issueKanbanStatus = (issue: SymphonyLocalIssue): IssueKanbanStatus => {

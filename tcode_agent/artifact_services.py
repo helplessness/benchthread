@@ -9,6 +9,10 @@ from urllib.parse import urlsplit
 _SERVICE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
+class ArtifactBindingError(ValueError):
+    """The target MCP needs an explicit, matching shared store."""
+
+
 def _mapping(name: str) -> dict:
     raw = os.environ.get(name, "").strip()
     try:
@@ -33,9 +37,9 @@ def artifact_service(service_id: str = "", *, target_server: str = "",
         raise ValueError('Artifact target route must be a service ID')
     if target_server:
         if not routed or target_server == "*":
-            raise ValueError(f'请在「设置 → Artifact 文件服务」为 MCP {target_server} 绑定文件服务后再传输文件')
+            raise ArtifactBindingError(f'请在「设置 → Artifact 文件服务」为 MCP {target_server} 绑定文件服务后再传输文件')
         if service_id and service_id != routed:
-            raise ValueError(f'MCP {target_server} 的文件来源与绑定服务不一致')
+            raise ArtifactBindingError(f'MCP {target_server} 的文件来源与绑定服务不一致')
     selected = routed or service_id or default_id
     if not isinstance(selected, str) or (selected and not _SERVICE_ID.fullmatch(selected)):
         raise ValueError("Artifact service_id is invalid")
@@ -47,7 +51,7 @@ def artifact_service(service_id: str = "", *, target_server: str = "",
             raise ValueError(f"Artifact service '{selected}' must be an object")
         if entry.get('auth_mode') == 'personal-tokens':
             if target_server:
-                raise ValueError(f'请为 MCP {target_server} 绑定共享 Artifact 服务')
+                raise ArtifactBindingError(f'请为 MCP {target_server} 绑定共享 Artifact 服务')
             raise ValueError('个人文件服务仅能使用当前登录账号绑定的凭据')
         url = entry.get("url", "")
         token_name = entry.get("token_env", "")

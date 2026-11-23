@@ -8,12 +8,37 @@ import json
 import os
 from pathlib import Path
 import time
+from urllib.error import HTTPError, URLError
+
+import httpx
+
+from ..artifact_services import ArtifactBindingError
 
 from .shared_tracker import SharedTracker
 from .remote_cancel import call_job_tool, cancel_remote_job, job_payload
 from .workspace_registry import registry_workspace
 
 TERMINAL = {"completed", "failed", "cancelled", "duplicate"}
+
+
+def _retry_message(status, exc):
+    prefix = "计算已完成，结果尚未取回，请勿重新提交。" if status == "completed" else ""
+    network_error = False
+    while exc is not None:
+        if isinstance(exc, ArtifactBindingError):
+            return prefix + "请在「设置 → 文件服务」将该 MCP 绑定到任务原来的共享文件服务；修正后后台会继续核对。"
+        if (isinstance(exc, PermissionError)
+                or isinstance(exc, URLError) and isinstance(exc.reason, PermissionError)
+                or isinstance(exc, HTTPError) and exc.code in (401, 403)
+                or isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (401, 403)):
+            return prefix + "访问被拒绝，请检查当前账号的访问权限、服务凭据及本机权限。"
+        network_error |= isinstance(exc, (ConnectionError, TimeoutError, httpx.NetworkError, httpx.TimeoutException)) or (
+            isinstance(exc, URLError) and not isinstance(exc, HTTPError)
+        )
+        exc = exc.__cause__
+    if network_error:
+        return prefix + "远程服务暂时无法连接，后台会自动重试。"
+    return prefix + "连接或结果保存未完成，后台将继续核对；不会重新提交计算。"
 
 
 def _failure_detail(value, depth=0):
@@ -222,7 +247,7 @@ async def reconcile_task(task_id: str, workdir: str) -> None:
         # Preserve the short lease: after restart it expires without losing intent.
         interrupted = True
         raise
-    except Exception:
+    except Exception as exc:
         attempt = min(int(recovery.get("attempt") or 1), 6)
         # User cancellation remains pending, but should not wait another full
         # minute to be picked up when a previously offline broker comes back.
@@ -232,7 +257,7 @@ async def reconcile_task(task_id: str, workdir: str) -> None:
         elif not job_ref.get("job_id"):
             recovery.update(submission_unknown(now))
         else:
-            recovery.update(state="retry_wait", error="连接或结果保存未完成，后台将继续核对；不会重新提交计算。", next_retry_at=time.time() + min(max_retry_delay, 2 ** attempt))
+            recovery.update(state="retry_wait", error=_retry_message(status, exc), next_retry_at=time.time() + min(max_retry_delay, 2 ** attempt))
         if status in {"completed", "failed"}:
             patch["transfer_state"] = "retry_wait"
     finally:

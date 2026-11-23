@@ -4,6 +4,7 @@ import ScheduledTasksWorkspace from './ScheduledTasksWorkspace';
 import SettingsWorkspace from './SettingsWorkspace';
 import PluginAsyncTargetsSettings from './PluginAsyncTargetsSettings';
 import JobWorkspacePanel from './JobWorkspacePanel';
+import { issueStateLabel } from './SymphonyWorkspace';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -33,5 +34,16 @@ describe('list-first services and tasks', () => {
     const html = renderToString(() => <JobWorkspacePanel workspace={{ workdir: '/workspace/test', tool: 'test', status: 'completed' } as any} />);
     expect(html).toContain('查看结果文件');
     expect(html.indexOf('查看结果文件')).toBeLessThan(html.indexOf('提交时间'));
+  });
+  it('shows the recovery hint only while awaiting retry', () => {
+    for (const workspace of [{ recovery: { state: 'retry_wait', error: '访问被拒绝' } }, { transfer_state: 'retry_wait' }]) {
+      expect(issueStateLabel('running', { workspace } as any)).toBe('状态待核对');
+    }
+    for (const state of ['retry_wait', 'observed']) {
+      const html = renderToString(() => <JobWorkspacePanel workspace={{
+        workdir: '/workspace/test', recovery: { state, error: '请勿重新提交' },
+      }} />);
+      expect(html.includes('请勿重新提交')).toBe(state === 'retry_wait');
+    }
   });
 });

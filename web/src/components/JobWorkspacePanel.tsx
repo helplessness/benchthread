@@ -708,6 +708,9 @@ export default function JobWorkspacePanel(props: JobWorkspacePanelProps) {
             <Show when={recoveryAllowed()}><button type="button" class={panelButtonClass} onClick={() => setRecoveryOpen(!recoveryOpen())} aria-expanded={recoveryOpen()}>取回已有产物</button></Show>
           </div>
 
+          <Show when={effectiveWorkspace().recovery?.state === 'retry_wait' && effectiveWorkspace().recovery?.error}>
+            {message => <p role="status" class="text-sm">{message()}</p>}
+          </Show>
           <Show when={recoveryOpen()}>
             <div class="space-y-2 rounded-xl border border-current/20 p-3" aria-busy={recovering()}>
               <p class="text-sm">仅下载并校验已生成的文件，不重新运行计算；保留原任务的超时或失败记录。产物包必须带有当前任务与运行的归属信息。</p>

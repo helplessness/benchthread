@@ -198,6 +198,11 @@ async def test_service(request: Request):
         return result('failed', '健康接口没有返回有效 JSON。')
     if not isinstance(health, dict) or health.get('status') != 'ok':
         return result('failed', '健康接口未返回预期的 Artifact 服务状态。')
+    reported = health.get('service_id')
+    if reported is None or reported == '':
+        return result('reachable', '服务可达，但未返回服务 ID，身份未验证。')
+    if reported != service_id:
+        return result('failed', '服务返回的 ID 与配置不一致，请核对文件服务地址和服务 ID。')
     if health.get('mode') == 'restricted' and headers.get('X-Artifact-Token'):
         return result('connected', '服务可达，认证通过。未测试文件传输或 MCP 绑定。')
     return result('reachable', '健康检查通过，但未验证凭据、文件传输或 MCP 绑定。')

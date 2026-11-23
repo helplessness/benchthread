@@ -45,8 +45,45 @@ def test_pending_cancel_backoff_stays_bounded_after_long_outage(monkeypatch, tmp
     asyncio.run(remote_recovery.reconcile_task("task", wd))
     row = SharedTracker.get_task(task_id="task", workdir=wd)
     assert row["status"] == "running"
+    assert "暂时无法连接" in row["workspace"]["recovery"]["error"]
+    assert "计算已完成" not in row["workspace"]["recovery"]["error"]
     assert row["workspace"]["cancellation"]["state"] == "pending"
     assert 0 < row["workspace"]["recovery"]["next_retry_at"] - time.time() <= 10
+
+
+def test_completed_recovery_explains_binding_then_offline_without_recollect(monkeypatch, tmp_path):
+    from urllib.error import HTTPError, URLError
+    from tcode_agent import artifact_transport
+
+    wd = str(tmp_path)
+    monkeypatch.setenv("TCODE_WORKDIR", wd)
+    monkeypatch.setenv("TMCP_ARTIFACT_TARGET_SERVICES", "{}")
+    monkeypatch.setenv("TMCP_ARTIFACT_SERVICES", '{"lab":{"url":"https://lab.invalid"}}')
+    ref = {"job_id": "original", "process_id": "owned"}
+    SharedTracker.upsert_issue({"id": "echo", "identifier": "LOCAL-echo", "state": "In Progress",
+        "tool_server": "echo-mcp", "workspace": {"job_ref": ref, "tenant_id": "tenant",
+        "user_id": "alice", "workspace_id": "work"}}, workdir=wd)
+    result = {**ref, "status": "completed", "output_bundle": {"bundle_id": "bundle_fixture", "service_id": "lab"}}
+    query = AsyncMock(return_value=result)
+    monkeypatch.setattr(remote_recovery, "call_job_tool", query)
+    failures = iter([URLError("private-test-address"), URLError(PermissionError("private-test-address")),
+                     HTTPError("private-test-address", 401, "denied", {}, None),
+                     HTTPError("private-test-address", 403, "denied", {}, None)])
+    def offline(*args, **kwargs):
+        raise next(failures)
+    monkeypatch.setattr(artifact_transport, "urlopen", offline)
+    for reason in ("绑定", "暂时无法连接", "访问被拒绝", "访问被拒绝", "访问被拒绝"):
+        asyncio.run(remote_recovery.reconcile_task("echo", wd))
+        task = SharedTracker.get_task(task_id="echo", workdir=wd)
+        state = task["workspace"]["recovery"]
+        assert task["status"] == "completed" and state["state"] == "retry_wait"
+        assert reason in state["error"] and "计算已完成" in state["error"] and "请勿重新提交" in state["error"]
+        assert "private-test-address" not in state["error"]
+        if reason == "访问被拒绝":
+            assert "暂时无法连接" not in state["error"]
+        monkeypatch.setenv("TMCP_ARTIFACT_TARGET_SERVICES", '{"echo-mcp":"lab"}')
+        SharedTracker.patch_task(task_id="echo", workspace_patch={"recovery": {**state, "next_retry_at": 0}}, workdir=wd)
+    assert [call.args[1] for call in query.await_args_list] == ["get_job_status", "collect_job_result"]
 
 
 def test_local_lost_receipt_remains_unresolved_after_restart(monkeypatch, tmp_path):
