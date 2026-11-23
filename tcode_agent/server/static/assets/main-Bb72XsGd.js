@@ -1,1 +1,0 @@
-import"./modulepreload-polyfill-B5Qt9EMX.js";import{e,aR as t,aE as a,aS as n,aT as p}from"./paper-theme-DwZBNhka.js";import"./vite-runtime-ckwbz45p.js";function s(r){return e(t,a(r,{surface:"web"}))}function u(){return e(n,{surface:"web",Shell:s})}const o=document.getElementById("root");o&&p(()=>e(u,{}),o);
