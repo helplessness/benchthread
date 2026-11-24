@@ -23,12 +23,9 @@ export const studioPages = [
   { id: 'settings', label: '设置', group: '设置', mark: '设' },
 ] as const;
 export type StudioPage = typeof studioPages[number]['id'];
-export type StudioSurface = 'web' | 'desktop';
 // Contextual pages remain deep-linkable and open as task tabs, but do not occupy fixed navigation.
 const contextualPageIds: StudioPage[] = ['console', 'sidechat', 'team', 'protein-runs'];
 export const studioNavigationPages = studioPages.filter(page => !contextualPageIds.includes(page.id));
-export const isPageAvailableOnSurface = (page: StudioPage, _surface: StudioSurface) => isStudioPage(page);
-export const studioNavigationPagesForSurface = (surface: StudioSurface) => studioNavigationPages.filter(page => isPageAvailableOnSurface(page.id, surface));
 export const isCollaborationPage = (page: StudioPage) => ['subagents', 'team', 'sidechat'].includes(page);
 export const isStudioPage = (value: string): value is StudioPage => studioPages.some(page => page.id === value);
 export const studioPageFromHash = (hash: string): StudioPage => {

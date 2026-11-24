@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 import { Portal } from 'solid-js/web';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 
 export type LightboxImageSource = {
   src: string;
@@ -46,6 +46,7 @@ export const usesSingleTapImagePreview = () => (
 );
 
 export default function ImageLightbox(props: ImageLightboxProps) {
+  const desktop = useClientPlatform().surface === 'desktop';
   const [scale, setScale] = createSignal(1);
   const [offsetX, setOffsetX] = createSignal(0);
   const [offsetY, setOffsetY] = createSignal(0);

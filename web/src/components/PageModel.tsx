@@ -1,3 +1,4 @@
+import { useClientPlatform } from '../clientPlatform';
 import { For, Show, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import type { ModelParameter, ModelSection, VectorNode } from '../api/intelligentPage';
 import type { CanvasStyle } from '../api/canvas';
@@ -23,6 +24,7 @@ export function waitForGifResource<T>(resource: Promise<T>, signal: AbortSignal)
 }
 
 export default function PageModel(props: { section: ModelSection; active?: boolean; style?: CanvasStyle; trees?: Array<VectorNode | null>; onValues: (values: Record<string, number> | null) => void }) {
+  const { onDownloadResult } = useClientPlatform();
   let element!: HTMLDivElement;
   const [values, setValues] = createSignal(modelDefaults(props.section));
   const [error, setError] = createSignal('');
@@ -56,7 +58,7 @@ export default function PageModel(props: { section: ModelSection; active?: boole
       controller.signal.throwIfAborted();
       if (disposed) return;
       setExportNotice('GIF编码完成，请在系统窗口选择保存位置。');
-      const saved=await saveGif(blob,section.title);
+      const saved=await saveGif(blob,section.title,onDownloadResult);
       controller.signal.throwIfAborted();
       if (!disposed) setExportNotice(saved==='saved'?'GIF已保存；包含完整时间轴及说明摘要，不修改页面版本。':saved==='cancelled'?'已取消保存GIF，可重新导出。':'GIF已交给浏览器下载，请检查下载结果；不修改页面版本。');
     } catch (reason) {

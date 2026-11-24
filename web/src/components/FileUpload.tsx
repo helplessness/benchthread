@@ -1,6 +1,6 @@
 import { createSignal, Show, For, onMount, onCleanup } from 'solid-js';
 import FeedbackDialog from './FeedbackDialog';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 import { installUploadFeedback } from '../utils/uploadFeedback';
 import { sessionStore } from '../stores/session';
 import { composerIdentity } from '../stores/composer';
@@ -27,6 +27,7 @@ interface FileUploadProps {
 }
 
 export default function FileUpload(props: FileUploadProps) {
+  const { artifactConfigUrl } = useClientPlatform();
   const [dragOver, setDragOver] = createSignal(false);
   const [uploading, setUploading] = createSignal(false);
   const [failures, setFailures] = createSignal<Array<{ file: File; error: string }>>([]);
@@ -85,7 +86,7 @@ export default function FileUpload(props: FileUploadProps) {
           if (folderFiles.some(file => file.size > 100 * 1024 * 1024)) throw new Error('单文件不能超过 100MB');
           const firstRelative = String((folderFiles[0] as any).webkitRelativePath || '').trim();
           const folderName = firstRelative.split('/')[0] || 'folder';
-          const config = await fetch(desktop ? '/api/desktop/services/config' : '/api/artifact-services/config');
+          const config = await fetch(artifactConfigUrl);
           if (!config.ok) throw new Error('无法读取文件服务设置');
           const settings = await config.json();
           let uploadService = settings.artifact_default_service_id || '';

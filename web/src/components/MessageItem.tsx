@@ -21,7 +21,7 @@ import {
 } from '../api/client';
 import { sessionStore } from '../stores/session';
 import type { Message, ProcessNote, ToolCall } from '../stores/session';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 import { formatResponseTime } from '../utils/responseTime';
 import { getToolTextDisplayStats } from '../utils/toolTextDisplay';
 import { skillDisplayName, toolDisplayLabel } from '../utils/userFacingLabels';
@@ -1178,6 +1178,8 @@ export function ToolCallItem(props: {
 }
 
 function MessageItem(props: MessageItemProps) {
+  const platform = useClientPlatform();
+  const desktop = platform.surface === 'desktop';
   const [recoveredReport, setRecoveredReport] = createSignal('');
   const [fullReportOpen, setFullReportOpen] = createSignal(false);
   const [copied, setCopied] = createSignal(false);
@@ -1276,8 +1278,8 @@ function MessageItem(props: MessageItemProps) {
     if (!content) return;
     setForkError('');
     try {
-      if (desktop?.copyText) {
-        await desktop.copyText(content);
+      if (platform.copyText) {
+        await platform.copyText(content);
       } else {
         let copied = false;
         if (navigator.clipboard?.writeText) {
@@ -1829,7 +1831,7 @@ function MessageItem(props: MessageItemProps) {
                                 fallback={<MarkdownContent
                                 content={desktop && props.message.role === 'user' ? String(displayContent() || '').replace(
                                   /^(### File: [^\n]+\n)Path: (@roots\/[^\n]+)/gm,
-                                  (_, heading, path) => heading + '项目文件：' + displayWorkspacePath(path),
+                                  (_, heading, path) => heading + '项目文件：' + displayWorkspacePath(path, desktop),
                                 ) : String(displayContent() || '')}
                                 role={props.message.role}
                                 renderKey={String(props.message.id || 'message')}

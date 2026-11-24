@@ -1,6 +1,6 @@
 import { confirmAction } from '../components/FeedbackDialog';
 import { For, Show, createSignal, onMount, onCleanup } from 'solid-js';
-import type { BrowserCommand, BrowserState } from '../desktop';
+import type { BrowserCommand, BrowserState } from './bridge';
 import './browser.css';
 
 export default function BrowserToolbar(props: { state: BrowserState; command: (command: BrowserCommand) => Promise<void> }) {

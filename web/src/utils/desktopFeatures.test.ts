@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import { desktopNotificationLedger } from './desktopNotifications';
-import { planFolderImport } from './folderImport';
+import { desktopNotificationLedger } from '../desktop-app/notifications';
+import { planFolderImport, previewFolderImport } from './folderImport';
 
 it('persists banner dedupe across reloads and isolates accounts', () => {
   const values = new Map<string,string>();
@@ -23,4 +23,13 @@ it('plans a bounded folder snapshot preserving paths and skipping hidden data', 
   expect(()=>planFolderImport([file('project/../outside')])).toThrow();
   expect(()=>planFolderImport([file('project/large',101*1024**2)])).toThrow();
   expect(()=>planFolderImport(Array.from({length:201},(_,i)=>file(`project/${i}`)))).toThrow();
+});
+
+it('replaces a valid folder preview on rejection and clears it on an empty selection', () => {
+  const file = {webkitRelativePath: 'project/input.txt', size: 10};
+  expect(previewFolderImport([file])).toEqual({plan: {files: [file], skipped: 0, bytes: 10}, errors: []});
+  expect(previewFolderImport([{...file, size: 101 * 1024 ** 2}])).toEqual({
+    plan: undefined, errors: ['project/input.txt 超过单文件 100 MB 限制'],
+  });
+  expect(previewFolderImport([])).toEqual({plan: undefined, errors: []});
 });

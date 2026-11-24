@@ -3,13 +3,6 @@
 .studio-inspector-toggle-wrap{position:relative}
 .studio-topbar .studio-inspector-toggle{display:grid;place-items:center;width:36px;height:36px;padding:0;border:0;border-radius:12px;background:var(--tcode-surface-hover,#eee);color:var(--tcode-text-muted)}
 .studio-inspector-toggle>span{display:grid;place-items:center;min-width:18px;height:18px;border:1.5px solid currentColor;border-radius:4px;font-size:11px;line-height:1}
-.settings-dialog-open #studio-browser-host{display:none!important}
-.tcode-settings-window{width:min(1080px,92vw);height:min(820px,88vh);max-width:none;max-height:none;margin:auto;padding:0;border:1px solid var(--tcode-border);border-radius:18px;background:var(--tcode-surface,#fff);color:var(--tcode-text);box-shadow:0 24px 80px #0003}
-.tcode-settings-window::backdrop{background:#0005}
-.tcode-settings-window[open]{display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}
-.tcode-settings-window>header{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--tcode-border)}
-.tcode-settings-window>header>button{font-size:24px;padding:0 8px}
-.tcode-settings-window>div{min-height:0;overflow:hidden}
 .studio-context[data-collaboration=true]{display:flex;flex-direction:column;overflow:hidden}
 .studio-context[data-collaboration=true]>div{padding:0;flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column}
 .companion-tabs{display:flex;align-items:stretch;gap:5px;padding:6px 8px 3px;border-bottom:1px solid var(--tcode-border);flex-shrink:0;position:relative;z-index:3}

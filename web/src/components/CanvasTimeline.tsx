@@ -1,3 +1,4 @@
+import { useClientPlatform } from '../clientPlatform';
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import type { CanvasAnimation, CanvasPart, CanvasStyle } from '../api/canvas';
 import { createPlayback } from '../utils/pageAnimation';
@@ -13,6 +14,7 @@ export default function CanvasTimeline(props: {
   onCancelled?: () => void;
   capture?: (animation:CanvasAnimation) => Promise<{render: (progress:number,signal:AbortSignal)=>Promise<Uint8ClampedArray>;dispose:()=>void}>;
 }) {
+  const { onDownloadResult } = useClientPlatform();
   let element!: HTMLDivElement;
   const definition = props.part.animation || { duration_seconds: 6, mode: 'roundtrip' as const };
   const [progress, setProgress] = createSignal(0), [playing, setPlaying] = createSignal(false);
@@ -71,7 +73,7 @@ export default function CanvasTimeline(props: {
       abort.signal.throwIfAborted(); if (disposed) return;
       capture?.dispose(); capture=undefined;
       setNotice('GIF编码完成，请在系统窗口选择保存位置。');
-      const saved=await saveGif(blob,title);
+      const saved=await saveGif(blob,title,onDownloadResult);
       abort.signal.throwIfAborted();
       if (!disposed) setNotice(saved==='saved'?'GIF已保存；包含完整时间轴，不增加内容版本。':saved==='cancelled'?'已取消保存GIF，可重新导出。':'GIF已交给浏览器下载，请检查下载结果；不增加内容版本。');
     } catch (error) {

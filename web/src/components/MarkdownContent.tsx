@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 import { isLiteralSmilesLink } from '../utils/smilesMarkdown';
 import { marked } from 'marked';
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
@@ -181,7 +181,7 @@ const highlightAssistantCallouts = (content: string) => {
     .join('\n');
 };
 
-const buildMarkdownRenderer = (workspaceId: string, role: MarkdownRole) => {
+const buildMarkdownRenderer = (workspaceId: string, role: MarkdownRole, managedPaths: boolean) => {
   const renderer = new marked.Renderer();
   const displayLocalPath = (path: string) => path.startsWith('/') ? path : `/workspace/${path}`;
 
@@ -190,7 +190,7 @@ const buildMarkdownRenderer = (workspaceId: string, role: MarkdownRole) => {
     const internalLabel = role !== 'user' ? internalEvidenceTokenLabel(raw) : undefined;
     if (internalLabel) return `<code>${escapeHtml(internalLabel)}</code>`;
     if (!isLocalFileRef(raw)) return `<code>${escapeHtml(String(text || ''))}</code>`;
-    const localPath = normalizeInlineFilePath(raw);
+    const localPath = normalizeInlineFilePath(raw, managedPaths);
     return `<code class="markdown-local-file" role="button" tabindex="0" data-local-path="${escapeHtml(localPath)}" title="${escapeHtml(displayLocalPath(localPath))}">${escapeHtml(String(text || ''))}</code>`;
   };
 
@@ -201,8 +201,8 @@ const buildMarkdownRenderer = (workspaceId: string, role: MarkdownRole) => {
     const body = this.parser.parseInline(tokens);
     if (!rawTarget) return body;
 
-    const localPath = isLocalFileRef(rawTarget) ? normalizeInlineFilePath(rawTarget) : '';
-    const safeHref = escapeHtml(toInlineHref(rawTarget, workspaceId));
+    const localPath = isLocalFileRef(rawTarget) ? normalizeInlineFilePath(rawTarget, managedPaths) : '';
+    const safeHref = escapeHtml(toInlineHref(rawTarget, workspaceId, managedPaths));
     const titleAttr = (title || localPath) ? ` title="${escapeHtml(title || displayLocalPath(localPath))}"` : '';
     const pathAttr = localPath ? ` data-local-path="${escapeHtml(localPath)}"` : '';
     const externalAttr = localPath ? '' : ' target="_blank" rel="noreferrer"';
@@ -217,8 +217,8 @@ const buildMarkdownRenderer = (workspaceId: string, role: MarkdownRole) => {
     const rawTarget = String(href || '').trim();
     if (!rawTarget) return '';
 
-    const localPath = isLocalFileRef(rawTarget) ? normalizeInlineFilePath(rawTarget) : '';
-    const src = escapeHtml(toInlineHref(rawTarget, workspaceId));
+    const localPath = isLocalFileRef(rawTarget) ? normalizeInlineFilePath(rawTarget, managedPaths) : '';
+    const src = escapeHtml(toInlineHref(rawTarget, workspaceId, managedPaths));
     const safeAlt = escapeHtml(String(text || '图表证据'));
     const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
     const pathAttr = localPath ? ` data-local-path="${escapeHtml(localPath)}"` : '';
@@ -514,13 +514,13 @@ const enhanceRenderedContent = async (
   await renderMermaidBlocks(mermaidBlocks, renderKey, isCurrentRun);
 };
 
-const renderMarkdown = (content: string, role: MarkdownRole, workspaceId: string) => {
+const renderMarkdown = (content: string, role: MarkdownRole, workspaceId: string, managedPaths: boolean) => {
   const imageCompatibleContent = autoEmbedStandaloneImagePaths(content);
   const source = role === 'assistant' ? highlightAssistantCallouts(imageCompatibleContent) : imageCompatibleContent;
   const html = marked.parse(source, {
     gfm: true,
     breaks: true,
-    renderer: buildMarkdownRenderer(workspaceId, role),
+    renderer: buildMarkdownRenderer(workspaceId, role, managedPaths),
   });
 
   return DOMPurify.sanitize(String(html || ''), {
@@ -566,6 +566,7 @@ const graphEdgeStroke = (type: unknown) =>
   String(type || '').toLowerCase() === 'contradicts' ? '#f85149' : '#56616a';
 
 export default function MarkdownContent(props: MarkdownContentProps) {
+  const { FileLocationActions, resolveFileLocation, surface } = useClientPlatform();
   let contentRef: HTMLDivElement | undefined;
   let enhancementVersion = 0;
   const [evidenceModal, setEvidenceModal] = createSignal<EvidenceModalState>({
@@ -674,7 +675,7 @@ export default function MarkdownContent(props: MarkdownContentProps) {
     const raw = String(props.content || '');
     if (!raw) return '';
     try {
-      const html = renderMarkdown(raw, role(), workspaceId());
+      const html = renderMarkdown(raw, role(), workspaceId(), surface === 'desktop');
       const output = html || escapeHtml(raw).replace(/\n/g, '<br>');
       if (role() !== 'assistant' && role() !== 'tool') return output;
       const container = document.createElement('div');
@@ -708,10 +709,10 @@ export default function MarkdownContent(props: MarkdownContentProps) {
   };
 
   const resolveFullFilePath = (localPath: string) => {
-    if (!desktop?.resolveFile || !workspaceId()) return Promise.resolve(localPath);
+    if (!resolveFileLocation || !workspaceId()) return Promise.resolve(localPath);
     const cached = resolvedFilePaths.get(localPath);
     if (cached) return cached;
-    const pending = desktop.resolveFile(workspaceId(), localPath)
+    const pending = resolveFileLocation(workspaceId(), localPath)
       .then((result) => String(result.path || localPath))
       .catch(() => localPath);
     resolvedFilePaths.set(localPath, pending);
@@ -830,12 +831,11 @@ export default function MarkdownContent(props: MarkdownContentProps) {
                 onPointerDown={(event) => event.stopPropagation()}
               >
                 <button onClick={() => { setLocalFileMenu(null); sessionStore.requestFilePreview(menu.path); }}>预览文件</button>
-                <Show when={desktop?.revealFile}>
-                  <button onClick={() => { setLocalFileMenu(null); void desktop?.revealFile(workspaceId(), menu.path); }}>在 Finder 中显示</button>
-                </Show>
-                <Show when={desktop?.copyFilePath}>
-                  <button onClick={() => { setLocalFileMenu(null); void desktop?.copyFilePath(workspaceId(), menu.path); }}>复制完整路径</button>
-                </Show>
+                {FileLocationActions && <FileLocationActions workspaceId={workspaceId()} path={menu.path} menu copyPath
+                  onAction={action => {
+                    setLocalFileMenu(null);
+                    void action().catch(error => console.error('File location action failed:', error));
+                  }}/>}
                 <button onClick={() => { setLocalFileMenu(null); void navigator.clipboard.writeText(fileNameFromPath(menu.path)); }}>复制文件名</button>
               </div>
             </div>

@@ -1,7 +1,7 @@
+import { useClientPlatform } from './clientPlatform';
 import {hypothesisMapLink,type HypothesisFocus} from './api/hypothesisMap';
-import { enterLocalWorkspace, getDesktopAccounts, registerDesktopAccount, type DesktopAccounts } from './api/auth';
+import { AppLoading, LazyPanelFallback, WorkspaceInitError } from './components/WorkspaceLoading';
 import { displayWorkspacePath } from './utils/filePreview';
-import AccountMenu from './components/AccountMenu';
 import { confirmAction, showFeedback } from './components/FeedbackDialog';
 import { researchChangesLink, type ResearchChangeFocus } from './api/researchChanges';
 import { listResearchProjects } from './api/research';
@@ -21,12 +21,12 @@ import {
   type Component,
   type JSX,
 } from 'solid-js';
-import type { StudioShellProps } from './components/StudioShell';
+import type { StudioShellProps } from './components/studioControls';
 import PluginWorkspacePanel, {type PanelDescriptor} from './components/PluginWorkspacePanel';
 import RunDirectory from './components/RunDirectory';
 import { presentChatTurns } from './utils/chatPresentation';
-import { isCollaborationPage, isPageAvailableOnSurface, studioPageFromHash, studioPages, type StudioPage } from './utils/studioLayout';
-import { isSideChatView, parseCompanionState, restoreSideChatTabs, type CompanionView } from './utils/companionState';
+import { isCollaborationPage, studioPageFromHash, studioPages, type StudioPage } from './utils/studioLayout';
+import { isSideChatView, parseCompanionState, restoreSideChatTabs, settingsOnlyCompanionState, type CompanionView } from './utils/companionState';
 import type { CollaborationTab } from './components/CollaborationPanel';
 import { composerDrafts, composerKey } from './stores/composer';
 import { readSideChatSelection, saveSideChatSelection, sideChatDraftKey } from './utils/sideChat';
@@ -35,16 +35,15 @@ import { mergeWithLocalSyntheticMessages } from './utils/messageSnapshots';
 import type { StructureRequest } from './components/StructureWorkspace';
 import { sessionStore, toVisibleAgentName } from './stores/session';
 import type { SearchHit } from './api/globalSearch';
-import { bootstrapSession, getCurrentUser, getHumanReviewQueue, getSession, getSessions, getSymphonyLocalIssues, getTeamCatalog, listScheduledNotifications, listWorkflowRuns, login as loginApi, logout as logoutApi, resetSessionRequestCache, type AuthUser, type HumanReviewItem, type KanbanCard, type MCPServerStatus, type SymphonyLocalIssue, type WorkflowRun } from './api/client';
+import { bootstrapSession, getHumanReviewQueue, getSession, getSessions, getSymphonyLocalIssues, getTeamCatalog, listScheduledNotifications, listWorkflowRuns, type AuthUser, type HumanReviewItem, type KanbanCard, type MCPServerStatus, type SymphonyLocalIssue, type WorkflowRun } from './api/client';
 import { getTeamCatalogEntryByAgentName, hydrateTeamCatalog, isFixedTeamBootstrapAgent, usesFixedScheduler } from './utils/teamRegistry';
 import { dismissDetailsOnOutsideClick } from './utils/dismissDetails';
 import { installButtonFeedback } from './utils/buttonFeedback';
-import TabIndicator from './components/TabIndicator';
 import TaskLifecycleStrip from './components/TaskLifecycleStrip';
 import type { ResearchSessionTab } from './components/ResearchSessionPanel';
 import { loadResearchNavigation, researchModuleVisible } from './utils/researchNavigation';
 import { bindSessionToResearch } from './api/client';
-import type { SettingsSection } from './components/SettingsWorkspace';
+import { availableSettingsSections, type SettingsSection } from './utils/settingsSections';
 import { CITATION_OPEN_EVENT, type CitationOpenDetail, type CitationRef } from './utils/citations';
 import { askSideQuestion, deleteSession, getSideChats, type SubagentItem } from './api/client';
 
@@ -68,38 +67,13 @@ const PaperWikiWorkspace = lazy(() => import('./components/PaperWikiWorkspace'))
 const ResearchWorkspace = lazy(() => import('./components/ResearchWorkspace'));
 const ResourceLibraryWorkspace = lazy(() => import('./components/ResourceLibraryWorkspace'));
 const PaperLibraryPreviewPanel = lazy(() => import('./components/PaperLibraryPreviewPanel'));
-const DesktopAccountActions = lazy(() => import('./desktop-app/DesktopAccountActions'));
-const TenantManagementPanel = lazy(() => import('./components/TenantManagementPanel'));
 const ProteinRunsWorkspace = lazy(() => import('./components/ProteinRunsWorkspace'));
 const HumanReviewPanel = lazy(() => import('./components/HumanReviewPanel'));
 const WorkflowWorkspacePanel = lazy(() => import('./components/WorkflowWorkspacePanel'));
 const StructureWorkspace = lazy(() => import('./components/StructureWorkspace'));
 const FilePreviewPanel = lazy(() => import('./components/FilePreviewPanel'));
-const SettingsWorkspace = lazy(() => import('./components/SettingsWorkspace'));
 const OntologyWorkspace = lazy(() => import('./components/OntologyWorkspace'));
 const EvidencePanel = lazy(() => import('./components/EvidencePanel'));
-
-const LazyPanelFallback = (props: { label?: string }) => (
-  <div
-    class="tcode-panel-skeleton"
-    role="status"
-  >
-    <div class="tcode-skeleton-layout" aria-hidden="true"><span/><span/><span/><span/></div>
-    <p>{props.label || '正在加载工作区...'}</p>
-  </div>
-);
-
-const AppLoading = (props: { label: string }) => (
-  <div class="workspace-skeleton" role="status" aria-live="polite" aria-busy="true">
-    <p class="workspace-skeleton-status">{props.label}</p>
-    <div class="workspace-skeleton-top" aria-hidden="true"><i/><i/></div>
-    <div class="workspace-skeleton-layout" aria-hidden="true">
-      <div class="workspace-skeleton-rail"><For each={[1,2,3,4,5]}>{()=><i/>}</For></div>
-      <div class="workspace-skeleton-sidebar"><i/><i/><For each={[1,2,3,4]}>{()=><div><i/><i/></div>}</For></div>
-      <div class="workspace-skeleton-main"><i/><div class="workspace-skeleton-messages"><i/><div><i/><i/><i/><i/></div><i/><div><i/><i/><i/></div></div><div class="workspace-skeleton-composer"><i/><i/></div></div>
-    </div>
-  </div>
-);
 
 function WorkspaceSlot(props: { active: boolean; children: JSX.Element; scroll?: boolean }) {
   const [visited, setVisited] = createSignal(false);
@@ -110,32 +84,34 @@ function WorkspaceSlot(props: { active: boolean; children: JSX.Element; scroll?:
 type SchedulerMode = 'supervisor' | 'chain' | 'swarm' | 'auto_swarm_builder';
 
 type AppProps = {
-  surface: 'web' | 'desktop';
-  Shell: Component<Omit<StudioShellProps, 'surface'>>;
+  Shell: Component<StudioShellProps>;
+  user: AuthUser;
+  accountMenu: JSX.Element;
+  openSettings?: (section?: SettingsSection) => void;
+  SettingsTab?: Component<{workspaceId?: string; section: SettingsSection; onSectionChange: (section: SettingsSection) => void}>;
+  SettingsWindow?: Component<{workspaceId?: string}>;
 };
 
 export default function App(props: AppProps) {
-  const isDesktop = props.surface === 'desktop';
+  const { surface, connectBrowserTabs } = useClientPlatform();
+  const isDesktop = surface === 'desktop';
   onMount(() => onCleanup(installButtonFeedback()));
   const StudioShell = props.Shell;
+  const { SettingsTab, SettingsWindow } = props;
+  const [settingsSection, setSettingsSection] = createSignal<SettingsSection>('general', {equals: false});
   let sessionInfoDetails!: HTMLDetailsElement;
   onMount(() => onCleanup(dismissDetailsOnOutsideClick(() => sessionInfoDetails)));
-  const [mainSection, setMainSection] = createSignal<StudioPage>(studioPageFromHash(window.location.hash));
+  const initialPage = studioPageFromHash(window.location.hash);
+  let startupSettingsPage = SettingsTab && (initialPage === 'mcp' || initialPage === 'settings') ? initialPage : undefined;
+  const [mainSection, setMainSection] = createSignal<StudioPage>(startupSettingsPage ? 'console' : initialPage);
   const [researchSessionTab, setResearchSessionTab] = createSignal<'task' | ResearchSessionTab>('task');
   const [showHistoryModal, setShowHistoryModal] = createSignal(false);
   const [showCommandPalette, setShowCommandPalette] = createSignal(false);
   const [showSkillLibrary, setShowSkillLibrary] = createSignal(false);
-  const [settingsSection, setSettingsSection] = createSignal<SettingsSection>('general');
-  const [showSettingsWindow, setShowSettingsWindow] = createSignal(false);
-  createEffect(()=>document.body.classList.toggle('settings-dialog-open',showSettingsWindow()));
-  onCleanup(()=>document.body.classList.remove('settings-dialog-open'));
   const [sideChats, setSideChats] = createSignal<SubagentItem[]>([]);
   const [creatingSideChat, setCreatingSideChat] = createSignal(false);
   const [closingSideChats, setClosingSideChats] = createSignal<string[]>([]);
   const [sideChatError, setSideChatError] = createSignal('');
-  const [showCompanionMenu, setShowCompanionMenu] = createSignal(false);
-  let companionMenuElement: HTMLDivElement | undefined;
-  let companionTabList: HTMLElement | undefined;
   let sideChatSyncGeneration = 0;
   const [activeDiscussionSessionId, setActiveDiscussionSessionId] = createSignal('');
   const [collaborationTab, setCollaborationTab] = createSignal<CollaborationTab>('tasks');
@@ -158,7 +134,7 @@ export default function App(props: AppProps) {
   };
   const companionLabel = (view: CompanionView) => {
     if (view.startsWith('plugin:')) return pluginPanels().find(item => panelView(item) === view)?.title || '插件面板';
-    if (view.startsWith('browser:')) return browserTitles()[view.slice(8)] || '浏览器';
+    if (view.startsWith('browser:')) return browserTabs?.label(view.slice(8)) || '浏览器';
     if (view === 'collaboration') return '协作';
     if (isSideChatView(view)) {
       const item = sideChats().find(item=>item.session_id===view.slice(9));
@@ -178,7 +154,6 @@ export default function App(props: AppProps) {
   const [mergedMainActive,setMergedMainActive]=createSignal(false);
   const [splitRequest,setSplitRequest]=createSignal(0);
   createEffect(on(()=>inspectorRequest(),()=>setMergedMainActive(false),{defer:true}));
-  const [browserTitles, setBrowserTitles] = createSignal<Record<string,string>>({});
   const [companionTabs, setCompanionTabs] = createSignal<CompanionView[]>(['collaboration']);
   const [closedCompanionTabs, setClosedCompanionTabs] = createSignal<CompanionView[]>([]);
   let restoredCompanionScope = '';
@@ -189,7 +164,7 @@ export default function App(props: AppProps) {
     setInspectorRequest(value => value + 1);
   };
   const removeCompanion = (view: CompanionView) => {
-    if (view.startsWith('browser:')) window.dispatchEvent(new CustomEvent('tcode:close-browser', {detail: view.slice(8)}));
+    if (view.startsWith('browser:')) browserTabs?.close(view.slice(8));
     const remaining = companionTabs().filter(item => item !== view);
     setCompanionTabs(remaining);
     if (!isSideChatView(view)) setClosedCompanionTabs(previous => [...previous.filter(item => item !== view), view].slice(-8));
@@ -249,7 +224,7 @@ export default function App(props: AppProps) {
     const owner = identity();
     const agent = sessionStore.currentSession()?.agent_name || 'general';
     if (!parent || creatingSideChat()) return;
-    setCreatingSideChat(true); setShowCompanionMenu(false); setSideChatError('');
+    setCreatingSideChat(true); setSideChatError('');
     try {
       const created = await askSideQuestion(parent, '', agent, {createOnly:true,sourceMessageId});
       if (!created) throw new Error('创建侧聊失败');
@@ -263,42 +238,14 @@ export default function App(props: AppProps) {
       if (parent === sessionStore.currentSessionId()) setSideChatError(error instanceof Error ? error.message : '创建侧聊失败');
     } finally { setCreatingSideChat(false); }
   };
-  onMount(() => {
-    const dismiss = (event: PointerEvent) => {
-      if (!companionMenuElement?.contains(event.target as Node)) setShowCompanionMenu(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || !showCompanionMenu()) return;
-      if (companionMenuElement?.contains(document.activeElement)) {
-        companionMenuElement.querySelector('button')?.focus();
-      }
-      setShowCompanionMenu(false);
-    };
-    document.addEventListener('pointerdown',dismiss); document.addEventListener('keydown',escape);
-    onCleanup(()=>{document.removeEventListener('pointerdown',dismiss);document.removeEventListener('keydown',escape);});
-  });
-  onMount(() => {
-    if (!isDesktop) return;
-    const browserPanel = (event: Event) => {
-      const {open, session} = (event as CustomEvent<{open:boolean;session:string}>).detail;
-      if (!session) return;
+  const browserTabs = connectBrowserTabs?.(
+    () => companionView().startsWith('browser:') ? companionView().slice(8) : '',
+    (session, open) => {
       const view: CompanionView = `browser:${session}`;
       if (open) openCompanion(view);
-      else if (companionTabs().includes(view)) closeCompanion(view);
-    };
-    window.addEventListener('tcode:browser-panel', browserPanel);
-    onCleanup(() => window.removeEventListener('tcode:browser-panel', browserPanel));
-    const title = (event:Event) => {
-      const {session,title} = (event as CustomEvent<{session:string;title:string}>).detail;
-      setBrowserTitles(previous=>previous[session]===title ? previous : {...previous,[session]:title});
-    };
-    window.addEventListener('tcode:browser-title', title);
-    onCleanup(()=>window.removeEventListener('tcode:browser-title', title));
-  });
-  createEffect(() => {
-    const view = companionView();
-    if (isDesktop && view.startsWith('browser:')) window.dispatchEvent(new CustomEvent('tcode:select-browser', {detail:view.slice(8)}));
-  });
+      else if (companionTabs().includes(view)) void closeCompanion(view);
+    },
+  );
   const closeCitation = () => {
     closeCompanion('evidence');
     setCitationRequest(undefined);
@@ -328,26 +275,36 @@ export default function App(props: AppProps) {
   };
   const reopenCompanion = () => {
     const view = lastClosedCompanion();
-    if (view?.startsWith('browser:')) window.dispatchEvent(new CustomEvent('tcode:open-browser'));
+    if (view?.startsWith('browser:')) browserTabs?.reopen();
     else if (view) openCompanion(view);
   };
-  createEffect(() => {
-    const scope = `${identity()}:${currentWorkspaceId()}`;
-    if (!identity() || !currentWorkspaceId() || scope === restoredCompanionScope) return;
-    const saved = parseCompanionState(
-      localStorage.getItem(`tcode-companion-tabs-v1:${scope}`),
-      page => isPageAvailableOnSurface(page, props.surface) && (!isDesktop || (page !== 'settings' && page !== 'mcp')),
-    );
-    const unrelated = restoreSideChatTabs(saved, []);
+  const companionStorageKey = () => {
+    const owner = identity();
+    const workspace = currentWorkspaceId();
+    // Wait for session hydration before treating the Web session as workspace-less.
+    if (!owner || (!workspace && (!SettingsTab || workspaceInitState() !== 'ready'))) return '';
+    return `tcode-companion-tabs-v1:${owner}:${workspace}`;
+  };
+  createEffect(on(companionStorageKey, key => {
+    if (!key || key === restoredCompanionScope) return;
+    const noWorkspace = !currentWorkspaceId();
+    const saved = parseCompanionState(localStorage.getItem(key), page => page !== 'settings' || Boolean(SettingsTab));
+    const unrelated = noWorkspace ? settingsOnlyCompanionState(saved) : restoreSideChatTabs(saved, []);
+    restoredCompanionScope = key;
+    setSettingsSection(unrelated.settingsSection ?? 'general');
     setCompanionTabs(unrelated.tabs); setCompanionView(unrelated.active); setClosedCompanionTabs(unrelated.closed);
-    restoredCompanionScope = scope;
-  });
+  }));
   createEffect(() => {
-    const scope = `${identity()}:${currentWorkspaceId()}`;
+    const key = companionStorageKey();
+    if (!key || key !== restoredCompanionScope) return;
     // Side tabs are restored from their parent-scoped database records, never
     // from this workspace-wide preference (which would leak tabs across chats).
-    const state = restoreSideChatTabs({ tabs: companionTabs(), active: companionView(), closed: closedCompanionTabs() }, []);
-    if (scope === restoredCompanionScope) localStorage.setItem(`tcode-companion-tabs-v1:${scope}`, JSON.stringify(state));
+    const state = {
+      tabs: companionTabs(), active: companionView(), closed: closedCompanionTabs(),
+      settingsSection: SettingsTab ? settingsSection() : undefined,
+    };
+    const stored = currentWorkspaceId() ? restoreSideChatTabs(state, []) : settingsOnlyCompanionState(state);
+    localStorage.setItem(key, JSON.stringify(stored));
   });
   const [workflowAlertRuns, setWorkflowAlertRuns] = createSignal<WorkflowRun[] | null>(null);
   const [reviewAlerts, setReviewAlerts] = createSignal<HumanReviewItem[] | null>(null);
@@ -363,7 +320,7 @@ export default function App(props: AppProps) {
     if (scope !== collaborationSession) {
       collaborationSession = scope;
       sideChatSyncGeneration++;
-      setSideChats([]); setSideChatError(''); setShowCompanionMenu(false); setDiscussionOpen(false);
+      setSideChats([]); setSideChatError(''); setDiscussionOpen(false);
       const unrelated = restoreSideChatTabs({tabs:companionTabs(),active:companionView(),closed:closedCompanionTabs()}, []);
       setCompanionTabs(unrelated.tabs); setCompanionView(unrelated.active); setClosedCompanionTabs(unrelated.closed);
       if (id && owner) void syncSideChats(id,true);
@@ -385,21 +342,11 @@ export default function App(props: AppProps) {
   const [mcpStatusLoaded, setMcpStatusLoaded] = createSignal(false);
   const [mcpStatusError, setMcpStatusError] = createSignal('');
   const [skills, setSkills] = createSignal<{ name: string; description: string }[]>([]);
-  const [authChecking, setAuthChecking] = createSignal(true);
-  const [workspaceInitializing, setWorkspaceInitializing] = createSignal(true);
+  const [workspaceInitState, setWorkspaceInitState] = createSignal<'loading' | 'failed' | 'ready'>('loading');
   const [workspaceInitStage, setWorkspaceInitStage] = createSignal('正在加载会话…');
   let workspaceInitGeneration = 0;
   let workspaceInitAbort: AbortController | null = null;
-  const [currentUser, setCurrentUser] = createSignal<AuthUser | null>(null);
-  const [loginEmail, setLoginEmail] = createSignal(isDesktop ? '' : 'admin@example.com');
-  const [loginPassword, setLoginPassword] = createSignal('');
-  const [loginPasswordVisible, setLoginPasswordVisible] = createSignal(false);
-  const [loginError, setLoginError] = createSignal('');
-  const [registering, setRegistering] = createSignal(false);
-  const [loginSubmitting, setLoginSubmitting] = createSignal(false);
-  const [desktopAccounts, setDesktopAccounts] = createSignal<DesktopAccounts>({ accounts: [], local_workspace: false, can_register: false });
-  const [desktopIdentityFailed, setDesktopIdentityFailed] = createSignal(false);
-  const [showTenantManagement, setShowTenantManagement] = createSignal(false);
+  const currentUser = () => props.user;
   const [reviewRequest,setReviewRequest] = createSignal<{reviewId?:string;reviewIdentifier?:string}>();
   const [workflowRequest,setWorkflowRequest] = createSignal<{sessionId?:string;runId?:string;templateKey?:string;draftId?:string}>();
   const [proteinRunRequest, setProteinRunRequest] = createSignal<{runId: string; key: number}>();
@@ -408,17 +355,7 @@ export default function App(props: AppProps) {
   const [searchSkill, setSearchSkill] = createSignal('');
   const [searchRecordFocus, setSearchRecordFocus] = createSignal<{kind: string; id: string; key: number; project?: SearchHit['project']; comparison?:ResearchChangeFocus;hypothesis?:HypothesisFocus}>();
   const [structureRequest,setStructureRequest] = createSignal<StructureRequest>();
-  const identity = createMemo(() => {
-    const user = currentUser();
-    return user ? `${user.user_id}:${user.tenant_id}` : '';
-  });
-  const clearNavigationRequests = () => {
-    setReviewRequest(undefined);
-    setWorkflowRequest(undefined);
-    setStructureRequest(undefined);
-    setSideChats([]); sideChatSyncGeneration++;
-    seenScheduledNotificationIds.clear();
-  };
+  const identity = () => props.user ? `${props.user.user_id}:${props.user.tenant_id}` : '';
   const seenScheduledNotificationIds = new Set<string>();
 
   const getEffectiveSchedulerMode = (
@@ -479,7 +416,7 @@ export default function App(props: AppProps) {
       }),
       getTeamCatalog(activeSession?.session_id, activeSession?.workdir_name),
     ]);
-    if (signal?.aborted) return;
+    if (signal?.aborted || disposed) return;
     if (skillsResult.status === 'fulfilled') {
       setSkills(skillsResult.value.skills || []);
     } else {
@@ -492,6 +429,7 @@ export default function App(props: AppProps) {
     }
   };
 
+  let disposed = false;
   const initializeWorkspace = async () => {
     const generation = ++workspaceInitGeneration;
     workspaceInitAbort?.abort();
@@ -580,12 +518,14 @@ export default function App(props: AppProps) {
           void (async () => {
             try {
               const resp = await bootstrapSession(restoredAgentName, currentSession.session_id);
+              if (disposed) return;
               sessionStore.updateSessionAgent(
                 currentSession.session_id,
                 resp.agent_name || restoredAgentName,
               );
               sessionStore.refreshSubagents();
             } catch (e) {
+              if (disposed) return;
               console.error('Failed to bootstrap fixed team on app restore:', e);
               sessionStore.setStatus('固定团队初始化失败');
             }
@@ -609,51 +549,37 @@ export default function App(props: AppProps) {
     await runStage('正在加载工作区能力…', 15_000, loadStatus);
   };
 
+  const startWorkspace = async () => {
+    setWorkspaceInitState('loading');
+    try {
+      await initializeWorkspace();
+      if (disposed) return;
+      setWorkspaceInitState('ready');
+      // Restore the scoped tabs first, but do not replay a link the user has left.
+      if (startupSettingsPage) {
+        const page = startupSettingsPage;
+        startupSettingsPage = undefined;
+        if (studioPageFromHash(window.location.hash) === page) navigate(page);
+      }
+    } catch (error) {
+      if (disposed) return;
+      console.error('Failed to initialize workspace:', error);
+      setWorkspaceInitState('failed');
+    }
+  };
+
   onMount(() => {
-    void (async () => {
-      let user: AuthUser | null = null;
-      try {
-        user = await getCurrentUser();
-        if (isDesktop) {
-          void getDesktopAccounts().then(setDesktopAccounts).catch(error => {
-            console.warn('无法读取最近账号列表：', error);
-          });
-        }
-        if (user) {
-          if (sessionStore.bindIdentityScope(`${user.user_id}:${user.tenant_id}`)) {
-            resetSessionRequestCache();
-          }
-        }
-        setCurrentUser(user);
-        if (user) {
-          setLoginEmail(user.email || loginEmail());
-        }
-      } catch (e) {
-        setDesktopIdentityFailed(isDesktop);
-        console.error('Failed to initialize auth state:', e);
-      } finally {
-        setAuthChecking(false);
-      }
-      if (user?.tenant_status === 'inactive') {
-        setWorkspaceInitializing(false);
-        setShowTenantManagement(true);
-      } else if (user) {
-        try {
-          await initializeWorkspace();
-          setWorkspaceInitializing(false);
-        } catch (e) {
-          console.error('Failed to initialize workspace:', e);
-          setWorkspaceInitStage('工作区初始化失败，请重启本地服务后重试');
-        }
-      } else {
-        setWorkspaceInitializing(false);
-      }
-    })();
+    if (props.user.tenant_status === 'inactive') {
+      setWorkspaceInitState('ready');
+      return;
+    }
+    void startWorkspace();
 
     const syncScheduledResults = async () => {
       if (!currentUser() || currentUser()?.tenant_status === 'inactive') return;
       try {
         const data = await listScheduledNotifications();
+        if (disposed) return;
         const unseen = (data.notifications || []).filter((item) => {
           const id = String(item.id || '').trim();
           return id && !seenScheduledNotificationIds.has(id);
@@ -676,6 +602,7 @@ export default function App(props: AppProps) {
             continue;
           }
           const detail = await getSession(sourceSessionId, { bustCache: true });
+          if (disposed) return;
           if (!detail) continue;
           sessionStore.setSessions((prev) => prev.map((session) => (
             session.session_id === sourceSessionId
@@ -708,94 +635,7 @@ export default function App(props: AppProps) {
     }, 3000);
     onCleanup(() => window.clearInterval(scheduledResultTimer));
   });
-  onCleanup(() => { workspaceInitGeneration += 1; workspaceInitAbort?.abort(); });
-
-  const changeAuthForm = (register: boolean) => {
-    setRegistering(register);
-    setLoginEmail('');
-    setLoginPassword('');
-    setLoginPasswordVisible(false);
-    setLoginError('');
-  };
-
-  const handleLogin = async (event: SubmitEvent) => {
-    event.preventDefault();
-    if (loginSubmitting()) return;
-    setLoginError('');
-    setLoginSubmitting(true);
-    let created = false;
-    const email = loginEmail().trim();
-    const password = loginPassword();
-    try {
-      if (registering()) {
-        await registerDesktopAccount(email, password);
-        created = true;
-        setRegistering(false);
-      }
-      const user = await loginApi(email, password);
-      if (isDesktop) { window.location.reload(); return; }
-      clearNavigationRequests();
-      if (sessionStore.bindIdentityScope(`${user.user_id}:${user.tenant_id}`)) {
-        resetSessionRequestCache();
-      }
-      setCurrentUser(user);
-      setWorkspaceInitializing(true);
-      sessionStore.setSessions([]);
-      sessionStore.clearCurrentSession();
-      sessionStore.setMessages([]);
-      setLoginPassword('');
-      setLoginPasswordVisible(false);
-      if (user.tenant_status === 'inactive') {
-        setWorkspaceInitializing(false);
-        setShowTenantManagement(true);
-      } else {
-        try {
-          await initializeWorkspace();
-        } catch (error) {
-          console.error('Failed to initialize workspace after login:', error);
-        } finally {
-          setWorkspaceInitializing(false);
-        }
-      }
-    } catch (e) {
-      setLoginError(created ? '账号已创建，请点击登录重试' : e instanceof Error ? e.message : '请求失败，请重试');
-    } finally {
-      setLoginSubmitting(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    await logoutApi();
-    resetSessionRequestCache();
-    clearNavigationRequests();
-    setCurrentUser(null);
-    sessionStore.setSessions([]);
-    sessionStore.clearCurrentSession();
-    sessionStore.setMessages([]);
-    setShowTenantManagement(false);
-    setWorkspaceInitializing(false);
-  };
-
-  const handleTenantSwitched = async (user: AuthUser) => {
-    clearNavigationRequests();
-    if (sessionStore.bindIdentityScope(`${user.user_id}:${user.tenant_id}`)) {
-      resetSessionRequestCache();
-    }
-    setCurrentUser(user);
-    setWorkspaceInitializing(true);
-    sessionStore.setSessions([]);
-    sessionStore.clearCurrentSession();
-    sessionStore.setMessages([]);
-    setMainSection('console');
-    setShowTenantManagement(false);
-    try {
-      await initializeWorkspace();
-    } catch (error) {
-      console.error('Failed to initialize workspace after tenant switch:', error);
-    } finally {
-      setWorkspaceInitializing(false);
-    }
-  };
+  onCleanup(() => { disposed = true; workspaceInitGeneration += 1; workspaceInitAbort?.abort(); });
 
   const sessionInfoContent = (popover = false) => (
     <div class={popover ? 'studio-chat-info-popover' : 'studio-session-info'}>
@@ -806,11 +646,14 @@ export default function App(props: AppProps) {
     </div>
   );
 
-  const navigate = (page: StudioPage) => {
-    if (!isPageAvailableOnSurface(page, props.surface)) page = 'console';
-    if (isDesktop && (page === 'settings' || page === 'mcp')) {
-      if (page === 'mcp') setSettingsSection('mcp');
-      setShowSettingsWindow(true);
+  const navigate = (page: StudioPage, section?: SettingsSection) => {
+    if (page === 'mcp' || page === 'settings') {
+      const next = section ?? (page === 'mcp' ? 'mcp' : undefined);
+      if (SettingsTab) {
+        setSettingsSection(next ?? 'general');
+        openCompanion('page:settings');
+        navigate('console');
+      } else props.openSettings?.(next);
       return;
     }
     if (page === 'assets' || page === 'changes') {
@@ -842,7 +685,7 @@ export default function App(props: AppProps) {
   };
   const openServiceSettings = (section: 'mcp' | 'desktop') => {
     if (section === 'mcp') navigate('mcp');
-    else { setSettingsSection('desktop'); navigate('settings'); }
+    else navigate('settings', 'desktop');
   };
   createEffect(on(
     () => sessionStore.filePreviewRequest()?.key,
@@ -1138,7 +981,7 @@ export default function App(props: AppProps) {
     if (notice.sessionId && notice.sessionId !== sessionStore.currentSessionId()) {
       sessionStore.switchSession(notice.sessionId);
       void getSession(notice.sessionId, { bustCache: true }).then(detail => {
-        if (!detail) return;
+        if (disposed || !detail) return;
         const existing = sessionStore.sessions().find(session => session.session_id === notice.sessionId);
         if (!existing) return;
         const messages = mergeWithLocalSyntheticMessages(existing.messages, detail.messages);
@@ -1259,10 +1102,10 @@ export default function App(props: AppProps) {
   const openSessionLauncher = () => setSessionLauncherRequest(previous=>previous+1);
   const commandItems = createMemo(() => [
     ...studioPages.map(item => ({id:`page:${item.id}`,label:`打开${item.label}`,detail:item.group,run:()=>navigate(item.id)})),
-    ...(['general','notifications','models','collaboration','structure','knowledge','mcp','desktop','feishu'] as SettingsSection[]).map((section,index)=>({
-      id:`settings:${section}`,label:`设置：${['常规','通知','模型与执行','协作与 Agent','三维结构','本体知识','MCP 服务','桌面服务','飞书接入'][index]}`,
-      detail:'设置分区',run:()=>{setSettingsSection(section);navigate('settings');},
-    })),
+    ...availableSettingsSections(isDesktop || Boolean(currentUser()?.password_mode), Boolean(currentWorkspaceId()))
+      .map(({id, label, detail, group}) => ({
+        id: `settings:${id}`, label: `设置：${label}`, detail, keywords: `settings ${id} ${group}`, run: () => navigate('settings', id),
+      })),
     ...mcpServers().map(server=>({id:`mcp:${server.name}`,label:server.name,detail:'MCP 服务',run:()=>navigate('mcp')})),
     {id:'new',label:'新建任务',detail:'选择研究空间并开始会话',keywords:'workspace session',run:openSessionLauncher},
     {id:'assets',label:'打开文件与改动',detail:'查看本地文件、产物和 Review',keywords:'artifact diff',run:()=>navigate('assets')},
@@ -1273,8 +1116,6 @@ export default function App(props: AppProps) {
     {id:'collaboration',label:'打开协作',detail:'查看 Subagent 与旁支讨论',keywords:'subagent team',run:()=>navigate('subagents')},
     {id:'plan',label:'制定任务计划',detail:'补充目标、阶段和完成条件',keywords:'goal plan',run:()=>{navigate('console');window.dispatchEvent(new CustomEvent('tcode-prefill-composer',{detail:{text:'请先为当前任务制定计划：列出目标、非目标、所需数据与服务、执行阶段、验证方式和完成条件。'}}));}},
     {id:'branch',label:'创建实验分支',detail:'基于当前输入和参数派生独立实验',keywords:'branch compare',run:()=>{navigate('console');window.dispatchEvent(new CustomEvent('tcode-prefill-composer',{detail:{text:'请从当前任务创建一个实验分支，保留原始输入，使用独立输出目录和运行记录，并先询问需要修改的参数。'}}));}},
-    {id:'mcp',label:'打开 MCP 设置',detail:'配置直连或异步 MCP 服务',keywords:'settings server',run:()=>navigate('mcp')},
-    {id:'settings',label:'打开设置',detail:'管理桌面偏好、通知和本地能力',keywords:'permission notification',run:()=>navigate('settings')},
   ]);
   let searchNavigationVersion = 0;
   const openSearchHit = async (hit: SearchHit) => {
@@ -1319,82 +1160,12 @@ export default function App(props: AppProps) {
     navigate('review');
   };
 
-  const loginView = (
-    <div class="desktop-login flex min-h-screen items-center justify-center bg-[#0f1418] px-4 text-[#dee3e8]">
-      <div class="desktop-login-intro"><span>Tcode</span><h2>你的研究，<br/>从这里继续。</h2><p>组织文件与知识，连接远程计算，<br/>推进每一个研究任务。</p><div>会话与协作 · 工作流 · 文献与知识 · 插件</div></div>
-      <form
-        class="w-full max-w-sm rounded border border-[#2a3136] bg-[#171c20] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.42)]"
-        onSubmit={handleLogin}
-      >
-        <div class="mb-5">
-          <h1 class="text-xl font-semibold text-[#f7fafc]">{registering() ? '注册本机账号' : '登录 Tcode'}</h1>
-          <p class="mt-1 text-sm text-[#9faeb7]">{registering() ? '账号保存在这台电脑上，有独立的工作区和会话。' : '使用已配置的账号进入工作区。'}</p>
-        </div>
-        <Show when={isDesktop && !registering() && desktopAccounts().accounts.length > 0}>
-          <label class="mb-3 block">最近登录的账号
-            <select class="block w-full" value={desktopAccounts().accounts.includes(loginEmail()) ? loginEmail() : ''}
-              onChange={event => { setLoginEmail(event.currentTarget.value); setLoginPassword(''); setLoginError(''); }}>
-              <option value="">使用其他账号</option>
-              <For each={desktopAccounts().accounts}>{email => <option value={email}>{email}</option>}</For>
-            </select>
-          </label>
-        </Show>
-        <label class="mb-3 block">
-          <span class="mb-1 block text-xs font-semibold text-[#bdc8d1]">邮箱</span>
-          <input
-            class="h-10 w-full rounded border border-[#303539] bg-[#0f1418] px-3 text-sm text-[#f7fafc] outline-none transition-colors focus:border-[#7bd0ff]/60"
-            type="email"
-            value={loginEmail()}
-            onInput={(event) => setLoginEmail(event.currentTarget.value)}
-            autocomplete="username"
-            required
-          />
-        </label>
-        <div class="mb-4">
-        <label for="login-password" class="block">
-          <span class="mb-1 block text-xs font-semibold text-[#bdc8d1]">密码</span>
-        </label>
-        <div class="relative">
-          <input
-            id="login-password"
-            class="h-10 w-full rounded border border-[#303539] bg-[#0f1418] pl-3 pr-16 text-sm text-[#f7fafc] outline-none transition-colors focus:border-[#7bd0ff]/60"
-            type={loginPasswordVisible() ? 'text' : 'password'}
-            value={loginPassword()}
-            onInput={(event) => setLoginPassword(event.currentTarget.value)}
-            autocomplete={registering() ? "new-password" : "current-password"}
-            minlength={registering() ? 12 : undefined}
-            placeholder={registering() ? "至少 12 个字符" : undefined}
-            required
-          />
-          <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 rounded px-2 py-1 text-xs" aria-label={loginPasswordVisible() ? '隐藏密码' : '显示密码'} aria-pressed={loginPasswordVisible()} aria-controls="login-password" onClick={() => setLoginPasswordVisible(value => !value)}>{loginPasswordVisible() ? '隐藏' : '显示'}</button>
-        </div>
-        </div>
-        <Show when={loginError()}>
-          <div class="mb-4 rounded border border-[#ef4444]/35 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#fca5a5]">{loginError()}</div>
-        </Show>
-        <button
-          class="inline-flex h-10 w-full items-center justify-center rounded border border-[#38bdf8]/35 bg-[#38bdf8]/14 text-sm font-semibold text-[#8ed5ff] transition-colors hover:bg-[#38bdf8]/20 disabled:cursor-not-allowed disabled:opacity-60"
-          type="submit"
-          disabled={loginSubmitting()}
-        >
-          {registering() ? (loginSubmitting() ? '正在创建…' : '创建并登录') : (loginSubmitting() ? '登录中...' : '登录')}
-        </button>
-        <Show when={isDesktop && desktopAccounts().can_register}>
-          <button class="desktop-login-form-link" type="button" disabled={loginSubmitting()}
-            onClick={() => changeAuthForm(!registering())}>{registering() ? '返回登录' : '注册本机账号'}</button>
-        </Show>
-        <Show when={isDesktop && !registering() && desktopAccounts().local_workspace}>
-          <button type="button" disabled={loginSubmitting()} onClick={() => void enterLocalWorkspace().then(() => window.location.reload())
-            .catch(() => setLoginError('无法进入本机工作区，请重试'))}>使用本机工作区</button>
-        </Show>
-      </form>
-    </div>
-  );
-
   return (
-    <Show when={!authChecking()} fallback={<AppLoading label={isDesktop ? "正在打开本机工作区…" : "正在确认登录状态…"} />}>
-      <Show when={identity()} keyed fallback={desktopIdentityFailed() ? <div role="alert" class="settings-page"><h2>暂时无法打开本机工作区</h2><button class="settings-save" onClick={()=>window.location.reload()}>重新连接</button></div> : loginView}>
-        <Show when={!workspaceInitializing()} fallback={<AppLoading label={workspaceInitStage()} />}>
+        <Show when={workspaceInitState() === 'ready'} fallback={
+          <Show when={workspaceInitState() === 'failed'} fallback={<AppLoading label={workspaceInitStage()} />}>
+            <WorkspaceInitError onRetry={startWorkspace}/>
+          </Show>
+        }>
         <StudioShell pluginNavigation={<For each={pluginPanels()}>{panel => <button aria-label={panel.title} onClick={() => openCompanion(panelView(panel))}><span>插</span>{panel.title}</button>}</For>} page={mainSection()} onNavigate={navigate}
           mergedMainActive={mergedMainActive()} onMergedChange={setWorkspaceMerged} splitRequest={splitRequest()}
           identity={`${currentUser()?.user_id}:${currentUser()?.tenant_id}`}
@@ -1409,7 +1180,7 @@ export default function App(props: AppProps) {
           onCommandPalette={()=>setShowCommandPalette(true)}
           onOpenSkillCenter={openSkillCenter}
           onOpenServiceSettings={openServiceSettings}
-          skillCount={skills().length}
+          skillCount={skills().length} subagentCount={sessionStore.subagentStates().length}
           browserActive={isDesktop && companionView().startsWith('browser:') && !(workspaceMerged()&&mergedMainActive())}
           inspectorTabs={companionTabs().map(id=>({ id, label: companionLabel(id) }))}
           activeInspectorTab={workspaceMerged() && mergedMainActive() ? undefined : companionView()}
@@ -1417,54 +1188,29 @@ export default function App(props: AppProps) {
             const tab = companionTabs().find(view=>view === id);
             if (!tab) return;
             openCompanion(tab);
-            requestAnimationFrame(()=>companionTabList?.querySelector('.companion-tab[data-active=true]')?.scrollIntoView({block:'nearest', inline:'nearest'}));
           }}
           inspectorTitle="伴随查看" inspectorRequest={inspectorRequest()} inspectorCloseRequest={inspectorCloseRequest()} onInspectorVisibility={setInspectorVisible}
-          actions={isDesktop ? <Suspense><DesktopAccountActions user={currentUser()!} accounts={desktopAccounts().accounts}
-            onOpenSettings={() => { setSettingsSection('account'); navigate('settings'); }}/></Suspense> : <>
-            <button onClick={() => { openCompanion('assets'); navigate('console'); }}>文件改动</button>
-            <button onClick={() => navigate('subagents')}>协作{sessionStore.subagentStates().length ? ` · ${sessionStore.subagentStates().length}` : ''}</button>
-            <button onClick={openSkillCenter} title="管理和查看可用 Skills" data-testid="skill-center-trigger">Skill Center · {skills().length}</button>
-            <AccountMenu identity={currentUser()!.email || currentUser()!.user_id} managementLabel="账号与租户"
-              onManage={() => setShowTenantManagement(true)} onLogout={handleLogout} />
-          </>}
+          actions={props.accountMenu}
           sidebar={<Suspense fallback={<LazyPanelFallback label="正在加载会话列表..." />}>
             <SessionList embedded width={280} openCreateRequest={sessionLauncherRequest()}
               onOpenHome={openConsole} onOpenHistory={openHistoryModal} />
           </Suspense>}
-          inspector={<Show when={`${identity()}:${currentWorkspaceId()}:${sessionStore.currentSessionId() || ''}`} keyed>{_scope => <>
-            <div class="companion-tabs">
-              <nav ref={companionTabList} class="companion-tab-list elastic-tabs" aria-label="侧边标签">
-                <TabIndicator active={workspaceMerged()&&mergedMainActive()?'main':companionView()} selector=".companion-tab[data-active=true]" top />
-                <Show when={workspaceMerged()}><div class="companion-tab" data-active={mergedMainActive()}><button aria-pressed={mergedMainActive()} onClick={()=>setMergedMainActive(true)}>主界面</button></div></Show>
-                <For each={companionTabs()}>{tab => <div class="companion-tab" data-active={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())}>
-                  <button title={isPreviewView(tab) ? displayWorkspacePath(previewPath(tab)) : companionLabel(tab)} aria-pressed={companionView()===tab&&!(workspaceMerged()&&mergedMainActive())} onClick={()=>{setMergedMainActive(false);setCompanionView(tab);}}>{companionLabel(tab)}</button>
-                  <button class="companion-tab-close" aria-label={`关闭${companionLabel(tab)}标签`} title={isSideChatView(tab) ? '关闭并删除这段侧聊' : '关闭标签'} disabled={isSideChatView(tab) && closingSideChats().includes(tab.slice(9))} onClick={()=>tab==='evidence'?closeCitation():void closeCompanion(tab)}>×</button>
-                </div>}</For>
-              </nav>
-              <div class="companion-actions" role="group" aria-label="侧边面板操作">
-                <Show when={lastClosedCompanion()}>{tab => (
-                  <button type="button" class="companion-action" aria-label={`重开标签：${companionLabel(tab())}`} title={`重开标签：${companionLabel(tab())}`} onClick={reopenCompanion}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5v5h5M4 10a8 8 0 1 1 1.2 7.6"/></svg>
-                    <span>重开标签</span>
-                  </button>
-                )}</Show>
-                <div ref={companionMenuElement} class="companion-new">
-                  <button type="button" class="companion-action companion-action--add" aria-label="打开新标签" title="打开新标签" aria-expanded={showCompanionMenu()} aria-controls={showCompanionMenu() ? "companion-new-menu" : undefined} onClick={()=>setShowCompanionMenu(value=>!value)}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-                    <span>打开标签</span>
-                  </button>
-                  <Show when={showCompanionMenu()}><div class="companion-new-menu" id="companion-new-menu" role="group" aria-label="选择标签类型">
-                    <For each={pluginPanels()}>{panel => <button type="button" onClick={() => {setShowCompanionMenu(false);openCompanion(panelView(panel));}}>{panel.title}</button>}</For>
-                    <Show when={isDesktop}><button type="button" onClick={()=>{setShowCompanionMenu(false);window.dispatchEvent(new CustomEvent('tcode:open-browser'));}}>打开浏览器</button></Show>
-                    <button type="button" disabled={!sessionStore.currentSessionId() || creatingSideChat()} onClick={()=>void createSideChat()}>{creatingSideChat() ? '创建中…' : '新建侧边聊天'}</button>
-                  </div></Show>
-                </div>
-                <Show when={workspaceMerged()}><button type="button" class="companion-action" aria-label="恢复独立分栏" title="恢复独立分栏" onClick={()=>setSplitRequest(value=>value+1)}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M14 4v16"/></svg></button></Show>
-              </div>
-            </div>
+          inspectorScope={`${identity()}:${currentWorkspaceId()}:${sessionStore.currentSessionId() || ''}`}
+          companionBar={{
+            get tabs() { return companionTabs(); }, get active() { return companionView(); },
+            label: companionLabel, title: view => isPreviewView(view) ? displayWorkspacePath(previewPath(view), isDesktop) : companionLabel(view),
+            get merged() { return workspaceMerged(); }, get mainActive() { return mergedMainActive(); },
+            get lastClosed() { return lastClosedCompanion(); },
+            get plugins() { return pluginPanels().map(panel => ({title: panel.title, open: () => openCompanion(panelView(panel))})); },
+            get canCreateChat() { return !!sessionStore.currentSessionId(); }, get creatingChat() { return creatingSideChat(); },
+            closePending: tab => closingSideChats().includes(tab.slice(9)),
+            onMain: () => setMergedMainActive(true),
+            onSelect: tab => { setMergedMainActive(false); setCompanionView(tab); },
+            onClose: tab => tab === 'evidence' ? closeCitation() : void closeCompanion(tab),
+            onCreateChat: () => void createSideChat(), onReopen: reopenCompanion, onSplit: () => setSplitRequest(value => value + 1),
+          }}
+          inspector={<>
             <Show when={sideChatError()}><div class="side-chat-error" role="alert">{sideChatError()}<button onClick={()=>{setSideChatError('');const id=sessionStore.currentSessionId();if(id)void syncSideChats(id);}}>重试</button></div></Show>
-            <Show when={isDesktop}><div id="studio-browser-host" hidden={!companionView().startsWith('browser:')} /></Show>
             <For each={pluginPanels().filter(panel => companionView() === panelView(panel))}>{panel =>
               <PluginWorkspacePanel panel={panel} query={panelQuery()} onShare={(text,file) => {
                 const key = composerKey(sessionStore.currentSessionId());
@@ -1516,10 +1262,12 @@ export default function App(props: AppProps) {
                 <WorkspaceSlot active={companionView()===tab && page()==='library'}><Suspense fallback={<LazyPanelFallback/>}><ResourceLibraryWorkspace workspaceId={currentWorkspaceId() || undefined} active={companionView()===tab}/></Suspense></WorkspaceSlot>
                 <WorkspaceSlot active={companionView()===tab && page()==='wiki'}><Suspense fallback={<LazyPanelFallback/>}><PaperWikiWorkspace workspaceId={currentWorkspaceId() || undefined} active={companionView()===tab}/></Suspense></WorkspaceSlot>
                 <WorkspaceSlot active={companionView()===tab && page()==='ontology'}><Suspense fallback={<LazyPanelFallback/>}><OntologyWorkspace workspaceId={currentWorkspaceId() || undefined} currentModelRef={sessionStore.currentSession()?.model || undefined}/></Suspense></WorkspaceSlot>
-                <WorkspaceSlot active={companionView()===tab && page()==='mcp'}><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection="mcp" workspaceId={currentWorkspaceId() || undefined}
-                  account={currentUser()?.password_mode ? currentUser()! : undefined}/></Suspense></WorkspaceSlot>
-                <WorkspaceSlot active={companionView()===tab && page()==='settings'}><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection={settingsSection()} workspaceId={currentWorkspaceId() || undefined}
-                  account={currentUser()?.password_mode ? currentUser()! : undefined}/></Suspense></WorkspaceSlot>
+                <Show when={SettingsTab && page()==='settings'}>
+                  <WorkspaceSlot active={companionView()===tab}><Suspense fallback={<LazyPanelFallback/>}>
+                    {SettingsTab && <SettingsTab workspaceId={currentWorkspaceId() || undefined}
+                      section={settingsSection()} onSectionChange={setSettingsSection}/>}
+                  </Suspense></WorkspaceSlot>
+                </Show>
                 <WorkspaceSlot active={companionView()===tab && page()==='plugins'}><Suspense fallback={<LazyPanelFallback/>}><PluginPanel embedded width={360} workdir={currentSession()?.workdir} onHide={()=>closeCompanion(tab)}/></Suspense></WorkspaceSlot>
               </>;
             }}</For>
@@ -1539,7 +1287,7 @@ export default function App(props: AppProps) {
               const key = composerKey(sessionStore.currentSessionId());
               composerDrafts.update(key, {text: [composerDrafts.get(key).text, text].filter(Boolean).join('\n\n')});
               navigate('console'); window.dispatchEvent(new CustomEvent('tcode-focus-composer'));
-            }} context={sessionInfoContent()}/></Suspense></WorkspaceSlot></>}</Show>}
+            }} context={sessionInfoContent()}/></Suspense></WorkspaceSlot></>}
           dock={<div class="studio-runtime-summary">
             <div><b>{currentStatusLabel()}</b><span>{currentSessionSummary()}</span><button onClick={()=>navigate('symphony')}>打开完整运行总览 ↗</button></div>
             <For each={sessionStore.subagentStates().slice(0,6)}>{agent=><button class="studio-runtime-row" onClick={()=>navigate('subagents')}>{String(agent.agent_name || agent.session_id || 'Subagent')}<span>{String(agent.status || '')}</span></button>}</For>
@@ -1581,24 +1329,16 @@ export default function App(props: AppProps) {
                           onResearchTabChange={setResearchSessionTab}
                           searchFocus={searchMessageFocus()}
                         />
-                        <MessageInput onOpenSkills={openSkillCenter} onOpenModelSettings={() => { setSettingsSection('models'); navigate('settings'); }} />
+                        <MessageInput onOpenSkills={openSkillCenter} onOpenModelSettings={() => navigate('settings', 'models')} />
                       </Suspense>
                     </div>
                   </section>
         </StudioShell>
-        <Show when={showSettingsWindow()}><dialog class="tcode-settings-window" aria-label="设置" ref={element=>queueMicrotask(()=>element.isConnected && element.showModal())} onCancel={event=>{event.preventDefault();setShowSettingsWindow(false);}}>
-          <header><b>设置</b><button aria-label="关闭设置窗口" onClick={()=>setShowSettingsWindow(false)}>×</button></header>
-          <div><Suspense fallback={<LazyPanelFallback/>}><SettingsWorkspace initialSection={settingsSection()}
-            workspaceId={currentWorkspaceId() || undefined} account={currentUser() || undefined}
-            onPasswordSaved={() => setCurrentUser(user => user && { ...user, password_mode: 'change' })}/></Suspense></div>
-        </dialog></Show>
+        {SettingsWindow && <SettingsWindow workspaceId={currentWorkspaceId() || undefined}/>}
         <Show when={showHistoryModal()}><Suspense fallback={<LazyPanelFallback/>}><ArchivedSessionsModal onClose={()=>setShowHistoryModal(false)}/></Suspense></Show>
         <Show when={showCommandPalette()}><Suspense fallback={null}><CommandPalette items={commandItems()} workspaceId={currentWorkspaceId()} onHit={openSearchHit} onClose={()=>setShowCommandPalette(false)}/></Suspense></Show>
         <Show when={showSkillLibrary()}><Suspense fallback={<LazyPanelFallback/>}><SkillLibrary workspaceId={currentWorkspaceId()} initialSkill={searchSkill()} initialAgent={currentSession()?.agent_name || sessionStore.selectedAgentName()} onClose={()=>{setShowSkillLibrary(false);void loadStatus();}}/></Suspense></Show>
-        <Show when={!isDesktop && showTenantManagement() && currentUser()}><Suspense fallback={<LazyPanelFallback/>}><TenantManagementPanel currentUser={currentUser()!} onClose={()=>{if(currentUser()?.tenant_status!=='inactive')setShowTenantManagement(false);}} onTenantSwitched={handleTenantSwitched}/></Suspense></Show>
         <Suspense><AsyncCompletionNotifications/></Suspense>
         </Show>
-      </Show>
-    </Show>
   );
 }
