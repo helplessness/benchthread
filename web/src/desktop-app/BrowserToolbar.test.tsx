@@ -10,11 +10,13 @@ it('renders the compact desktop address bar and guards the sidebar from web clie
   expect(html).toContain('aria-haspopup="menu"');
   expect(html).not.toContain('desktop-browser-menu');
   expect(html).toContain('https://www.baidu.com/');
-  const source = readFileSync(new URL('../components/BrowserLivePanel.tsx', import.meta.url), 'utf8');
-  expect(source).toContain('desktop?.browserPanel && sidePanelOpen()');
+  const shared = readFileSync(new URL('../components/BrowserLivePanel.tsx', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('./DesktopBrowserPanel.tsx', import.meta.url), 'utf8');
+  expect(shared).not.toMatch(/tcode:(open|select|close)-browser|studio-browser-host/);
+  expect(source).toContain('browser?.browserPanel && sidePanelOpen()');
   expect(source).toContain('if (polling || document.hidden) return;');
   expect(source).toContain("document.getElementById('studio-browser-host')");
-  expect(source).toContain('props.running || takenOverSession()');
+  expect(source).toContain('takenOverSession() === item.browserSessionId');
   expect(source).toContain('browserLiveStore.setHidden(item.key, true)');
   expect(source).not.toContain('desktop-browser-resize');
 });

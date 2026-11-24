@@ -9,7 +9,7 @@ import type { DynamicHeaders } from '../api/capabilities';
 import type { MCPFileTransfer } from '../api/capabilities';
 import { deleteMCPConfig, getMCPConfig, reloadMCPConfig, testMCPConnection, saveMCPConfig, type MCPConfigServer } from '../api/client';
 import { ontologyRequest } from '../api/ontology';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 import { getAgents, getChatRuntimes, getModels, selectModel, type ModelOption } from '../api/catalog';
 import { autoSwarmAvailability } from '../utils/schedulerCapabilities';
 import SchedulerOptions from './composer/SchedulerOptions';
@@ -17,37 +17,39 @@ import { sessionStore } from '../stores/session';
 import { announcePreferenceChange, preferenceKeys, readBooleanPreference, readPreference, savePreference } from '../utils/userPreferences';
 import { agentDisplayLabel } from './composer/executionLabels';
 import { canvasPreference, type CanvasStyle } from '../api/canvas';
-import DesktopModelSettings from './DesktopModelSettings';
 import WebModelSettings from './WebModelSettings';
 import FeishuSettings from './FeishuSettings';
 import WebSearchSettings from './WebSearchSettings';
-import InternetContentSettings from './InternetContentSettings';
 import AccountSecuritySettings from './AccountSecuritySettings';
 import type { AuthUser } from '../api/auth';
 import PersonalArtifactBinding from './PersonalArtifactBinding';
 
-export type SettingsSection = 'account' | 'general' | 'notifications' | 'models' | 'collaboration' | 'structure' | 'knowledge' | 'mcp' | 'desktop' | 'feishu' | 'websearch' | 'internet-content';
-type HeaderRow = { name: string; value: string };
-const settingsGroups = ['应用偏好', '任务与研究', '服务与集成'] as const;
-const sections: { id: SettingsSection; label: string; detail: string; group: typeof settingsGroups[number] }[] = [
-  { id: 'general', label: '常规', detail: '界面与交互', group: '应用偏好' },
-  { id: 'account', label: '账号与安全', detail: '当前账号与登录密码', group: '应用偏好' },
-  { id: 'notifications', label: '通知', detail: '任务完成提醒', group: '应用偏好' },
-  { id: 'models', label: '模型与执行', detail: '模型供应商、推理、调度与验证', group: '任务与研究' },
-  { id: 'collaboration', label: '协作与 Agent', detail: '办公室与调度', group: '任务与研究' },
-  { id: 'structure', label: '三维结构', detail: 'Mol* 与 Agent 视图', group: '任务与研究' },
-  { id: 'knowledge', label: '本体知识', detail: '工作区知识源', group: '任务与研究' },
-  { id: 'mcp', label: 'MCP 服务', detail: '连接与远程工具', group: '服务与集成' },
-  { id: 'desktop', label: 'Artifact 文件服务', detail: '远端服务与 MCP 绑定', group: '服务与集成' },
-  { id: 'websearch', label: '网页搜索', detail: 'SearXNG 与 Brave Search', group: '服务与集成' },
-  { id: 'internet-content', label: '互联网渠道', detail: '内容读取与渠道检查', group: '服务与集成' },
-  { id: 'feishu', label: '飞书接入', detail: '机器人与任务通知', group: '服务与集成' },
-];
+import { availableSettingsSections, settingsGroups, type SettingsSection } from '../utils/settingsSections';
 
-export default function SettingsWorkspace(props: { initialSection?: SettingsSection; workspaceId?: string; account?: AuthUser; onPasswordSaved?: () => void } = {}) {
-  const [section, setSection] = createSignal<SettingsSection>(props.initialSection || 'mcp');
+type HeaderRow = { name: string; value: string };
+
+export default function SettingsWorkspace(props: {
+  initialSection?: SettingsSection;
+  section?: SettingsSection;
+  onSectionChange?: (section: SettingsSection) => void;
+  workspaceId?: string;
+  account?: AuthUser;
+  onPasswordSaved?: () => void;
+} = {}) {
+  const platform = useClientPlatform();
+  const desktop = platform.surface === 'desktop';
+  const ModelSettings = platform.ModelSettings;
+  const InternetContentSettings = platform.InternetContentSettings;
+  const [localSection, setLocalSection] = createSignal<SettingsSection>(props.initialSection || 'mcp');
+  const section = () => props.section ?? localSection();
+  const setSection = (next: SettingsSection) => {
+    if (props.onSectionChange) props.onSectionChange(next);
+    else setLocalSection(next);
+  };
   const [query, setQuery] = createSignal('');
-  createEffect(() => setSection(props.initialSection || 'mcp'));
+  createEffect(() => {
+    if (props.section === undefined) setLocalSection(props.initialSection || 'mcp');
+  });
   const [compact, setCompact] = createSignal(localStorage.getItem('tcode.settings.compact') === '1');
   const [notify, setNotify] = createSignal(localStorage.getItem('tcode.settings.notify') !== '0');
   const [inAppNotify, setInAppNotify] = createSignal(localStorage.getItem('tcode.settings.inAppNotify') !== '0');
@@ -124,7 +126,7 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
       if (artifactServices().includes(entry)) setCheck({ state: 'failed', reason: '无法测试，请检查登录权限或后端连接。' });
     }
   }
-  const artifactConfigUrl = desktop ? '/api/desktop/services/config' : '/api/artifact-services/config';
+  const artifactConfigUrl = platform.artifactConfigUrl;
   const updateArtifact = (index: number, patch: Partial<ArtifactEntry>) => {
     const old = artifactServices()[index];
     if (patch.service_id !== undefined && old.service_id && defaultArtifact() === old.service_id) setDefaultArtifact(patch.service_id);
@@ -360,9 +362,7 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
   const selectRow = (label: string, detail: string, control: unknown, tipText = '') => <label class="settings-select-row"><span><b>{label}{tipText ? tip(tipText) : null}</b><small>{detail}</small></span>{control as any}</label>;
   const visibleSections = () => {
     const value = query().trim().toLowerCase();
-    const available = sections.filter(item => (
-      (item.id !== 'account' || Boolean(props.account)) && (item.id !== 'knowledge' || Boolean(props.workspaceId))
-    ));
+    const available = availableSettingsSections(Boolean(props.account), Boolean(props.workspaceId));
     return value ? available.filter(item => `${item.label}${item.detail}${item.group}`.toLowerCase().includes(value)) : available;
   };
   const ontologyMode = () => ontologyPolicy().public ? ontologyPolicy().private ? 'both' : 'public' : ontologyPolicy().private ? 'private' : 'none';
@@ -470,7 +470,7 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
         <button class="settings-save" disabled={busy() || !resultVerificationReady()} onClick={()=>void saveExecution()}>保存更改</button>
         <details class="settings-service-details settings-provider-details">
           <summary>管理模型供应商</summary>
-          <Show when={desktop}><DesktopModelSettings onChanged={()=>{void getModels(sessionStore.currentSessionId() || undefined, props.workspaceId).then(data=>{setModels(data.models);setSelectedModel(data.current_model);announcePreferenceChange();});}}/></Show>
+          {ModelSettings && <ModelSettings onChanged={()=>{void getModels(sessionStore.currentSessionId() || undefined, props.workspaceId).then(data=>{setModels(data.models);setSelectedModel(data.current_model);announcePreferenceChange();});}}/>}
           <Show when={!desktop}><WebModelSettings onChanged={()=>{
             void getModels(sessionStore.currentSessionId() || undefined, props.workspaceId)
               .then(data => { setModels(data.models); setSelectedModel(data.current_model); announcePreferenceChange(); })
@@ -480,7 +480,7 @@ export default function SettingsWorkspace(props: { initialSection?: SettingsSect
       </div></Show>
       <Show when={section()==='feishu'}><FeishuSettings workspaceId={props.workspaceId}/></Show>
       <Show when={section()==='websearch'}><WebSearchSettings/></Show>
-      <Show when={section()==='internet-content'}><InternetContentSettings workspaceId={props.workspaceId}/></Show>
+      <Show when={section()==='internet-content'}>{InternetContentSettings ? <InternetContentSettings workspaceId={props.workspaceId}/> : <div class="settings-page"><h2>互联网渠道</h2><p>请在 TCode 桌面端管理渠道。</p></div>}</Show>
       <Show when={section()==='collaboration'}><div class="settings-page"><h2>协作与 Agent</h2><p>控制协作办公室的默认表现，以及多 Agent 任务的界面行为。</p>
         <div class="settings-section"><h3>协作办公室</h3><section class="settings-group">
           {toggle('默认播放办公室动画','进入协作办公室时播放人物与状态动画。',officeAnimations(),setOfficeAnimations,false,'只控制视觉动画，不会暂停 Agent 任务。')}

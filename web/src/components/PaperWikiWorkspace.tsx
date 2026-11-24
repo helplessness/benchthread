@@ -1,3 +1,4 @@
+import { useClientPlatform } from '../clientPlatform';
 import { confirmAction } from './FeedbackDialog';
 import { installWikiNavigationGuard } from '../utils/wikiNavigationGuard';
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
@@ -160,7 +161,8 @@ const HighlightedText = (props: { text: unknown; query: string; class?: string }
 );
 
 export default function PaperWikiWorkspace(props: Props) {
-  const desktopSurface = () => document.documentElement.dataset.desktop === 'true';
+  const platform = useClientPlatform();
+  const desktopSurface = () => platform.surface === 'desktop';
   const [directoryHidden, setDirectoryHidden] = createSignal(false);
   const [viewMode, setViewMode] = createSignal<ViewMode>('pages');
   const [stats, setStats] = createSignal<WikiStats>(emptyStats);

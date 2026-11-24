@@ -3,9 +3,8 @@ import type { FilePreviewRequest } from '../stores/session';
 import { composerIdentity } from '../stores/composer';
 import { ZoomableImage } from './ImageLightbox';
 import AssetHistory from './AssetHistory';
-import ProjectFolders from './ProjectFolders';
-import { desktop } from '../desktop';
-import { planFolderImport } from '../utils/folderImport';
+import { useClientPlatform } from '../clientPlatform';
+import { previewFolderImport } from '../utils/folderImport';
 import { installUploadFeedback } from '../utils/uploadFeedback';
 import { isHtmlFile, isImageFile, isOfficeFile, isPdfFile } from '../utils/filePreview';
 import OfficeFilePreview from './OfficeFilePreview';
@@ -43,6 +42,9 @@ interface FileBrowserProps {
 }
 
 export default function FileBrowser(props: FileBrowserProps) {
+  const platform = useClientPlatform();
+  const desktop = platform.surface === 'desktop';
+  const { WorkspaceFileActions, FileLocationActions, ProjectFolders } = platform;
   const [showHistory, setShowHistory] = createSignal(props.mode === 'changes' || Boolean(props.initialHistory));
   const [currentPath, setCurrentPath] = createSignal('');
   const [files, setFiles] = createSignal<FileItem[]>([]);
@@ -61,8 +63,7 @@ export default function FileBrowser(props: FileBrowserProps) {
   let latestFileRequest = 0;
   let latestPreviewRequest = 0;
   let uploadInput!: HTMLInputElement;
-  let folderInput!: HTMLInputElement;
-  const [folderPlan, setFolderPlan] = createSignal<ReturnType<typeof planFolderImport<File>>>();
+  const [folderPlan, setFolderPlan] = createSignal<ReturnType<typeof previewFolderImport<File>>['plan']>();
   let uploadController: AbortController | undefined;
   let uploadVersion = 0;
   let scopeGeneration = 0;
@@ -71,11 +72,14 @@ export default function FileBrowser(props: FileBrowserProps) {
   const [uploading, setUploading] = createSignal(false);
   const [uploadNotice, setUploadNotice] = createSignal('');
   const [uploadErrors, setUploadErrors] = createSignal<string[]>([]);
-  const showDesktopError = () => {
+  const runFileAction = async (action: () => Promise<unknown>) => {
     const generation = scopeGeneration;
-    return (error: unknown) => {
+    try {
+      const result = await action();
+      if (typeof result === 'string' && result && generation === scopeGeneration) await openFileAtPath(result);
+    } catch (error) {
       if (generation === scopeGeneration) setUploadErrors([String(error)]);
-    };
+    }
   };
   const canUpload = () => !props.jobId && Boolean(props.workspaceId?.trim());
 
@@ -487,36 +491,26 @@ export default function FileBrowser(props: FileBrowserProps) {
         </div>
         <div class="file-browser-actions flex flex-wrap items-center gap-2">
           <Show when={!showHistory() && !props.jobId}>
-            <Show when={desktop?.projectFolders && boundWorkspace() && boundWorkspace() === props.workspaceId}>
-              <button type="button" class="btn btn-sm" aria-expanded={editingWorkspace() === props.workspaceId}
-                onClick={() => setEditingWorkspace(editingWorkspace() === props.workspaceId ? '' : props.workspaceId!)}>编辑工作区</button>
-            </Show>
             <input ref={uploadInput} type="file" multiple hidden aria-label="选择资产文件" disabled={!canUpload() || uploading()}
               onChange={event => { const selected = Array.from(event.currentTarget.files || []); event.currentTarget.value = ''; void uploadFiles(selected); }} />
             <button class="btn btn-sm" disabled={!canUpload() || uploading()} onClick={() => uploadInput.click()}>{uploading() ? '导入中…' : desktop ? '导入本地文件' : '上传文件'}</button>
-            <Show when={desktop?.projectInput && canUpload() && boundWorkspace() === props.workspaceId}>
-              <button class="btn btn-sm" onClick={async () => {
-                const generation = scopeGeneration;
-                try {
-                  const imported = await desktop?.projectInput?.(props.workspaceId!);
-                  if (imported && generation === scopeGeneration) await openFileAtPath(imported);
-                } catch (error) { if (generation === scopeGeneration) setUploadErrors([String(error)]); }
-              }}>选取项目输入</button>
-            </Show>
-            <Show when={desktop && props.workspaceId}><button class="btn btn-sm" onClick={()=>void desktop!.workspace(props.workspaceId!, 'finder').catch(showDesktopError())}>Finder</button><button class="btn btn-sm" onClick={()=>void desktop!.workspace(props.workspaceId!, 'terminal').catch(showDesktopError())}>终端</button></Show>
-            <Show when={desktop}><input ref={element => { folderInput = element; element.setAttribute('webkitdirectory', ''); }} type="file" multiple hidden aria-label="选择本地文件夹"
-              onChange={event => {
-                const files = Array.from(event.currentTarget.files || []); event.currentTarget.value = '';
-                setFolderPlan(undefined); setUploadErrors([]);
-                if (!files.length) return;
-                try { setFolderPlan(planFolderImport(files)); } catch(error) { setUploadErrors([String(error)]); }
-              }} /><button class="btn btn-sm" disabled={!canUpload() || uploading()} onClick={()=>folderInput.click()}>导入文件夹</button></Show>
+            {WorkspaceFileActions && <WorkspaceFileActions
+              workspaceId={props.workspaceId} projectBound={Boolean(boundWorkspace() && boundWorkspace() === props.workspaceId)}
+              editingFolders={editingWorkspace() === props.workspaceId}
+              toggleFolders={() => setEditingWorkspace(editingWorkspace() === props.workspaceId ? '' : props.workspaceId!)}
+              canUpload={canUpload()} uploading={uploading()} run={runFileAction}
+              pickFolder={files => {
+                const {plan, errors} = previewFolderImport(files);
+                setFolderPlan(plan);
+                setUploadErrors(errors);
+              }}/>}
+
           </Show>
           <Show when={selectedFile() && /\.(pdb|cif|mmcif|sdf|mol2)$/i.test(selectedFile()!)}>
             <button class="btn btn-sm" onClick={()=>window.dispatchEvent(new CustomEvent('tcode-open-structure',{detail:{path:selectedFile(),workspaceId:props.workspaceId,workdir:props.workdir,jobId:props.jobId,artifactRoot:props.artifactRoot}}))}>三维查看</button>
           </Show>
-          <Show when={desktop && props.workspaceId && selectedFile() && !isArtifactMode()}>
-            <Show when={!selectedFile()?.startsWith('@project/')}><button class="btn btn-sm" onClick={() => void desktop!.revealFile(props.workspaceId!, selectedFile()!).catch(showDesktopError())}>在文件夹中显示</button></Show>
+          <Show when={FileLocationActions && props.workspaceId && !isArtifactMode() && !selectedFile()?.startsWith('@project/') && selectedFile()} keyed>
+            {path => FileLocationActions && <FileLocationActions workspaceId={props.workspaceId!} path={path} onAction={runFileAction}/>}
           </Show>
           <Show when={selectedFile()}>
             {(filePath) => (
@@ -546,7 +540,7 @@ export default function FileBrowser(props: FileBrowserProps) {
 
       <div class="shrink-0 border-b border-[#2a3136] px-4 py-2 text-xs text-[#8b949e]">
         <Show keyed when={!showHistory() && !props.jobId && editingWorkspace() === props.workspaceId && boundWorkspace() === props.workspaceId && props.workspaceId}>
-          {id => <div class="max-h-64 overflow-y-auto"><ProjectFolders workspace={id} changed={() => loadFiles('')}/></div>}
+          {id => ProjectFolders && <div class="max-h-64 overflow-y-auto"><ProjectFolders workspace={id} changed={() => loadFiles('')}/></div>}
         </Show>
         <Show when={folderPlan()}>{plan=><div class="mb-2 rounded border p-3" role="region" aria-label="确认文件夹导入"><p>将 {plan().files.length} 个文件（{formatSize(plan().bytes)}）复制到当前本地工作区，保留目录结构。跳过 {plan().skipped} 个隐藏或缓存文件；不会修改源目录，也不会在此步骤上传至远程 MCP。</p><div class="mt-2 flex gap-2"><button class="btn btn-sm" disabled={uploading()} onClick={()=>{const files=plan().files;setFolderPlan(undefined);void uploadFiles(files,true);}}>确认导入</button><button class="btn btn-sm" onClick={()=>setFolderPlan(undefined)}>取消</button></div></div>}</Show>
         <span class="file-browser-upload-hint">{desktop && props.mode === 'changes' ? '选择任务记录，查看公开文件与产物的版本差异。' : props.jobId ? '任务产物只读；上传请使用工作区资产库。' : canUpload() ? `可拖入多个本地文件，保存到 ${props.workspaceId}/upload/（不随浏览目录改变）；单文件最多 100 MB，同名自动改名。` : '选择工作区后可拖入或选择本地文件上传。'}</span>

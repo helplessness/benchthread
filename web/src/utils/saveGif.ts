@@ -1,6 +1,8 @@
+import type { ClientPlatform } from '../clientPlatform';
+
 // A native save picker may outlive the renderer's click handler by minutes.
 // Retain its Blob until Electron reports completion/cancellation, not a timer.
-export function saveGif(blob: Blob, title: string): Promise<'saved' | 'cancelled' | 'handed-off'> {
+export function saveGif(blob: Blob, title: string, subscribe?: ClientPlatform['onDownloadResult']): Promise<'saved' | 'cancelled' | 'handed-off'> {
   const url = URL.createObjectURL(blob), link = document.createElement('a');
   link.href = url;
   link.download = `${title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0,80) || '动画'}.gif`;
@@ -8,7 +10,6 @@ export function saveGif(blob: Blob, title: string): Promise<'saved' | 'cancelled
     let unsubscribe: (() => void) | undefined;
     const release = () => { unsubscribe?.(); URL.revokeObjectURL(url); };
     try {
-      const subscribe = window.tcodeDesktop?.onDownloadResult;
       if (subscribe) unsubscribe = subscribe(result => {
         if (result.url !== url) return;
         release();

@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
 import type { FileViewer } from '@open-file-viewer/core';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 import '@open-file-viewer/core/style.css';
 
 interface OfficeFilePreviewProps {
@@ -10,6 +10,7 @@ interface OfficeFilePreviewProps {
 }
 
 export default function OfficeFilePreview(props: OfficeFilePreviewProps) {
+  const useBrowserDownload = useClientPlatform().surface === 'web';
   const [loading, setLoading] = createSignal(true);
   let container!: HTMLDivElement;
   let viewer: FileViewer | undefined;
@@ -35,7 +36,7 @@ export default function OfficeFilePreview(props: OfficeFilePreviewProps) {
           fit: 'width',
           locale: 'zh-CN',
           theme: 'dark',
-          toolbar: { download: !desktop },
+          toolbar: { download: useBrowserDownload },
           plugins: [officePlugin()],
           onLoad: () => setLoading(false),
           onError: error => {

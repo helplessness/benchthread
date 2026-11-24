@@ -30,6 +30,12 @@ describe('list-first services and tasks', () => {
     expect(html).toContain('<details><summary>高级：接入协议与部署说明</summary>');
     expect(html).not.toContain('type="url"');
   });
+  it('uses the Web workspace section instead of the local initial section', () => {
+    vi.stubGlobal('localStorage', { getItem: () => null });
+    const html = renderToString(() => <SettingsWorkspace initialSection="mcp" section="models" />);
+    expect(html).toContain('<h2>模型与执行</h2>');
+    expect(html).not.toContain('添加常规 MCP');
+  });
   it('places task result controls ahead of timestamps and technical policies', () => {
     const html = renderToString(() => <JobWorkspacePanel workspace={{ workdir: '/workspace/test', tool: 'test', status: 'completed' } as any} />);
     expect(html).toContain('查看结果文件');
@@ -55,11 +61,15 @@ describe('list-first services and tasks', () => {
     expect(html).toContain('任务时间线');
     expect(html).toContain('任务已提交');
   });
-  it('shows tracker completion when built-in runtime events lag, without changing legacy priority', () => {
-    const workspace = { timeline: [{ kind: 'completed', title: '任务执行完成' }] };
-    const collecting = [{ kind: 'collecting' }];
-    expect(selectJobTimeline(workspace, 'tcode-job-fixture', collecting, [])).toBe(workspace.timeline);
-    expect(selectJobTimeline(workspace, 'external', collecting, [])).toBe(collecting);
+  it('adds tracker completion without dropping built-in runtime events or changing legacy priority', () => {
+    const started = { kind: 'started', at: '2026-01-01T00:00:00Z' };
+    const terminal = { kind: 'completed', at: '2026-01-01T00:00:01Z' };
+    const collecting = { kind: 'collecting', at: '2026-01-01T00:00:02Z' };
+    const workspace = { timeline: [{ kind: 'submitted' }, terminal] };
+    const runtime = [started, collecting];
+    expect(selectJobTimeline(workspace, 'tcode-job-fixture', runtime, [])).toEqual([started, terminal, collecting]);
+    expect(selectJobTimeline(workspace, 'external', runtime, [])).toBe(runtime);
+    expect(selectJobTimeline({ timeline: [{ kind: 'failed' }] }, 'tcode-job-fixture', runtime, [])).toEqual([...runtime, { kind: 'failed' }]);
     const completed = [{ kind: 'completed' }];
     expect(selectJobTimeline(workspace, 'tcode-job-fixture', completed, [])).toBe(completed);
   });

@@ -648,13 +648,12 @@ function createSessionStore() {
   const [messageToolDetailsCollapsed, setMessageToolDetailsCollapsedState] = createSignal<Record<string, boolean>>({});
   let suspendActiveSessionSync = false;
 
-  const bindIdentityScope = (identityScope: string): boolean => {
+  const bindIdentityScope = (identityScope: string, reset = false): boolean => {
     const normalized = String(identityScope || '').trim();
     if (!normalized) return false;
-    let previous = '';
     try {
-      previous = String(localStorage.getItem(STORAGE_IDENTITY_SCOPE_KEY) || '').trim();
-      if (previous === normalized) return false;
+      const previous = String(localStorage.getItem(STORAGE_IDENTITY_SCOPE_KEY) || '').trim();
+      if (previous === normalized && !reset) return false;
       localStorage.setItem(STORAGE_IDENTITY_SCOPE_KEY, normalized);
     } catch (error) {
       console.error('Failed to bind browser identity scope:', error);
@@ -670,7 +669,7 @@ function createSessionStore() {
     setFilePreviewRequest(null);
     setSubagentStates([]);
     setSubagentChats([]);
-    return previous !== normalized;
+    return true;
   };
 
   const getEffectiveSchedulerMode = (

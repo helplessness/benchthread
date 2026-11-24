@@ -1,3 +1,4 @@
+import { useClientPlatform } from '../clientPlatform';
 import { Show, createEffect, createSignal, on, onCleanup } from 'solid-js';
 import { getInlineFileUrl } from '../api/client';
 import { displayWorkspacePath, isHtmlFile, isImageFile, isOfficeFile, isPdfFile } from '../utils/filePreview';
@@ -16,7 +17,8 @@ export default function FilePreviewPanel(props: FilePreviewPanelProps) {
   const [error, setError] = createSignal('');
   const [loading, setLoading] = createSignal(false);
   const path = () => String(props.path || '').trim();
-  const displayPath = () => displayWorkspacePath(path());
+  const desktop = useClientPlatform().surface === 'desktop';
+  const displayPath = () => displayWorkspacePath(path(), desktop);
   const isRichPreview = () => isImageFile(path()) || isHtmlFile(path()) || isPdfFile(path()) || isOfficeFile(path());
   const previewUrl = () => {
     if (isHtmlFile(path())) {

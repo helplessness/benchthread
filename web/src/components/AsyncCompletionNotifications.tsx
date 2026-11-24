@@ -8,12 +8,11 @@ import {
 } from '../api/client';
 import { sessionStore } from '../stores/session';
 import { formatAsyncCompletionNotice } from '../utils/asyncResultSummary';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 import { composerIdentity } from '../stores/composer';
-import { desktopNotificationLedger } from '../utils/desktopNotifications';
-
 
 export default function AsyncCompletionNotifications() {
+  const { connectNotifications } = useClientPlatform();
   const [events, setEvents] = createSignal<AsyncCompletionEvent[]>([]);
   const [dismissed, setDismissed] = createSignal<Set<string>>(new Set());
   const [markingRead, setMarkingRead] = createSignal<Set<string>>(new Set());
@@ -26,11 +25,10 @@ export default function AsyncCompletionNotifications() {
   let notificationRevision = 0;
   const identity = composerIdentity();
   const isCurrent = () => !disposed && composerIdentity() === identity;
-  const ledger = desktop ? desktopNotificationLedger(identity, localStorage) : undefined;
-  const nativeEvents = new Map<string, AsyncCompletionEvent>();
   const notice = (event: AsyncCompletionEvent) => formatAsyncCompletionNotice(
     event, sessionStore.sessions().find(session => session.session_id === event.session_id)?.title,
   );
+  const notifications = connectNotifications?.(identity, isCurrent, notice, event => void openSession(event));
   const timestampMs = (value: unknown, fallback: number) => {
     const parsed = Number(value || 0);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -55,23 +53,7 @@ export default function AsyncCompletionNotifications() {
         ...session,
         async_completion_unread_count: counts.get(session.session_id) || 0,
       })));
-      if (desktop && ledger && localStorage.getItem('tcode.settings.notify') !== '0') {
-        for (const event of unread) nativeEvents.set(JSON.stringify([identity, event.id]), event);
-        // Bound the initial catch-up after reopening, retaining all unread cards in-app.
-        const fresh = unread.filter(event => !ledger.has(event.id));
-        for (const event of fresh.slice(3)) ledger.remember(event.id);
-        for (const event of fresh.slice(0, 3)) {
-          if (!isCurrent()) return;
-          const id = JSON.stringify([identity, event.id]);
-          nativeEvents.set(id, event);
-          if (nativeEvents.size > 1000) nativeEvents.delete(nativeEvents.keys().next().value!);
-          try {
-            const display = notice(event);
-            await desktop.notify({ id, title: display.title, body: display.body });
-            if (isCurrent()) ledger.remember(event.id);
-          } catch { /* Keep in-app cards available if native notifications fail. */ }
-        }
-      }
+      await notifications?.sync(unread);
     } catch (error) {
       console.error('Failed to load async completion notifications:', error);
     } finally {
@@ -82,13 +64,10 @@ export default function AsyncCompletionNotifications() {
   onMount(() => {
     void sync();
     const timer = window.setInterval(() => void sync(), 3000);
-    const unsubscribe = desktop?.onNotification(id => {
-      const event = nativeEvents.get(id);
-      if (event && isCurrent()) void openSession(event);
-    });
+    const unsubscribe = notifications?.subscribe();
     const settingsChanged = () => setPreferencesVersion(value => value + 1);
     window.addEventListener('tcode:settings-changed', settingsChanged);
-    onCleanup(() => { disposed = true; window.clearInterval(timer); unsubscribe?.(); nativeEvents.clear(); window.removeEventListener('tcode:settings-changed', settingsChanged); });
+    onCleanup(() => { disposed = true; window.clearInterval(timer); unsubscribe?.(); window.removeEventListener('tcode:settings-changed', settingsChanged); });
   });
 
   const visibleEvents = () => {

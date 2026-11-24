@@ -16,7 +16,7 @@ it('keeps Wiki controls unclipped and adapts to inspector width, not window widt
 
 it('reserves desktop note editing space without changing the web editor', () => {
   const source = readFileSync(new URL('./PaperWikiWorkspace.tsx', import.meta.url), 'utf8');
-  const css = readFileSync(new URL('../interface.css', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../desktop-app/layout.css', import.meta.url), 'utf8');
   expect(source).toContain('aria-controls="wiki-page-directory"');
   expect(source).toContain('hidden={desktopSurface() && (directoryHidden() || editing())}');
   expect(source).toContain('minHeight={320}');

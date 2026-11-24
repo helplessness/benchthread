@@ -1,6 +1,7 @@
 import { toolDisplayLabel } from '../utils/userFacingLabels';
 import FeedbackDialog, { confirmAction, showFeedback } from './FeedbackDialog';
-import ProjectFolders, { FolderIcon } from './ProjectFolders';
+import FolderIcon from './FolderIcon';
+import { useClientPlatform } from '../clientPlatform';
 import { For, Show, createSignal, createEffect, createMemo, onMount, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import {
@@ -96,7 +97,9 @@ export default function SessionList(props: SessionListProps) {
   })());
   const [dragSnapshot, setDragSnapshot] = createSignal<ReturnType<typeof sessionStore.sessions>>();
   const [sortAnnouncement, setSortAnnouncement] = createSignal('');
-  const desktop=()=>document.documentElement.dataset.desktop==='true';
+  const platform = useClientPlatform();
+  const { ProjectFolders, openProject } = platform;
+  const desktop = () => platform.surface === 'desktop';
   const workspacePreferenceKey=`${orderKey}:workspaces`;
   const [workspacePreferences,setWorkspacePreferences]=createSignal(parseWorkspaceList(readPreference(workspacePreferenceKey,'')));
   const grouped=()=>desktop()&&workspacePreferences().grouped;
@@ -961,7 +964,7 @@ export default function SessionList(props: SessionListProps) {
                     <div onClick={event=>{if((event.target as Element).closest('button'))event.currentTarget.closest('details')!.open=false;}}>
                       <button type="button" onClick={()=>toggleWorkspace('pinned',group.id)}>{workspacePreferences().pinned.includes(group.id)?'取消置顶':'置顶工作区'}</button>
                       <button type="button" onClick={()=>setRenamingWorkspace({id:group.id,name:group.title})}>重命名</button>
-                      <Show when={window.tcodeDesktop?.projectFolders && group.sessions[0]?.workspace_id}>{id =>
+                      <Show when={ProjectFolders && group.sessions[0]?.workspace_id}>{id =>
                         <button type="button" onClick={() => void editProjectFolders(id())}>编辑工作区</button>
                       }</Show>
                       <button type="button" disabled={workspaceMoveGroup(group.id).indexOf(group.id)<=0} onClick={()=>stepWorkspace(group.id,-1)}>上移</button>
@@ -1079,7 +1082,7 @@ export default function SessionList(props: SessionListProps) {
       }</Show>
 
       <Show keyed when={editingProject()}>{id => <FeedbackDialog title="编辑工作区" eyebrow="本机项目" icon={<FolderIcon/>} onClose={() => setEditingProject('')}>
-        <ProjectFolders workspace={id} changed={refreshWorkdirs}/>
+        {ProjectFolders && <ProjectFolders workspace={id} changed={refreshWorkdirs}/>}
         <footer class="feedback-dialog-actions"><button type="button" onClick={() => setEditingProject('')}>完成</button></footer>
       </FeedbackDialog>}</Show>
       <Show when={renamingWorkspace()}>{target=><FeedbackDialog title="重命名工作区" onClose={()=>setRenamingWorkspace(null)}>
@@ -1196,17 +1199,17 @@ export default function SessionList(props: SessionListProps) {
               <div class="flex flex-wrap items-center gap-3 text-sm">
                 <strong class="mr-auto">工作区 <span class="ml-1 text-xs font-normal">{workdirs().length}</span></strong>
                 <button class="btn btn-sm" type="button" aria-pressed={manageWorkdirs()} onClick={() => setManageWorkdirs(!manageWorkdirs())}>{manageWorkdirs() ? '完成管理' : '管理'}</button>
-                <Show when={window.tcodeDesktop?.openProject}>
+                <Show when={openProject}>
                   <button class="btn btn-sm" type="button" onClick={async () => {
                     try {
-                      const project = await window.tcodeDesktop?.openProject?.();
+                      const project = await openProject?.();
                       if (project) { await refreshWorkdirs(); setSelectedWorkdirName(project.name); setWorkdirError(''); }
                     } catch (error) { setWorkdirError(String(error)); }
                   }}>打开项目文件夹</button>
                 </Show>
               </div>
-              <Show keyed when={manageWorkdirs() && window.tcodeDesktop?.projectFolders && workdirs().find(d => d.name === selectedWorkdirName())?.project_name && selectedWorkdirName()}>
-                {id => <ProjectFolders workspace={id} changed={refreshWorkdirs}/>}
+              <Show keyed when={manageWorkdirs() && ProjectFolders && workdirs().find(d => d.name === selectedWorkdirName())?.project_name && selectedWorkdirName()}>
+                {id => ProjectFolders && <ProjectFolders workspace={id} changed={refreshWorkdirs}/>}
               </Show>
               <div class="max-h-56 overflow-y-auto rounded-2xl border border-[#2a3136] bg-[#0f1418]">
                 <For each={workdirs()}>

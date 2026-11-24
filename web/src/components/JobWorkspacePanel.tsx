@@ -109,7 +109,9 @@ export function selectJobTimeline(
     // projection is still collecting the result.
     const terminal = tracker.find(entry => ['completed', 'failed', 'cancelled', 'terminated'].includes(entry.kind || ''));
     if (terminal && isBuiltInJob(jobId, workspace) && !runtime.some(entry => entry.kind === terminal.kind)) {
-      return tracker;
+      const finishedAt = Date.parse(terminal.at || '');
+      const next = runtime.findIndex(entry => Date.parse(entry.at || '') > finishedAt);
+      return next < 0 ? [...runtime, terminal] : [...runtime.slice(0, next), terminal, ...runtime.slice(next)];
     }
     return runtime;
   }

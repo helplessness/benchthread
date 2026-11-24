@@ -15,3 +15,11 @@ export function planFolderImport<T extends { webkitRelativePath: string; size: n
   if (!files.length) throw new Error('没有可导入的文件；隐藏文件和依赖缓存目录默认跳过');
   return { files, skipped, bytes };
 }
+
+export function previewFolderImport<T extends { webkitRelativePath: string; size: number }>(incoming: T[]) {
+  try {
+    return {plan: incoming.length ? planFolderImport(incoming) : undefined, errors: [] as string[]};
+  } catch (error) {
+    return {plan: undefined, errors: [error instanceof Error ? error.message : String(error)]};
+  }
+}
