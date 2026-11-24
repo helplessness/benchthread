@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   autoEmbedStandaloneImagePaths,
   getInlineFileUrl,
@@ -9,18 +9,15 @@ import {
 
 describe('inline workspace images', () => {
   it('keeps the managed source in desktop link targets and inline URLs only', () => {
-    try {
-      for (const desktop of [false, true]) {
-        vi.stubGlobal('window', desktop ? {tcodeDesktop: {}} : {});
-        for (const rel of ['project-inputs/hash/report.txt', 'artifacts/jobs/job/report.txt', 'artifacts/local/job/report.txt']) {
-          const path = '/workspace/' + rel;
-          expect(normalizeInlineFilePath(path)).toBe(desktop ? path : rel);
-          expect(new URL(getInlineFileUrl(path), 'http://test').searchParams.get('path')).toBe(desktop ? path : rel);
-          expect(normalizeInlineFilePath(rel)).toBe(rel);
-        }
-        expect(normalizeInlineFilePath('/workspace/docs/report.txt')).toBe('docs/report.txt');
+    for (const desktop of [false, true]) {
+      for (const rel of ['project-inputs/hash/report.txt', 'artifacts/jobs/job/report.txt', 'artifacts/local/job/report.txt']) {
+        const path = '/workspace/' + rel;
+        expect(normalizeInlineFilePath(path, desktop)).toBe(desktop ? path : rel);
+        expect(new URL(getInlineFileUrl(path, '', desktop), 'http://test').searchParams.get('path')).toBe(desktop ? path : rel);
+        expect(normalizeInlineFilePath(rel, desktop)).toBe(rel);
       }
-    } finally { vi.unstubAllGlobals(); }
+      expect(normalizeInlineFilePath('/workspace/docs/report.txt', desktop)).toBe('docs/report.txt');
+    }
   });
   it('maps the sandbox workspace root to a browser-visible workspace path', () => {
     expect(normalizeInlineFilePath('/workspace/docs/figure.png')).toBe('docs/figure.png');

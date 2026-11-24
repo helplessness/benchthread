@@ -36,7 +36,7 @@ import {
   isFixedTeamBootstrapAgent,
   usesFixedScheduler,
 } from '../utils/teamRegistry';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 
 type ResearchChatAsset = {
   asset_id: string;
@@ -56,6 +56,8 @@ type WikiChatPage = {
 };
 
 export default function MessageInput(props: { onOpenSkills?: () => void; onOpenModelSettings?: () => void } = {}) {
+  const platform = useClientPlatform();
+  const desktop = platform.surface === 'desktop';
   const [goalRunning, setGoalRunning] = createSignal(false);
   const [goalMode, setGoalMode] = createSignal(false);
   const [guidingExistingGoal, setGuidingExistingGoal] = createSignal(false);
@@ -1612,7 +1614,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
                     <Show when={file.path && isImageFileRef(file.path)}>
                       <div class="relative h-20 w-20 shrink-0 rounded-xl border border-[#303a41] bg-[#0b1013]">
                         <ZoomableImage
-                          src={getInlineFileUrl(file.path || '', currentWorkspaceId())}
+                          src={getInlineFileUrl(file.path || '', currentWorkspaceId(), desktop)}
                           alt={file.name || '上传图片预览'}
                           downloadName={file.name}
                           class="h-full w-full rounded-xl object-contain"

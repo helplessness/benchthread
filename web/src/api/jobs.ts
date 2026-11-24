@@ -92,6 +92,7 @@ export type JobWorkspace = {
   process_id?: string;
   execution_channel?: string;
   job_ref?: {
+    broker?: string;
     job_id?: string;
     process_id?: string;
     id?: string;
@@ -187,6 +188,27 @@ export async function getJobTimeline(jobId: string): Promise<{
     job_id: String(data.job_id || jobId),
     lifecycle_status: typeof data.lifecycle_status === 'string' ? data.lifecycle_status : undefined,
     timeline: Array.isArray(data.timeline) ? data.timeline : [],
+  };
+}
+
+// The legacy detail endpoints read the external TMCP registry, not the
+// built-in broker. Its details already come from the tracker and Job Runtime.
+export function isBuiltInJob(jobId: string, workspace: JobWorkspace): boolean {
+  const broker = workspace.job_ref?.broker;
+  return broker === 'tcode-local' || (!broker && jobId.startsWith('tcode-job-'));
+}
+
+export async function getLegacyJobDetails(jobId: string, workspace: JobWorkspace): Promise<JobWorkspace | null> {
+  if (isBuiltInJob(jobId, workspace)) return null;
+  const [workspaceData, timelineData] = await Promise.all([getJobWorkspace(jobId), getJobTimeline(jobId)])
+    .catch(() => {
+      // The legacy registry uses 404 for both missing records and owner mismatch.
+      throw new Error('无法读取任务详情，请检查访问权限或服务状态');
+    });
+  return {
+    ...workspaceData.workspace,
+    lifecycle_status: timelineData.lifecycle_status || workspaceData.workspace.lifecycle_status,
+    timeline: timelineData.timeline,
   };
 }
 

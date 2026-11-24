@@ -18,10 +18,10 @@ export const isImageFileRef = (value: string) => (
   isLocalFileRef(value) && IMAGE_FILE_EXTENSION_PATTERN.test(String(value || '').trim())
 );
 
-export const normalizeInlineFilePath = (path: string) => {
+export const normalizeInlineFilePath = (path: string, managedPaths = false) => {
   const text = String(path || '').trim();
   // On desktop these absolute references identify managed bytes, not the default project folder.
-  if (typeof window !== 'undefined' && window.tcodeDesktop
+  if (managedPaths
       && (text.startsWith('/workspace/project-inputs/') || text.startsWith('/workspace/artifacts/jobs/')
           || text.startsWith('/workspace/artifacts/local/'))) return text;
   // Sandbox tools expose the current host workspace at /workspace. The file API
@@ -29,16 +29,16 @@ export const normalizeInlineFilePath = (path: string) => {
   return text.startsWith('/workspace/') ? text.slice('/workspace/'.length) : text;
 };
 
-export const getInlineFileUrl = (path: string, workspaceId = '') => {
-  const search = new URLSearchParams({ path: normalizeInlineFilePath(path) });
+export const getInlineFileUrl = (path: string, workspaceId = '', managedPaths = false) => {
+  const search = new URLSearchParams({ path: normalizeInlineFilePath(path, managedPaths) });
   const normalizedWorkspaceId = String(workspaceId || '').trim();
   if (normalizedWorkspaceId) search.set('workspace_id', normalizedWorkspaceId);
   return `/api/files/inline?${search.toString()}`;
 };
 
-export const toInlineHref = (value: string, workspaceId = '') => {
+export const toInlineHref = (value: string, workspaceId = '', managedPaths = false) => {
   const text = String(value || '').trim();
-  return isLocalFileRef(text) ? getInlineFileUrl(text, workspaceId) : text;
+  return isLocalFileRef(text) ? getInlineFileUrl(text, workspaceId, managedPaths) : text;
 };
 
 const markdownImageTarget = (path: string) => (

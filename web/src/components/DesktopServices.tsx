@@ -1,10 +1,12 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 
 type ServiceState = { state: string; url: string };
 type Services = { remote: string; job_protocol?: ServiceState; artifact?: ServiceState; artifacts?: (ServiceState & { service_id: string; name: string; default: boolean })[]; config_file: string; artifact_configured: boolean; dev_local_services: boolean; local_execution: string };
 
 export default function DesktopServices(props: { onOpenSettings: (section: 'mcp' | 'desktop') => void }) {
+  const platform = useClientPlatform();
+  const desktop = platform.surface === 'desktop';
   const [status, setStatus] = createSignal<Services>();
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal('');
@@ -31,7 +33,7 @@ export default function DesktopServices(props: { onOpenSettings: (section: 'mcp'
     if (busy()) return;
     setBusy(true); setError('');
     try {
-      const response = await fetch(desktop ? `/api/desktop/services?retry=${retry}` : '/api/artifact-services', { signal: AbortSignal.timeout(60000) });
+      const response = await fetch(platform.serviceStatusUrl(retry), { signal: AbortSignal.timeout(60000) });
       if (!response.ok) throw new Error();
       setStatus(await response.json());
     } catch { setError('无法读取服务状态，请稍后重试。'); }

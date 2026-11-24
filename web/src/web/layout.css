@@ -1,0 +1,7 @@
+.studio-shell {grid-template-rows:58px minmax(0,1fr) var(--studio-dock) 26px}
+.studio-shell[data-focus=true] {grid-template-rows:58px minmax(0,1fr) 0 0}
+.studio-shell[data-page=settings] {grid-template-rows:0 minmax(0,1fr) 0 0}
+.studio-resource-nav {height:auto;max-height:26%;min-height:72px;flex:0 1 auto;padding:0 12px 10px;overflow:auto}
+@media(max-width:780px){
+  .studio-resource-nav{min-height:48px;max-height:88px}
+}

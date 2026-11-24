@@ -2,7 +2,7 @@ import { promptAction, confirmAction } from './FeedbackDialog';
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { listPaperLibrary, type PaperLibraryItem } from '../api/paperLibrary';
 import { deleteWorkspaceFile, renameWorkspaceFile, searchWorkspaceFiles, type WorkspaceFileSearchItem } from '../api/files';
-import { desktop } from '../desktop';
+import { useClientPlatform } from '../clientPlatform';
 
 type Category = 'paper' | 'file';
 
@@ -19,6 +19,7 @@ const formatDate = (value: string | number) => {
 };
 
 export default function ResourceLibraryWorkspace(props: {workspaceId?: string; active?: boolean}) {
+  const { FileLocationActions } = useClientPlatform();
   const [category, setCategory] = createSignal<Category>();
   const [query, setQuery] = createSignal('');
   const [papers, setPapers] = createSignal<PaperLibraryItem[]>([]);
@@ -131,7 +132,12 @@ export default function ResourceLibraryWorkspace(props: {workspaceId?: string; a
       <button onClick={()=>{setFileMenu();openFile(menu.file.path);}}>预览</button>
       <button onClick={()=>{setFileMenu();useFileInChat(menu.file);}}>加入聊天</button>
       <button onClick={()=>{setFileMenu();void renameFile(menu.file);}}>重命名</button>
-      <Show when={desktop}><button onClick={()=>{setFileMenu();if(!desktop?.revealFile){setError('桌面原生能力尚未更新，请完全退出并重新启动 TCode Desktop');return;}void desktop.revealFile(String(props.workspaceId||''),menu.file.path).then(()=>setNotice(`已在 Finder 中定位 ${menu.file.name}`)).catch(reason=>setError(reason instanceof Error?reason.message:String(reason)));}}>在 Finder 中显示</button></Show>
+      {FileLocationActions && <FileLocationActions workspaceId={String(props.workspaceId || '')}
+        path={menu.file.path} menu onAction={action => {
+          setFileMenu();
+          void action().then(() => setNotice(`已在 Finder 中定位 ${menu.file.name}`))
+            .catch(reason => setError(reason instanceof Error ? reason.message : String(reason)));
+        }}/>}
       <hr/><button class="danger" onClick={()=>{setFileMenu();void deleteFile(menu.file);}}>删除</button>
     </div>}</Show>
     <Show when={notice()}><div class="resource-library-toast" role="status">{notice()}<button aria-label="关闭提示" onClick={()=>setNotice('')}>×</button></div></Show>

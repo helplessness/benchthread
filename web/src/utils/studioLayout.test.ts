@@ -1,5 +1,5 @@
 import { describe,it,expect } from 'vitest';
-import { defaultStudioLayout,isPageAvailableOnSurface,parseStudioLayout,studioDimensions,inspectorAnchors,snapInspector,rubberWidth,drawerSpringStep,studioNavigationPages,studioNavigationPagesForSurface,studioPageFromHash,studioPages } from './studioLayout';
+import { defaultStudioLayout,parseStudioLayout,studioDimensions,inspectorAnchors,snapInspector,rubberWidth,drawerSpringStep,studioNavigationPages,studioPageFromHash,studioPages } from './studioLayout';
 describe('complete studio shell',()=>{
   it('resizes freely through 75 percent and snaps to full only above the threshold',()=>{
     const anchors=inspectorAnchors(1440,64);
@@ -71,13 +71,9 @@ describe('complete studio shell',()=>{
     expect(studioPageFromHash('#/protein-runs')).toBe('protein-runs');
     expect(studioPages.find(page=>page.id==='protein-runs')?.label).toBe('实验运行');
   });
-  it('exposes Web settings navigation without removing desktop settings or MCP',()=>{
-    expect(studioNavigationPagesForSurface('web').map(page=>page.id)).toContain('mcp');
-    expect(studioNavigationPagesForSurface('web').map(page=>page.id)).toContain('settings');
-    expect(isPageAvailableOnSurface('settings','web')).toBe(true);
-    expect(studioNavigationPagesForSurface('desktop').map(page=>page.id)).toContain('mcp');
-    expect(isPageAvailableOnSurface('mcp','web')).toBe(true);
-    expect(isPageAvailableOnSurface('plugins','web')).toBe(true);
+  it('includes both settings entry points in the shared navigation',()=>{
+    expect(studioNavigationPages.map(page=>page.id)).toContain('mcp');
+    expect(studioNavigationPages.map(page=>page.id)).toContain('settings');
   });
   it('rejects corrupt saved preferences',()=>{
     expect(parseStudioLayout('{')).toEqual(defaultStudioLayout());

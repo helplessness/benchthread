@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { getRuntimeJob, recoverJobArtifacts } from './jobs';
+import { getLegacyJobDetails, getRuntimeJob, recoverJobArtifacts } from './jobs';
 import { readFileSync } from 'node:fs';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -7,6 +7,36 @@ afterEach(() => vi.unstubAllGlobals());
 function respond(status: number, data: unknown) {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify(data), { status })));
 }
+
+it('does not request either legacy endpoint for built-in jobs', async () => {
+  respond(404, { detail: 'not in the external registry' });
+  expect(await getLegacyJobDetails('managed-id', { job_ref: { broker: 'tcode-local' } })).toBeNull();
+  expect(await getLegacyJobDetails('tcode-job-old-receipt', {})).toBeNull();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it('preserves workspace and timeline requests for external TMCP', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/timeline')
+    ? { lifecycle_status: 'completed', timeline: [{ title: 'Done' }] }
+    : { workspace: { workdir: '/workspace/remote', artifacts: ['echo.dat'] } }))));
+  expect(await getLegacyJobDetails('external', {})).toEqual({
+    workdir: '/workspace/remote', artifacts: ['echo.dat'], lifecycle_status: 'completed', timeline: [{ title: 'Done' }],
+  });
+  expect(fetch).toHaveBeenCalledWith('/api/jobs/external/workspace');
+  expect(fetch).toHaveBeenCalledWith('/api/jobs/external/timeline');
+});
+
+it.each([[404, 'workspace'], [403, 'timeline'], [503, 'timeline']])(
+  'reports legacy %s on %s without guessing the cause', async (status, path) => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/' + path)
+      ? new Response(JSON.stringify({ detail: 'server error detail' }), { status })
+      : new Response(JSON.stringify({ workspace: {}, timeline: [] }))));
+    await expect(getLegacyJobDetails('external', {})).rejects.toThrow(
+      /^无法读取任务详情，请检查访问权限或服务状态$/,
+    );
+    expect(fetch).toHaveBeenCalledTimes(2);
+  },
+);
 
 it('allows tracker-only jobs to omit the optional runtime projection', async () => {
   respond(200, { job: null, projection_state: 'tracker_only' });

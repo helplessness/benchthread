@@ -16,6 +16,41 @@ from tcode_agent.server.managed_job_protocol import (
 )
 
 
+@pytest.mark.parametrize("receipt", [
+    {"job_id": "tcode-job-fixture", "job_ref": {"broker": "tcode-local"}},
+    {"job_ref": {"broker": "tcode-local", "job_id": "tcode-job-fixture"}},
+    {"job_ref": {"job_id": "tcode-job-fixture"}},
+])
+def test_built_in_issue_carries_tracker_details_before_runtime_projection(monkeypatch, receipt):
+    from unittest.mock import AsyncMock
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from tcode_agent.server import symphony_api
+
+    issues = [
+        {"identifier": "LOCAL-BUILTIN", "state": "In Progress", "created_at": "2026-01-01T00:00:00Z",
+         "workspace": receipt.copy()},
+        {"identifier": "LOCAL-EXTERNAL", "state": "Done", "created_at": "2026-01-01T00:00:00Z",
+         "workspace": {"job_id": "external-fixture"}},
+        {"identifier": "LOCAL-EXTERNAL-REF", "state": "Done",
+         "workspace": {"job_ref": {"job_id": "external-ref-only"}}},
+    ]
+    monkeypatch.setattr(symphony_api, "_load_visible_symphony_issues", AsyncMock(return_value=(issues, len(issues), [])))
+    monkeypatch.setattr(symphony_api, "_reconcile_terminal_symphony_runtimes", AsyncMock())
+    monkeypatch.setattr("tcode_agent.server.job_workspace._find_matching_reviews_for_workspace", lambda _: [])
+    app = FastAPI()
+    app.include_router(symphony_api.router)
+    with TestClient(app) as client:
+        built_in, external, external_ref = client.get("/api/symphony/local-issues").json()["issues"]
+    assert built_in["workspace"]["job_id"] == "tcode-job-fixture"
+    assert built_in["workspace"]["issue_identifier"] == "LOCAL-BUILTIN"
+    assert built_in["workspace"]["timeline"] == built_in["timeline"]
+    assert any(item["kind"] == "submitted" for item in built_in["timeline"])
+    assert "timeline" not in external["workspace"]
+    assert "issue_identifier" not in external["workspace"]
+    assert "job_id" not in external_ref["workspace"] and not external_ref["timeline"]
+
+
 @pytest.mark.parametrize("managed,legacy,override,expected", [
     (True, False, "http://127.0.0.1:10121", "builtin"),
     (None, True, "http://127.0.0.1:10121/mcp/", "legacy"),
