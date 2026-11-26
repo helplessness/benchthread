@@ -89,6 +89,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   const [skillCatalog, setSkillCatalog] = createSignal<SkillCatalogItem[]>([]);
   const [skillsLoading, setSkillsLoading] = createSignal(false);
   const [skillsError, setSkillsError] = createSignal('');
+  const roundRef = () => composerDrafts.get(draftKey()).roundRef;
+  const roundSendHint = '已关联实验运行，请在空闲的普通原生会话中发送，或先移除运行引用。';
   const selectedSkills = () => composerDrafts.get(draftKey()).selectedSkills || [];
   const setSelectedSkills = (names: string[]) => composerDrafts.update(draftKey(), { selectedSkills: names });
   const attachedFiles = () => composerDrafts.get(draftKey()).files;
@@ -377,6 +379,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
 
   const resetComposer = () => {
     closeFileMentionMenu();
+    composerDrafts.update(draftKey(), {roundRef:undefined});
     setInput('');
     setAttachedFiles([]);
     setStructureRefs([]);
@@ -392,6 +395,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     mode: 'steer' | 'queue' = 'steer',
     staged?: StagedGuidance,
   ) => {
+    if (!staged && roundRef()) { setCommandFeedback(roundSendHint); return; }
     if (selectedSkills().length) { setCommandFeedback('请等待当前任务完成后发送带 Skill 的任务'); return; }
     const sessionId = sessionStore.currentSessionId();
     const key = draftKey();
@@ -454,6 +458,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   };
 
   const stageRunningGuidance = () => {
+    if (roundRef()) { setCommandFeedback(roundSendHint); return; }
     const finalMessage = buildFinalMessage();
     if (!finalMessage) return;
     if (attachedFiles().some(isImageAttachment)) {
@@ -486,6 +491,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   };
 
   const handleSideQuestionSubmit = async () => {
+    if (roundRef()) { setCommandFeedback(roundSendHint); return; }
     if (selectedSkills().length) { setCommandFeedback('已选 Skill 的任务请使用当前会话的发送按钮'); return; }
     const parentSessionId = sessionStore.currentSessionId();
     const finalMessage = buildFinalMessage();
@@ -1240,8 +1246,10 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     const requestedModel = activeModel();
     if (modelNoticeSession && !sessionStore.isRunning() && !guidingExistingGoal()) {
       if (!await confirmModelSwitch(modelNoticeSession, requestedModel)) return;
-      if (composerIdentity() !== modelNoticeIdentity || activeModel() !== requestedModel || sessionStore.isRunning() || modelTurnBlock()) return;
+      if (sessionStore.currentSessionId() !== modelNoticeSession || composerIdentity() !== modelNoticeIdentity || activeModel() !== requestedModel || sessionStore.isRunning() || modelTurnBlock()) return;
     }
+    const submittedRound = roundRef();
+    if (submittedRound && (goalMode() || sessionStore.isRunning() || selectedRuntimeId() !== 'tcode-native')) { setCommandFeedback(roundSendHint); return; }
     if (goalMode()) {
       if (selectedSkills().length) { setCommandFeedback('目标模式暂不支持指定 Skill，请让 Agent 按需加载技能。'); return; }
       if (attachedFiles().filter(isImageAttachment).length > 2) { setCommandFeedback('每轮最多上传 2 张图片供 Agent 视觉处理。'); return; }
@@ -1291,12 +1299,16 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     }
     const submittedSkills = [...selectedSkills()];
     if (submittedSkills.length && selectedRuntimeId() !== 'tcode-native') { setCommandFeedback('当前 Harness 不支持 TCode Skill 选择'); return; }
+    const submittedKey = draftKey();
+    const roundDraft = submittedRound ? { text: input(), files: attachedFiles(), structureRefs: structureRefs(),
+      selectedSkills: submittedSkills, roundRef: submittedRound } : undefined;
     resetComposer();
     setSelectedSkills([]);
 
     void sendMessage(finalMessage, {
       agent_name: sessionStore.selectedAgentName(),
       selected_skills: submittedSkills,
+      round_ref: submittedRound,
       model: activeModel(),
       runtime_id: currentHarnessState().runtime_id,
       reasoning_effort: sessionStore.selectedReasoningEffort(),
@@ -1325,6 +1337,9 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     }).catch((error) => {
       console.error('Failed to send message:', error);
       if (submittedSessionId && submittedIdentity === composerIdentity()) {
+        if (roundDraft) composerDrafts.update(submittedKey, { failed: {
+          ...roundDraft, id: generateId(), error: error instanceof Error ? error.message : '提交失败',
+        } });
         sessionStore.setSessionStatus(submittedSessionId, error instanceof Error ? error.message : '提交失败');
       }
     });
@@ -1498,6 +1513,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
         <Show when={commandFeedback()}><div role="status" class="mb-2 flex items-center justify-between gap-2 text-xs text-[#aab6bf]">
           <span>{commandFeedback()}</span><button type="button" aria-label="关闭命令提示" onClick={() => setCommandFeedback('')}>×</button>
         </div></Show>
+        <Show when={roundRef()}><div class="composer-skill-chip">已关联所选实验运行 <button type="button" aria-label="移除运行引用" onClick={() => composerDrafts.update(draftKey(), {roundRef:undefined})}>×</button></div></Show>
         <Show when={selectedSkills().length}><div class="mb-2 flex flex-wrap gap-2">
           <For each={selectedSkills()}>{name => <span data-testid="selected-skill" class="composer-skill-chip">
             <span>${name}</span><button type="button" aria-label={`移除技能 ${name}`} onClick={() => setSelectedSkills(selectedSkills().filter(item => item !== name))}>×</button>
@@ -1512,7 +1528,9 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
         <Show when={composerDrafts.get(draftKey()).failed}>
           {(failure) => <div role="alert" class="mb-3 rounded-xl border border-red-500/40 p-3 text-sm text-red-300">
             {failure().error}。内容已保留，可恢复后重试。
-            <button type="button" class="ml-2 underline" onClick={() => composerDrafts.restoreFailed(draftKey())}>恢复提交内容</button>
+            <button type="button" class="ml-2 underline" onClick={() => {
+              if (composerDrafts.restoreFailed(draftKey()) === false) setCommandFeedback('已保留两份内容。请先处理当前草稿，再恢复原实验轮次。');
+            }}>恢复提交内容</button>
           </div>}
         </Show>
         <Show when={activeWikiPage()}>

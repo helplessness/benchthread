@@ -348,6 +348,7 @@ export type SendMessageOptions = {
   external_swarm_fallback_on_error?: boolean;
   workdir?: string;
   workdir_name?: string;
+  round_ref?: import('../stores/composer').RoundRef;
   file_refs?: WorkspaceFileRef[];
   research_context?: {
     schema: 'tcode.research-chat-context.v1';
@@ -433,6 +434,7 @@ export async function sendMessage(message: string, options: SendMessageOptions =
     let socketSessionId = String(sessionId || '').trim();
     let settled = false;
     let socketErrored = false;
+    let requestSent = false;
     let ws: WebSocket;
     try {
       ws = new WebSocket(
@@ -511,10 +513,12 @@ export async function sendMessage(message: string, options: SendMessageOptions =
         } : {}),
         workdir: selectedWorkdir,
         workdir_name: selectedWorkdirName,
+        round_ref: options.round_ref,
         file_refs: options.file_refs,
         research_context: options.research_context,
         wiki_context: options.wiki_context,
       }));
+      requestSent = true;
     };
 
     ws.onmessage = async (event) => {
@@ -1536,6 +1540,11 @@ export async function sendMessage(message: string, options: SendMessageOptions =
       unregisterChatSocket(ws);
       if (targetSessionId) contextCompactingSessions.delete(targetSessionId);
       if (settled) return;
+      if (options.round_ref && !requestSent) {
+        sessionStore.setSessionIsRunning(targetSessionId, false);
+        settleRejected(new Error('未连接到聊天服务，实验请求未发送'));
+        return;
+      }
       if (targetSessionId && cancelRequestedSessions.has(targetSessionId)) {
         sessionStore.setSessionRunningTool(targetSessionId, null);
         sessionStore.setSessionPermissionRequest(targetSessionId, null);
