@@ -4,6 +4,17 @@ vi.mock('../components/FeedbackDialog', () => ({ confirmAction: confirm }));
 import { confirmModelSwitch, recordModelSwitch } from './modelSwitchNotice';
 beforeEach(() => { confirm.mockReset(); confirm.mockResolvedValue(true); });
 
+it('shows readable labels while confirming only the original model reference', async () => {
+  recordModelSwitch('labels', 'desktop-first/text', 'desktop-second/text', {
+    from: '文本模型 · 主服务', to: '文本模型 · 备用服务',
+  });
+  await confirmModelSwitch('labels', '文本模型 · 备用服务');
+  expect(confirm).not.toHaveBeenCalled();
+  expect(await confirmModelSwitch('labels', 'desktop-second/text')).toBe(true);
+  expect(confirm.mock.calls[0][0]).toContain('从 文本模型 · 主服务 切换为 文本模型 · 备用服务');
+  expect(confirm.mock.calls[0][0]).not.toContain('desktop-');
+});
+
 it('warns only on the next request, once for an acknowledged switch', async () => {
   recordModelSwitch('once', 'old', 'new');
   expect(confirm).not.toHaveBeenCalled();

@@ -82,6 +82,7 @@ export async function inspectTeamRouting(payload: {
 export type ModelOption = {
   id: string;
   provider_id: string;
+  provider_name?: string;
   model_id: string;
   name: string;
   supports_images?: boolean | null;

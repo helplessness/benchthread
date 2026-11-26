@@ -12,7 +12,8 @@ import GoalModePanel from './GoalModePanel';
 import HarnessSwitchNotice from './HarnessSwitchNotice';
 import { createComposerLayout } from './composer/createComposerLayout';
 import InteractionPanel from './composer/InteractionPanel';
-import { nativeModelTurnBlock, resolveActiveModel } from './composer/modelSelection';
+import { modelDisplayLabel, nativeModelTurnBlock, resolveActiveModel } from './composer/modelSelection';
+import type { ModelOption } from '../api/catalog';
 import { navigateInputHistory, type InputHistoryState } from './composer/inputHistory';
 import SlashCommandMenu from './composer/SlashCommandMenu';
 import { builtinCommands, filterCommands, findCommandTrigger, parseBuiltinCommand, skillCommandItems, type CommandItem } from './composer/slashCommands';
@@ -135,9 +136,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   const [agents, setAgents] = createSignal<
     Array<{ name: string; description: string; mode: string }>
   >([]);
-  const [models, setModels] = createSignal<
-    Array<{ id: string; provider_id: string; model_id: string; name: string; supports_images?: boolean | null }>
-  >([]);
+  const [models, setModels] = createSignal<ModelOption[]>([]);
   const [modelLoadError, setModelLoadError] = createSignal('');
   const [modelsLoading, setModelsLoading] = createSignal(false);
   const [nativeModelCatalogSession, setNativeModelCatalogSession] = createSignal<string>();
@@ -549,8 +548,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
       const options = selectedRuntimeId() === 'tcode-native' ? visibleModelOptions()
         : (runtimeOptions().find(runtime => runtime.runtime_id === selectedRuntimeId())?.models || [])
           .map(id => ({ id, name: id }));
-      return filterCommands(options.map(model => ({ id: model.id, label: model.name || model.id, value: model.id,
-        description: model.id, kind: 'model', current: model.id === activeModel(),
+      return filterCommands(options.map(model => ({ id: model.id, label: modelDisplayLabel(model), value: model.id,
+        description: '', kind: 'model', current: model.id === activeModel(),
         disabled: sessionStore.isRunning() || modelChangePending() || runtimeChangePending() ? '请等待当前任务或切换完成' : undefined })), commandQuery());
     }
     if (view === 'skills') return filterCommands(availableSkillItems(), commandQuery());
@@ -1140,9 +1139,11 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
       );
       sessionStore.applyServerHarnessState(sessionId, response);
       setSelectedModel(confirmedModel);
-      recordModelSwitch(sessionId, prev, confirmedModel);
+      const label = (id: string) => modelDisplayLabel(models().find(item => item.id === id) || { id, name: id });
+      const labels = { from: label(prev), to: label(confirmedModel) };
+      recordModelSwitch(sessionId, prev, confirmedModel, labels);
       await loadAvailableModels(sessionId);
-      sessionStore.setStatus(`模型已切换：${confirmedModel}`);
+      sessionStore.setStatus(`模型已切换：${labels.to}`);
     } catch (e) {
       console.error('Failed to switch model:', e);
       setSelectedModel(prev);
