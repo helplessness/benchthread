@@ -158,6 +158,7 @@ export default function ResearchStatePanel(props: Props) {
   const [findings, setFindings] = createSignal<ResearchFinding[]>([]);
   const [conflicts, setConflicts] = createSignal<ResearchConflict[]>([]);
   const [knowledge, setKnowledge] = createSignal<ResearchKnowledgeSnapshot | null>(null);
+  const [unavailable, setUnavailable] = createSignal<string[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [busy, setBusy] = createSignal('');
   const [error, setError] = createSignal('');
@@ -200,7 +201,7 @@ export default function ResearchStatePanel(props: Props) {
   });
   const readableGoal = createMemo(() => {
     const project = selectedProject();
-    return readableText(project?.description, 360) || readableText(project?.title, 240) || '尚未明确研究目标';
+    return readableText(checkpoint()?.research_goal, 360) || readableText(project?.description, 360) || readableText(project?.title, 240) || '尚未明确研究目标';
   });
   const readableCurrentState = createMemo(() => {
     const activity = projectActivities()[0];
@@ -210,6 +211,7 @@ export default function ResearchStatePanel(props: Props) {
     if (episodeSummary) return episodeSummary;
     const title = readableText(selectedProject()?.title, 160) || '当前课题';
     if (projectActivities().length || episodes().length) return `正在围绕“${title}”持续研究，新的过程已经记录，尚未提炼出明确结论。`;
+    if (unavailable().some(x => ['研究过程','研究活动'].includes(x))) return '部分进展记录暂不可用。';
     return '还没有形成阶段进展。开始研究后，这里会整理做过的工作和得到的结果。';
   });
   const readableQuestions = createMemo(() => {
@@ -222,6 +224,7 @@ export default function ResearchStatePanel(props: Props) {
   const readableNextActions = createMemo(() => {
     const values = provenanceValues(checkpoint()?.next_actions).map(progressMarkdown);
     if (values.length) return values;
+    if (unavailable().some(x => ['冲突','结论','检查点','研究过程','研究活动'].includes(x))) return ['部分研究记录尚未读到，暂不推断下一步。'];
     if (conflicts().some((item) => ['open', 'under_review'].includes(item.status))) {
       return ['先核对仍未解决的冲突，再决定采用哪一项结论。'];
     }
@@ -251,7 +254,7 @@ export default function ResearchStatePanel(props: Props) {
     const generation = ++loadGeneration, targetWorkspace = workspaceId();
     const scope = JSON.stringify([targetWorkspace, targetId]);
     if (scope !== loadedScope) {
-      loadedScope = scope;
+      loadedScope = scope; setUnavailable([]);
       setEpisodes([]); setActivities([]); setCheckpoint(null); setFindings([]); setConflicts([]); setKnowledge(null);
     }
     if (!targetId) {
@@ -267,7 +270,7 @@ export default function ResearchStatePanel(props: Props) {
     setLoading(true);
     setError('');
     try {
-      const [episodeResult, checkpointResult, activityResult, findingResult, conflictResult, knowledgeResult] = await Promise.all([
+      const [episodeResult, checkpointResult, activityResult, findingResult, conflictResult, knowledgeResult] = await Promise.allSettled([
         listResearchEpisodes(targetId, workspaceId()),
         getResearchCheckpoint(targetId, workspaceId()),
         listResearchActivities(workspaceId(), 'included'),
@@ -276,13 +279,15 @@ export default function ResearchStatePanel(props: Props) {
         getResearchKnowledge(targetId, workspaceId()),
       ]);
       if (generation !== loadGeneration || workspaceId() !== targetWorkspace || researchId() !== targetId) return;
-      setEpisodes(episodeResult.episodes || []);
-      setCheckpoint(checkpointResult.checkpoint || null);
-      setActivities(activityResult.activities || []);
-      setFindings(findingResult.findings || []);
-      setConflicts(conflictResult.conflicts || []);
-      setKnowledge(knowledgeResult);
-      setKnowledgePage(page => Math.min(page, Math.max(1, Math.ceil((knowledgeResult.links || []).length / 10))));
+      setUnavailable([episodeResult,checkpointResult,activityResult,findingResult,conflictResult,knowledgeResult].flatMap((r,i) => r.status === 'rejected' ? [['研究过程','检查点','研究活动','结论','冲突','知识'][i]] : []));
+      setEpisodes(episodeResult.status === 'fulfilled' ? episodeResult.value.episodes : []);
+      setCheckpoint(checkpointResult.status === 'fulfilled' ? checkpointResult.value.checkpoint : null);
+      setActivities(activityResult.status === 'fulfilled' ? activityResult.value.activities : []);
+      setFindings(findingResult.status === 'fulfilled' ? findingResult.value.findings : []);
+      setConflicts(conflictResult.status === 'fulfilled' ? conflictResult.value.conflicts : []);
+      const snapshot = knowledgeResult.status === 'fulfilled' ? knowledgeResult.value : null;
+      setKnowledge(snapshot);
+      setKnowledgePage(page => Math.min(page, Math.max(1, Math.ceil((snapshot?.links || []).length / 10))));
     } catch (e) {
       if (generation === loadGeneration && workspaceId() === targetWorkspace) setError(e instanceof Error ? e.message : '加载研究现场失败');
     } finally {
@@ -499,6 +504,7 @@ export default function ResearchStatePanel(props: Props) {
           </div>
         </div>
         <Show when={selectedProject()?.status === 'archived'}><p class="mt-3 text-xs">这是已归档课题，只供查看。</p></Show>
+        <Show when={unavailable().length}><div role="alert" class="mt-3 text-sm">{unavailable().join('、')}暂时无法读取。 <button type="button" onClick={() => void load()}>重新读取</button></div></Show>
         <Show when={error()}><div class="mt-3 rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/10 px-3 py-2 text-xs text-[#fca5a5]">{error()}</div></Show>
         <Show when={notice()}><div class="mt-3 rounded-lg border border-[#38bdf8]/25 bg-[#38bdf8]/8 px-3 py-2 text-xs text-[#8ed5ff]">{notice()}</div></Show>
       </div>
@@ -565,7 +571,7 @@ export default function ResearchStatePanel(props: Props) {
                   <div class="rounded-lg bg-[#171e23] p-3">
                     <div class="text-[10px] font-semibold tracking-wider text-[#c5a3ff]">仍需弄清</div>
                     <For each={readableQuestions()}>{(value) => <div class="mt-1">• {value}</div>}</For>
-                    <Show when={readableQuestions().length === 0}><div class="mt-1 text-[#71808a]">暂时没有明确的未决问题</div></Show>
+                    <Show when={readableQuestions().length === 0}><div class="mt-1 text-[#71808a]">{unavailable().includes('检查点') ? '检查点暂不可用。' : '暂时没有明确的未决问题'}</div></Show>
                   </div>
                   <div class="rounded-lg bg-[#171e23] p-3">
                     <div class="text-[10px] font-semibold tracking-wider text-[#ffc176]">建议下一步</div>
@@ -581,7 +587,7 @@ export default function ResearchStatePanel(props: Props) {
               <div class="flex flex-wrap gap-3">
                 <Show when={researchModuleVisible(modules()?.hypotheses?.length)}><button type="button" class="rounded-lg border px-3 py-2 text-sm" onClick={() => setModuleTab('hypotheses')}>研究假说{modules()?.hypotheses ? ` · ${modules()!.hypotheses!.length}` : ''}</button></Show>
                 <Show when={researchModuleVisible(modules()?.experiments?.length)}><button type="button" class="rounded-lg border px-3 py-2 text-sm" onClick={() => setModuleTab('experiments')}>实验与分支{modules()?.experiments ? ` · ${modules()!.experiments!.length}` : ''}</button></Show>
-                <Show when={modules()?.continuation}>{item => <button type="button" class="rounded-lg border px-3 py-2 text-sm" onClick={() => setModuleTab('continuation')}>持续研究 · {researchStatusLabel(item().status)} · 查看控制与预算</button>}</Show>
+                <Show when={modules()?.continuation}>{item => <button type="button" class="rounded-lg border px-3 py-2 text-sm" onClick={() => setModuleTab('continuation')}>持续研究 · {researchStatusLabel(item().status)} · 已运行 {item().runs_started}/{item().max_runs} 轮<Show when={item().stop_reason}> · {researchStatusLabel(item().stop_reason, '停止原因待核对')}</Show> · 查看详情</button>}</Show>
               </div>
               <details><summary class="cursor-pointer text-sm">关联会话 · 当前列表 {associatedSessions().length} 个</summary>
                 <p class="mt-2 text-xs">关联不代表全部消息已进入研究档案。历史会话可在课题管理及会话历史中查看。</p>
@@ -676,7 +682,7 @@ export default function ResearchStatePanel(props: Props) {
                 </div>
                 <button disabled={selectedProject()?.status === 'archived' || Boolean(busy())} class="rounded-lg border border-[#303539] px-2.5 py-1.5 text-[11px] text-[#bdc8d1]" onClick={() => void recordFinding()}>记录研究结论</button>
               </div>
-              <Show when={projectActivities().length === 0 && episodes().length === 0}><p class="mt-4 text-sm text-[#71808a]">还没有可展示的研究进展。</p></Show>
+              <Show when={projectActivities().length === 0 && episodes().length === 0}><p class="mt-4 text-sm text-[#71808a]">{unavailable().some(x => ['研究过程','研究活动'].includes(x)) ? '研究进展暂不可用。' : '还没有可展示的研究进展。'}</p></Show>
               <Show when={Math.max(projectActivities().length, episodes().length) > 5}><button type="button" class="mt-3 text-xs" onClick={() => setAllProgress(v => !v)}>{allProgress() ? '只看最近五条' : '查看全部进展'}</button></Show>
               <div class="research-scroll-list mt-3 space-y-3" aria-label="研究进展列表" tabIndex={0}>
                 <For each={allProgress() ? projectActivities() : projectActivities().slice(0, 5)}>
@@ -778,7 +784,7 @@ export default function ResearchStatePanel(props: Props) {
                 <div class="mt-3 rounded-lg border border-[#f1a02b]/25 bg-[#f1a02b]/6 px-3 py-2 text-[11px] text-[#ffc176]">研究知识可信链当前未开启。</div>
               </Show>
               <Show when={knowledge()?.count === 0 && knowledge()?.settings?.knowledge_links_active !== false}>
-                <p class="mt-4 text-sm text-[#71808a]">还没有整理来源关系。系统会把研究结论追溯到证据、论文原文片段和 Wiki 内容。</p>
+                <p class="mt-4 text-sm text-[#71808a]">{unavailable().includes('知识') ? '知识来源暂不可用。' : '还没有整理来源关系。系统会把研究结论追溯到证据、论文原文片段和 Wiki 内容。'}</p>
               </Show>
               <Show when={(knowledge()?.count || 0) > 0}>
                 <div class="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-5">
@@ -871,7 +877,7 @@ export default function ResearchStatePanel(props: Props) {
             <section class="rounded-xl border border-[#f1a02b]/25 bg-[#11171b] p-4">
               <h3 class="text-sm font-semibold text-[#ffc176]">待解决的结论冲突</h3>
               <p class="mt-1 text-[11px] text-[#8b99a4]">新旧结论互相矛盾时，两边都会保留，系统不会擅自替你选择。</p>
-              <Show when={conflicts().length === 0}><p class="mt-4 text-sm text-[#71808a]">当前没有研究冲突。</p></Show>
+              <Show when={conflicts().length === 0}><p class="mt-4 text-sm text-[#71808a]">{unavailable().includes('冲突') ? '冲突记录暂不可用。' : '当前没有研究冲突。'}</p></Show>
               <div class="research-scroll-list mt-3 space-y-3" aria-label="研究冲突列表" tabIndex={0}>
                 <Show when={conflicts().some(item => item.status === 'resolved')}><button type="button" onClick={() => setConflictHistory(value => !value)}>{conflictHistory() ? '收起已解决冲突' : '查看已解决冲突历史'}</button></Show>
                 <For each={conflicts().filter(item => conflictHistory() || item.status !== 'resolved')}>
@@ -897,7 +903,7 @@ export default function ResearchStatePanel(props: Props) {
             <Show when={!props.view || props.view === 'overview' || props.view === 'review'}>
             <section class="rounded-xl border border-[#2a3136] bg-[#11171b] p-4">
               <h3 class="text-sm font-semibold text-[#e6edf3]">研究结论与修正记录</h3>
-              <Show when={findings().length === 0}><p class="mt-4 text-sm text-[#71808a]">还没有正式记录的研究结论。阶段摘要不会自动冒充已确认事实。</p></Show>
+              <Show when={findings().length === 0}><p class="mt-4 text-sm text-[#71808a]">{unavailable().includes('结论') ? '研究结论暂不可用。' : '还没有正式记录的研究结论。阶段摘要不会自动冒充已确认事实。'}</p></Show>
               <div class="research-scroll-list mt-3 space-y-3" aria-label="研究结论列表" tabIndex={0}>
                 <For each={findings()}>
                   {(finding) => (

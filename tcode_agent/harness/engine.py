@@ -38,6 +38,38 @@ TERMINAL_TURN_STATES = {
     "cancelled",
 }
 
+_PREPARATION_TOOLS = frozenset({"read", "glob", "grep", "write", "edit"})
+_PUBLIC_QUEUE_RECEIPT = "远程任务已受理，结果等待后台回传。"
+_ACCEPTED_WORK_HINT = (
+    "远程任务已有本地受理回执，不等于已经执行成功。根据用户原始需求判断：若有不依赖远程结果的本地"
+    "文件工作，现在用已授权的工具实际完成；不要为了等待而另造任务。没有独立工作或已做完时，"
+    "简要说明已完成和仍待回传的部分并结束本轮。不要轮询、取结果、重提或假设结果。"
+)
+
+
+def _ordinary_queue_receipt(agent, call, result):
+    """Only durable submission receipts; status queries and review requests are not receipts."""
+    meta = result.metadata or {}
+    if (call.tool_name not in {"mcp_job-protocol-mcp_submit_job",
+                               f"mcp_{meta.get('routed_server')}_{meta.get('routed_tool')}"}
+            or meta.get("tracker") != "sqlite" or result.error or not meta.get("accepted_async")
+            or meta.get("identifier_kind") != "local_acceptance_id"
+            or not str(meta.get("identifier") or "").startswith("LOCAL-")
+            or meta.get("status") not in {"queued", "deduped"}
+            or str(meta.get("duplicate_state") or "").lower() in {
+                "done", "closed", "completed", "failed", "cancelled", "canceled", "terminated"}
+            or meta.get("human_review_required") or meta.get("tool_loop_terminal")):
+        return False
+    from ..mcp._utils import _async_submit_should_end_turn
+    from ..runtime.async_resume import active_resume
+    trace = getattr(agent, "_active_tool_trace_context", {}) or {}
+    return not (_async_submit_should_end_turn() or active_resume.get()
+                or getattr(agent, "_active_async_completion_receipt", None)
+                or callable(getattr(agent, "_goal_checkpoint_callback", None))
+                or trace.get("workflow_run_id") or trace.get("subagent_session_id") or trace.get("parent_session_id")
+                or getattr(getattr(getattr(agent, "agent_info", None), "mode", None), "value", "") in {"worker", "subagent", "manager"}
+                or getattr(getattr(agent, "_existing_session", None), "parent_id", None))
+
 
 def _observe_read_progress(tool_name, result, seen, repeats):
     """Bound repeated successful observations, never cache or invent a result."""
@@ -2231,6 +2263,8 @@ class AgentHarnessEngine:
         """Public terminal message; diagnostic details stay in tool records."""
         metadata = dict(result.metadata or {})
         if metadata.get("accepted_async"):
+            if metadata.get("identifier_kind") == "local_acceptance_id":
+                return _PUBLIC_QUEUE_RECEIPT
             return result.output or "任务已提交，结果出来后会继续处理。"
         if metadata.get("human_review_required"):
             return "这一步需要审核，审核完成后才能继续。"
@@ -3344,6 +3378,7 @@ class AgentHarnessEngine:
         parent_id: str,
         guidance_ids: list[str],
         boundary_reason: str = "",
+        boundary_kind: str = "computer_verification_boundary",
     ) -> Message:
         reason = boundary_reason or "Skipped because newer user guidance superseded this unstarted tool call."
         tool_call.state = ToolState.SKIPPED
@@ -3365,7 +3400,7 @@ class AgentHarnessEngine:
         if boundary_reason:
             for key in ("guidance_ids", "superseded_by_guidance", "semantic_disposition"):
                 metadata.pop(key, None)
-            metadata.update({"reason": "computer_verification_boundary", "execution_skipped": True})
+            metadata.update({"reason": boundary_kind, "execution_skipped": True})
         result_message = Message(
             role="tool",
             content=reason,
@@ -4267,6 +4302,10 @@ class AgentHarnessEngine:
 
     def _goal_has_chat_deliverable(self, contract: OutcomeContract) -> bool:
         from ..tools.builtin.goal_checkpoint import goal_checkpoint_active
+        if goal_checkpoint_active.get() and getattr(self.agent, "_goal_text_repair", False) is True:
+            # The supervisor has already classified the original deliverable.
+            # Quoting a file name in its draft must not turn a chat revision into file work.
+            return True
         return (
             goal_checkpoint_active.get()
             and not _workflow_stage_uses_its_own_validation(self.agent)
@@ -4556,13 +4595,13 @@ class AgentHarnessEngine:
             # Preparation/stream closure can exit before terminal persistence.
             # Release only this turn's exact owner; never clear another run.
             turn_id = str(getattr(self, "_active_guidance_turn_id", "") or "")
+            self._active_guidance_turn_id = ""
             if port is not None and owner_id and turn_id:
                 try:
                     await port.clear_turn_owner(
                         session_id=str(getattr(self.agent, "session_id", "") or ""),
                         turn_id=turn_id, owner_id=owner_id,
                     )
-                    self._active_guidance_turn_id = ""
                 except Exception:
                     pass  # The existing lease expiry remains the fallback.
 
@@ -4631,6 +4670,7 @@ class AgentHarnessEngine:
                 else []
             ),
             metadata=next_user_metadata,
+            presentation="async_hidden_prompt" if getattr(self.agent, "_goal_text_repair", False) is True else None,
         )
         turn_id = f"turn-{user_msg.id}"
         computer_task_text = getattr(self.agent, "_next_computer_task_text", "")
@@ -4984,11 +5024,13 @@ class AgentHarnessEngine:
             user_message, output_format, outcome_contract,
         )
         turn_id = f"turn-{user_msg.id}"
+        goal_preparation = bool(getattr(self.agent, "_goal_queue_preparation", False))
+        text_repair = getattr(self.agent, "_goal_text_repair", False) is True
         selected_skill_loader = getattr(self.agent, '_preload_selected_skills', None)
-        if callable(selected_skill_loader):
+        if not (goal_preparation or text_repair) and callable(selected_skill_loader):
             for selected_skill_message in await selected_skill_loader(parent_msg_id=user_msg.id):
                 yield selected_skill_message
-        preloaded_skill_msg = await self._safe_preload_recommended_skill(
+        preloaded_skill_msg = None if goal_preparation or text_repair else await self._safe_preload_recommended_skill(
             parent_msg_id=user_msg.id
         )
         if preloaded_skill_msg is not None:
@@ -5013,6 +5055,8 @@ class AgentHarnessEngine:
         workflow_min_iterations = _workflow_stage_min_iterations(self.agent)
         if workflow_min_iterations:
             max_iterations = max(max_iterations, workflow_min_iterations)
+        if text_repair:
+            max_iterations = 1
         iterations = 0
         tool_call_count = 0
         last_completed_tool_name = ""
@@ -5031,8 +5075,11 @@ class AgentHarnessEngine:
         repeated_read_results = 0
         read_progress_synthesis = False
         computer_action_progress: dict[str, Any] = {}
+        preparing_local = goal_preparation
 
         while iterations < max_iterations and not self.agent._abort_event.is_set():
+            if goal_preparation and iterations >= self.agent.agent_info.steps:
+                break
             iterations += 1
             if not tool_budget_notice_sent and tool_call_count > 0 and max_tool_calls - tool_call_count <= 5:
                 budget_notice = Message(
@@ -5086,11 +5133,20 @@ class AgentHarnessEngine:
                 )
             tools = (
                 []
-                if terminal_summary_mode or read_progress_synthesis
+                if terminal_summary_mode or read_progress_synthesis or text_repair
                 else await self._safe_get_tool_definitions()
             )
             if outcome_repair_attempts > 0:
                 tools = [tool for tool in tools if report_repair_calls < 4 and report_repair_paths.get(tool.name)]
+            if preparing_local and not (terminal_summary_mode or read_progress_synthesis or outcome_repair_attempts):
+                # Routing may have hidden file tools for a compute request. Reuse only
+                # already admitted local definitions, never activate tools session-wide.
+                candidates = getattr(self.agent, "_discoverable_tool_definitions", lambda: [])()
+                tools = list({t.name: t for t in [*candidates, *tools]}.values())
+            preparation_names = {t.name for t in tools if t.name in _PREPARATION_TOOLS
+                                 and getattr(t, "provider_id", None) == "tcode.builtin"}
+            if preparing_local:
+                tools = [t for t in tools if t.name in preparation_names and t.provider_id == "tcode.builtin"]
             read_progress_synthesis = False
             contract, guidance_messages = await self._apply_pending_guidance(
                 turn_id=turn_id,
@@ -5179,6 +5235,10 @@ class AgentHarnessEngine:
                 if llm_result is None:
                     continue
                 response_content, tool_calls, model_response = llm_result
+                if text_repair and (tool_calls or self._repair_protocol_fallback(response_content, "") is not None):
+                    # Providers need not honor an empty tool list. Fail the whole batch
+                    # before recording an action, asking for review or dispatching it.
+                    raise ValueError("聊天交付修订不允许工具调用，未执行任何操作")
                 output_budget_partial = _model_output_budget_partial(model_response)
                 contract, guidance_messages = await self._apply_pending_guidance(
                     turn_id=turn_id,
@@ -5210,6 +5270,20 @@ class AgentHarnessEngine:
                 )
                 raise
             except Exception as exc:
+                if text_repair:
+                    await self._persist_turn_state(turn_id=turn_id, state="failed", user_message_id=user_msg.id,
+                                                   iteration=iterations, error=str(exc), clear_active=True)
+                    raise
+                if preparing_local and not terminal_summary_mode and isinstance(exc, TimeoutError):
+                    final = Message(role="assistant", content=_PUBLIC_QUEUE_RECEIPT
+                                    + "\n未能继续核对本地准备工作；远程结果仍由后台回传。",
+                                    id=self.agent._generate_id(), parent_id=user_msg.id)
+                    self.agent.messages.append(final)
+                    await self._finalize_turn(user_message=user_message, final_message=final,
+                        turn_messages=self.agent.messages[turn_start_index:], turn_id=turn_id,
+                        user_message_id=user_msg.id, completion_state="partial")
+                    yield final
+                    return
                 if terminal_summary_mode and terminal_summary_result is not None:
                     fallback = await self._finalize_terminal_summary_fallback(
                         result=terminal_summary_result,
@@ -5249,6 +5323,11 @@ class AgentHarnessEngine:
                 f"iteration={iterations}"
             )
 
+            if preparing_local and not terminal_summary_mode and tool_calls and not any(
+                    (tc.get("function") or {}).get("name") in preparation_names for tc in tool_calls):
+                # A provider can return a tool even when its schema wasn't offered.
+                response_content = _PUBLIC_QUEUE_RECEIPT + "未执行额外调用。"
+                tool_calls = None
             if outcome_repair_attempts > 0 and tool_calls:
                 if self._report_repair_calls_allowed(tool_calls, report_repair_paths, 4-report_repair_calls,
                         pending_reads=self._report_repair_readback(turn_start_index), written=report_repair_written):
@@ -5356,7 +5435,7 @@ class AgentHarnessEngine:
                     validation.confidence = min(validation.confidence, 0.69)
                     self.agent._last_outcome_validation.update(validation.to_dict())
                 if (
-                    not terminal_summary_mode
+                    not terminal_summary_mode and not preparing_local
                     # Chat goals get their independent acceptance in GoalModeService.
                     # The generic repair is for existing file readback/writes and
                     # can turn a real chat answer into a terminal fallback.
@@ -5431,6 +5510,8 @@ class AgentHarnessEngine:
                 )
                 if getattr(validation, "advisory", False) and not terminal_summary_mode and not output_budget_partial:
                     completion_state = "partial" if validation.verification_status in {"PARTIAL", "UNVERIFIED"} else "completed"
+                if preparing_local and completion_state == "completed":
+                    completion_state = "partial"
 
                 if assistant_msg.content != previous_content:
                     await self._persist_turn_state(
@@ -5480,6 +5561,7 @@ class AgentHarnessEngine:
 
             print(f"\n🔧 第 {iterations} 轮工具调用:")
             guidance_replan = False
+            batch_submits = set()
             for tool_index, tool_call in enumerate(assistant_msg.tool_calls):
                 contract, guidance_messages = await self._apply_pending_guidance(
                     turn_id=turn_id,
@@ -5500,6 +5582,15 @@ class AgentHarnessEngine:
                     for guidance_message in guidance_messages:
                         yield guidance_message
                     break
+                submit = tool_call.tool_name == "mcp_job-protocol-mcp_submit_job"
+                fingerprint = self._tool_call_fingerprint(tool_call) if submit else ""
+                if preparing_local and tool_call.tool_name not in preparation_names and not (
+                        not goal_preparation and submit and batch_submits and fingerprint not in batch_submits):
+                    yield self._append_skipped_tool_result(tool_call, parent_id=assistant_msg.id, guidance_ids=[],
+                        boundary_kind="async_preparation", boundary_reason="已受理，跳过非本地准备调用；不轮询或重提。")
+                    continue
+                if submit:
+                    batch_submits.add(fingerprint)
                 tool_call_count += 1
                 print(f"└─ 工具: {tool_call.tool_name}")
                 print(
@@ -5540,9 +5631,13 @@ class AgentHarnessEngine:
                 last_completed_tool_name = str(tool_call.tool_name or "")
                 print(self._tool_result_console_line(result))
 
+                allow_preparation = _ordinary_queue_receipt(self.agent, tool_call, result)
+                if allow_preparation:
+                    preparing_local = True
                 tool_result_msg = Message(
                     role="tool",
-                    content=result.output or result.error or "",
+                    content=(_PUBLIC_QUEUE_RECEIPT + "\n" + _ACCEPTED_WORK_HINT if allow_preparation
+                             else result.output or result.error or ""),
                     id=self.agent._generate_id(),
                     parent_id=assistant_msg.id,
                 )
@@ -5747,6 +5842,8 @@ class AgentHarnessEngine:
                     tool_call,
                     result,
                 )
+                if allow_preparation:
+                    should_end_turn = iterations >= max_iterations and tool_index + 1 == len(assistant_msg.tool_calls)
                 if should_end_turn:
                     collected, extra_msgs = (
                         await self.agent._try_async_followup_collect(
@@ -5858,6 +5955,11 @@ class AgentHarnessEngine:
             if msg.role == "assistant":
                 last_assistant = msg
                 break
+        if preparing_local and last_assistant and last_assistant.tool_calls and not self.agent._abort_event.is_set():
+            last_assistant = Message(role="assistant", content=(
+                _PUBLIC_QUEUE_RECEIPT + "前台准备步骤已结束。"),
+                parent_id=user_msg.id, id=self.agent._generate_id())
+            self.agent.messages.append(last_assistant)
         self.agent._emit_agent_hook("message.stream.end", {
             "agent": self.agent.agent_info.name,
             "session_id": self.agent.session_id,

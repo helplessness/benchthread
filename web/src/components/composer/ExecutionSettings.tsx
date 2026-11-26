@@ -4,8 +4,9 @@ import { isWorkflowModeAgent } from '../../utils/teamRegistry';
 import { agentDisplayLabel, reasoningEffortLabel, reasoningEffortOptions } from './executionLabels';
 import { autoSwarmAvailability } from '../../utils/schedulerCapabilities';
 import SchedulerOptions from './SchedulerOptions';
+import { modelDisplayLabel } from './modelSelection';
+import type { ModelOption } from '../../api/catalog';
 
-type ModelOption = { id: string; provider_id: string; model_id: string; name: string };
 type RuntimeOption = { runtime_id: string; display_name: string; available: boolean; enabled: boolean; capabilities?: Record<string, unknown> };
 
 type ExecutionSettingsProps = {
@@ -63,6 +64,14 @@ export default function ExecutionSettings(props: ExecutionSettingsProps) {
   });
 
   const isNativeHarness = () => props.runtime.selected() === 'tcode-native';
+  const modelLabel = (model: ModelOption) => modelDisplayLabel(
+    isNativeHarness() ? model : { id: model.id, name: model.name },
+  );
+  const selectedModelLabel = () => {
+    const id = props.model.selected();
+    const option = props.model.visible().find(item => item.id === id);
+    return option ? modelLabel(option) : id ? modelDisplayLabel({ id, name: id }) : '选择模型';
+  };
   const showScheduler = () => {
     const name = sessionStore.selectedAgentName();
     const agent = props.agents().find(item => item.name === name);
@@ -88,7 +97,7 @@ export default function ExecutionSettings(props: ExecutionSettingsProps) {
         <select
           ref={modelSelectRef}
           aria-label="模型"
-          title={props.model.selected() || '选择模型'}
+          title={selectedModelLabel()}
           class="select select-sm h-8 w-[190px] min-w-0 shrink px-2 text-[11px] backdrop-blur-md sm:w-[220px]"
           style={{ background: 'color-mix(in srgb, var(--tcode-surface) 72%, transparent)', color: 'var(--tcode-text)', 'border-color': 'var(--tcode-border)' }}
           value={props.model.selected()}
@@ -97,7 +106,7 @@ export default function ExecutionSettings(props: ExecutionSettingsProps) {
           disabled={sessionStore.isRunning() || props.model.pending() || !sessionStore.currentSessionId() || props.model.available().length === 0}
         >
           <For each={props.model.visible().length > 0 ? props.model.visible() : [{ id: '', provider_id: '', model_id: '', name: props.model.error() ? '模型加载失败' : '无可用模型' }]}>
-            {(model) => <option value={model.id}>{model.id || model.name}</option>}
+            {(model) => <option value={model.id}>{modelLabel(model)}</option>}
           </For>
         </select>
 

@@ -59,6 +59,34 @@ def next_round(context, experiment_id, source_id, replacement):
     return arguments
 
 
+def checked_chat_round(ref, *, session_project, **owner):
+    """Resolve a display-free reference; never create a Run or grant approval."""
+    from .experiment_store import ResearchExperimentStore
+    from fastapi import HTTPException
+    from ..server.protein_runs_api import _runs_root, _safe_run_dir, _active_attempt, _attempt_records
+
+    invalid = "所选实验运行不可用，请回到当前课题重新选择。"
+    if not session_project or not isinstance(ref, dict) or ref.get("research_id") != session_project:
+        raise ValueError(invalid)
+    eid, rid = ref.get("experiment_id"), ref.get("run_id")
+    if not all(isinstance(key, str) and 0 < len(key) <= 160 for key in (eid, rid)):
+        raise ValueError(invalid)
+    try:
+        experiment = ResearchExperimentStore.get_experiment(eid, **owner)
+        if experiment.research_id != session_project or experiment.frozen_at:
+            raise ValueError(invalid)
+        base = Path(owner["workdir"]).resolve()
+        _, manifest = _safe_run_dir(rid, runs_root=_runs_root(base), workspace_path=base)
+        attempt = _active_attempt(_attempt_records(manifest, {})) or {}
+        if ((manifest.get("contract") or {}).get("research_experiment_id") != eid
+                or (attempt.get("target_server"), attempt.get("target_tool")) != BOLTZ
+                or attempt.get("status") != "completed"):
+            raise ValueError(invalid)
+    except (HTTPException, LookupError) as exc:
+        raise ValueError(invalid) from exc
+    return {"experiment_id": eid, "source_run_id": rid}
+
+
 def rounds_for(workdir, experiment_ids):
     from ..server.protein_runs_api import _runs_root, _safe_run_dir, _summary, _output_view
     from fastapi import HTTPException

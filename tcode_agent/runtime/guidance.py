@@ -24,6 +24,10 @@ class GuidanceStatus(str, Enum):
     FAILED = "failed"
 
 
+EXTERNAL_RESTART_CANCELLING = "external_restart_cancelling"
+EXTERNAL_RESTART_READY = "external_restart_ready"
+
+
 class GuidanceSafePoint(str, Enum):
     AFTER_RECOVERY = "after_recovery"
     BEFORE_COMPACTION = "before_compaction"

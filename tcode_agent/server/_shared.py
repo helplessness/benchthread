@@ -831,6 +831,7 @@ async def _cancel_runtime_subtree_for_interrupt_guidance(
     *,
     clear_guidance: bool = True,
     owner_kwargs: Optional[dict[str, str]] = None,
+    ensure_current: Optional[Callable[[], None]] = None,
 ) -> dict[str, Any]:
     """Cancel live work below a guided session before replanning that session.
 
@@ -849,6 +850,8 @@ async def _cancel_runtime_subtree_for_interrupt_guidance(
     cancelled_team_task_details: dict[str, dict[str, Any]] = {}
 
     for scoped_session_id in [session_id, *descendant_ids]:
+        if ensure_current:
+            ensure_current()
         if cancel_worker_task(scoped_session_id):
             cancelled_worker_session_ids.append(scoped_session_id)
         cancelled = await cancel_team_background_tasks(scoped_session_id)
@@ -863,6 +866,8 @@ async def _cancel_runtime_subtree_for_interrupt_guidance(
             )
 
     for sub in descendants:
+        if ensure_current:
+            ensure_current()
         await ServerState.cancel_session(sub.id, clear_guidance=clear_guidance)
 
     return {
@@ -4649,11 +4654,19 @@ async def _resume_session_after_human_review(
 
     if isinstance(review_data.get("goal_tool_execution"), dict):
         from .goal_tool_review import resume_review
-        return await resume_review(review, decision=decision)
-
-    if isinstance(review_data.get("goal_computation"), dict):
+        goal_grant = review_data["goal_tool_execution"]
+        goal_result = await resume_review(review, decision=decision)
+    elif isinstance(review_data.get("goal_computation"), dict):
         from .goal_computation import resume_approved_computation
-        return await resume_approved_computation(review, decision=decision)
+        goal_grant = review_data["goal_computation"]
+        goal_result = await resume_approved_computation(review, decision=decision)
+    else:
+        goal_grant = None
+    if goal_grant is not None:
+        if goal_result.get("status") in {"completed", "queued"} or goal_result.get("reason") == "revision_requested":
+            from .goal_mode import goal_service
+            goal_service.wake(session_id, goal_grant.get("goal_id"), f"review:{review.get('id')}:{decision}")
+        return goal_result
 
     if ServerState.is_running(session_id):
         return {
@@ -5803,6 +5816,7 @@ async def _run_external_session_turn_background(
     model_id: str = "",
     expected_switch_version: Optional[int] = None,
     guidance_id: str = "",
+    guidance_source_run_id: str = "",
 ) -> dict[str, Any]:
     """Run a durable background turn through the selected external backend."""
 
@@ -5933,6 +5947,7 @@ async def _run_external_session_turn_background(
         normalized_run,
         context,
         client_request_id=run_id,
+        **({"guidance_source_run_id": guidance_source_run_id} if guidance_source_run_id else {}),
     )
     metadata = dict(getattr(persisted_root, "metadata", {}) or {})
     metadata["harness"] = harness_handoff_store.projection(state)
@@ -6044,6 +6059,7 @@ async def _run_session_turn_background(
     model_id: str = "",
     harness_switch_version: Optional[int] = None,
     guidance_id: str = "",
+    guidance_source_run_id: str = "",
 ) -> dict[str, Any]:
     """Dispatch a background turn through the session's authoritative Harness."""
 
@@ -6080,6 +6096,7 @@ async def _run_session_turn_background(
         model_id=model_id,
         expected_switch_version=harness_switch_version,
         guidance_id=guidance_id,
+        guidance_source_run_id=guidance_source_run_id,
     )
 
 
@@ -6104,6 +6121,7 @@ async def _drain_session_guidance_v2(session_id: str) -> None:
     """Consume queued and external restart-turn guidance one at a time."""
 
     from ..runtime.gateway import run_coordinator
+    from ..runtime.guidance import EXTERNAL_RESTART_READY
     from .guidance_runtime import guidance_runtime
 
     lock = ServerState.get_session_lock(session_id)
@@ -6140,6 +6158,16 @@ async def _drain_session_guidance_v2(session_id: str) -> None:
                     workdir=workdir,
                     lease_seconds=30,
                 )
+                is_restart = item is not None
+                if is_restart and item.effect != EXTERNAL_RESTART_READY:
+                    # Older or interrupted classifiers could publish pending before cancelling.
+                    await asyncio.to_thread(
+                        GuidanceSQLiteStore.mark_failed, item=item,
+                        failure_code="expired_turn_unapplied",
+                        failure_detail="追加指导未应用，请重新发送。",
+                        owner=owner_scope, workdir=workdir,
+                    )
+                    continue
                 if item is None:
                     item = await asyncio.to_thread(
                         GuidanceSQLiteStore.claim_next_queue,
@@ -6202,6 +6230,7 @@ async def _drain_session_guidance_v2(session_id: str) -> None:
                         model_id=applying.model_id,
                         harness_switch_version=applying.harness_switch_version,
                         guidance_id=applying.id,
+                        **({"guidance_source_run_id": applying.source_run_id} if is_restart else {}),
                     )
                 )
                 message_written = False
@@ -6243,7 +6272,10 @@ async def _drain_session_guidance_v2(session_id: str) -> None:
                             await asyncio.to_thread(
                                 GuidanceSQLiteStore.mark_failed,
                                 item=applying,
-                                failure_code="queue_turn_not_started",
+                                failure_code=(
+                                    "expired_turn_unapplied" if getattr(exc, "code", "") == "guidance_source_run_stale"
+                                    else "queue_turn_not_started"
+                                ),
                                 failure_detail=str(exc),
                                 owner=owner_scope,
                                 workdir=workdir,

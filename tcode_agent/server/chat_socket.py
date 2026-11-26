@@ -694,6 +694,22 @@ async def websocket_chat(websocket: WebSocket):
             origin_token = active_origin.set({"session_id": session_id, "request_id": client_request_id,
                 "request": message, "message_id": str(uuid.uuid4())})
 
+            selected_round = None
+            if request.get("round_ref") is not None:
+                from ..research.boltz_rounds import checked_chat_round
+                from .research_api import _experiment_owner
+                try:
+                    if requested_runtime_id != "tcode-native":
+                        raise ValueError("关联实验运行需要原生会话。")
+                    selected_round = await asyncio.to_thread(
+                        checked_chat_round, request["round_ref"],
+                        session_project=(getattr(resource_persisted, "metadata", {}) or {}).get("research_id"),
+                        **_experiment_owner(workspace_context),
+                    )
+                except ValueError as exc:
+                    await websocket.send_json({"type": "error", "error": str(exc), "session_id": resource_session_id, "done": True})
+                    await websocket.close(code=1000)
+                    return
             if requested_runtime_id != "tcode-native":
                 from ..plugins.registry import PluginRegistry
                 if requested_agent_name in PluginRegistry.agent_names():
@@ -1844,6 +1860,8 @@ async def websocket_chat(websocket: WebSocket):
                 user_message_metadata: dict[str, Any] = {
                     "source_runtime_id": "tcode-native"
                 }
+                if selected_round:
+                    user_message_metadata['research_round'] = selected_round
                 if async_receipt:
                     user_message_metadata["async_completion_receipt"] = async_receipt
                 # Only this direct human ingress supplies computer task intent.

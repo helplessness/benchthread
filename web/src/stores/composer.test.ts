@@ -10,6 +10,19 @@ beforeEach(() => {
 });
 
 describe('composer draft persistence', () => {
+  it('restores a failed experiment submission intact only into an empty draft', () => {
+    const key = composerKey('round-retry');
+    const roundRef = { research_id: 'project', experiment_id: 'experiment', run_id: 'selected-not-latest' };
+    const files = [{ id: 'replacement', name: 'replacement.txt', mode: 'content' as const, content: 'sample' }];
+    const original = { text: '换这个文件继续', files, roundRef, selectedSkills: ['chosen'] };
+    const failed = { ...original, error: '断开连接', id: 'test' };
+    composerDrafts.update(key, { text: '新草稿', failed });
+    expect(composerDrafts.restoreFailed(key)).toBe(false);
+    expect(composerDrafts.get(key)).toMatchObject({ text: '新草稿', failed });
+    composerDrafts.update(key, { text: '' });
+    composerDrafts.restoreFailed(key);
+    expect(composerDrafts.get(key)).toMatchObject({ ...original, failed: undefined });
+  });
   it('rehydrates selected skills only in their own session draft', () => {
     const key = composerKey('skills-restored');
     localStorage.setItem('tcode-composer-v1:' + key, JSON.stringify({ text: '预测结构', selectedSkills: ['boltz-runner', null, 123] }));

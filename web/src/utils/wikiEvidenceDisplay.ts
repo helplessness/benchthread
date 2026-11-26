@@ -56,3 +56,10 @@ export const buildWikiAgentDisplayContent = (
     .join('\n');
 };
 
+export function supportLabel(status: string): string {
+  return ({
+    supported: '有证据支持', partially_supported: '部分支持', manual_unverified: '人工记录，尚未核实',
+    conflicting: '证据存在冲突', retracted: '已撤回', stale: '证据状态已过时',
+  } as Record<string, string>)[status] || '支持情况待核对';
+}
+

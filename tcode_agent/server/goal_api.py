@@ -56,6 +56,9 @@ def goal_response(session, goal):
     # Observation belongs to every response, never to persisted goal metadata.
     if goal:
         goal = dict(goal)
+        goal.pop('progress_observations', None)
+        goal.pop('pending_text_repair', None)  # Private verifier/source handoff.
+        goal.pop('text_repair_run_id', None)
         # A local observation is not a live remote health check or cancellation receipt.
         from ..runtime.task_runtime import TaskRuntimeStore
         try:
@@ -117,6 +120,7 @@ async def _create_goal(session_id, body, request):
         return goal
     created = await SessionManager.mutate(session_id, mutate, **scope)
     await goal_service.start()
+    goal_service.wake(session_id, created['id'], 'created')
     return goal_response(session, created)
 
 
@@ -138,6 +142,8 @@ async def _apply_goal_action(session_id, body, request):
         result = await change_goal(session_id, scope, goal['id'],
                                   auto_approve_reviews=body.auto_approve_reviews,
                                   max_auto_computations=body.max_auto_computations)
+        if result and result['status'] in ACTIVE | {'needs_input'}:
+            goal_service.wake(session_id, goal['id'])
         return goal_response(session, result)
     if body.action == 'answer':
         from ._shared import _is_chat_session_busy
@@ -208,7 +214,7 @@ async def _apply_goal_action(session_id, body, request):
             latest = public_goal(current)
             if not latest or latest['id'] != body.goal_id or latest['status'] in {'completed', 'stopped'}:
                 raise HTTPException(409, '目标状态已变化，请刷新后重试')
-            if latest['status'] in {'paused', 'needs_input'}:
+            if latest['status'] == 'needs_input':
                 latest.update(status='ready', reason='')
             latest['updated_at'] = time.time()
             record_goal_guidance(current, latest, body.note.strip())
@@ -237,4 +243,8 @@ async def _apply_goal_action(session_id, body, request):
                                    deadline=deadline, next_step=body.note.strip() or goal.get('next_step', ''), guidance_note=body.note.strip(),
                                    **({'desktop_permission_mode': body.desktop_permission_mode} if body.desktop_permission_mode is not None else {}))
         await goal_service.start()
+    if result and result['status'] in ACTIVE:
+        event_id = (f"guidance:{result.get('guidance_version', 0)}" if body.action in {'guide', 'answer'}
+                    else f"{body.action}:{result['updated_at']}")
+        goal_service.wake(session_id, goal['id'], event_id)
     return goal_response(session, result)

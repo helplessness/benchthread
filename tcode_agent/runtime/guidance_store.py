@@ -12,6 +12,8 @@ from typing import Any, Iterable, Iterator, Optional
 
 from ..session.store_sqlite import SessionSQLiteStore
 from .guidance import (
+    EXTERNAL_RESTART_CANCELLING,
+    EXTERNAL_RESTART_READY,
     GuidanceClaimLost,
     GuidanceItem,
     GuidanceMode,
@@ -35,6 +37,30 @@ _ACTIVE_STATUSES = (
     "deferred",
     "applying",
 )
+
+_BOUND_NATIVE_STEER = "mode = 'steer' AND runtime_id = 'tcode-native' AND target_turn_id != ''"
+_LIVE_GUIDANCE_TARGET = """
+    EXISTS (
+        SELECT 1 FROM guidance_turn_owners
+        WHERE session_id = guidance_items.session_id AND turn_id = guidance_items.target_turn_id
+          AND completion_fenced = 0 AND lease_expires_at >= ?
+    )
+"""
+# An absent lease is not enough. The engine records last_turn before deleting its owner.
+_ENDED_GUIDANCE_TURN = """
+    (
+        EXISTS (
+            SELECT 1 FROM guidance_turn_owners
+            WHERE session_id = guidance_items.session_id AND turn_id = guidance_items.target_turn_id
+              AND (completion_fenced = 1 OR lease_expires_at < ?)
+        )
+        OR EXISTS (
+            SELECT 1 FROM sessions
+            WHERE id = guidance_items.session_id
+              AND json_extract(metadata_json, '$.last_turn.turn_id') = guidance_items.target_turn_id
+        )
+    )
+"""
 
 
 def _json_dump(value: Any) -> str:
@@ -64,14 +90,17 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 class GuidanceSQLiteStore:
-    """Synchronous store. Async callers must use ``asyncio.to_thread``."""
+    """Synchronous store; use a worker thread except for fail-fast idle recovery."""
 
     @classmethod
     @contextmanager
-    def _transaction(cls, workdir: str) -> Iterator[sqlite3.Connection]:
-        SessionSQLiteStore.ensure_initialized(workdir, force_migration=False)
+    def _transaction(cls, workdir: str, *, no_wait: bool = False) -> Iterator[sqlite3.Connection]:
+        if not no_wait:
+            SessionSQLiteStore.ensure_initialized(workdir, force_migration=False)
         conn = SessionSQLiteStore._connect(workdir)
         try:
+            if no_wait:
+                conn.execute("PRAGMA busy_timeout = 0")
             conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.execute("COMMIT")
@@ -465,14 +494,15 @@ class GuidanceSQLiteStore:
         now = time.time()
         with cls._transaction(workdir) as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT * FROM guidance_items
                 WHERE tenant_id = ? AND user_id = ? AND workspace_id = ?
                   AND status = 'classifying'
                   AND (claim_token = '' OR claim_lease_expires_at IS NULL OR claim_lease_expires_at < ?)
+                  AND (NOT ({_BOUND_NATIVE_STEER}) OR {_LIVE_GUIDANCE_TARGET})
                 ORDER BY created_at, sequence LIMIT 1
                 """,
-                (*cls._owner_tuple(owner), now),
+                (*cls._owner_tuple(owner), now, now),
             ).fetchone()
             if row is None:
                 return None
@@ -517,13 +547,18 @@ class GuidanceSQLiteStore:
             cls._assert_claim(row, claim_token, now)
             if str(row["status"]) != GuidanceStatus.CLASSIFYING.value:
                 raise GuidanceVersionConflict("guidance is no longer classifying")
+            if conn.execute(
+                f"SELECT 1 FROM guidance_items WHERE id = ? AND {_BOUND_NATIVE_STEER} AND NOT ({_LIVE_GUIDANCE_TARGET})",
+                (guidance_id, now),
+            ).fetchone():
+                raise GuidanceStaleTurn("the turn targeted by guidance is no longer active")
             revision = dict(contract_revision or {})
             is_cancel = (
                 str(revision.get("classification") or "").upper() == "CANCEL"
                 and not bool(revision.get("needs_user_confirmation"))
             )
-            next_status = "applying" if is_cancel else "pending"
-            clear_claim = not is_cancel
+            next_status = "applying" if is_cancel or effect == EXTERNAL_RESTART_CANCELLING else "pending"
+            clear_claim = next_status == "pending"
             conn.execute(
                 """
                 UPDATE guidance_items SET status = ?, contract_revision_json = ?,
@@ -548,7 +583,7 @@ class GuidanceSQLiteStore:
             cls._outbox(
                 conn,
                 row=updated,
-                event_type="guidance.applying" if is_cancel else "guidance.pending",
+                event_type=f"guidance.{next_status}",
             )
             return cls._item_from_row(updated)
 
@@ -879,6 +914,7 @@ class GuidanceSQLiteStore:
             updated_items: list[GuidanceItem] = []
             for row in rows:
                 terminal = status == "applied"
+                release_claim = terminal or status == "pending"
                 conn.execute(
                     """
                     UPDATE guidance_items SET status = ?, effect = ?, applied_at = ?,
@@ -889,9 +925,9 @@ class GuidanceSQLiteStore:
                         status,
                         str(effect or row["effect"] or ""),
                         now if terminal else row["applied_at"],
-                        "" if terminal else str(row["claim_owner"] or ""),
-                        "" if terminal else str(row["claim_token"] or ""),
-                        None if terminal else row["claim_lease_expires_at"],
+                        "" if release_claim else str(row["claim_owner"] or ""),
+                        "" if release_claim else str(row["claim_token"] or ""),
+                        None if release_claim else row["claim_lease_expires_at"],
                         now,
                         str(row["id"]),
                     ),
@@ -900,6 +936,16 @@ class GuidanceSQLiteStore:
                 cls._outbox(conn, row=updated, event_type=f"guidance.{status}")
                 updated_items.append(cls._item_from_row(updated))
             return updated_items
+
+    @classmethod
+    def mark_external_restart_ready(
+        cls, *, item: GuidanceItem, owner: OwnerScope, workdir: str,
+    ) -> GuidanceItem:
+        if item.effect != EXTERNAL_RESTART_CANCELLING:
+            raise GuidanceVersionConflict("guidance is not awaiting source cancellation")
+        return cls._transition_claimed_batch(
+            items=[item], status="pending", effect=EXTERNAL_RESTART_READY, owner=owner, workdir=workdir,
+        )[0]
 
     @classmethod
     def mark_applying(
@@ -1049,6 +1095,7 @@ class GuidanceSQLiteStore:
         statuses: Optional[Iterable[GuidanceStatus | str]] = None,
         after_sequence: int = 0,
         limit: int = 100,
+        prefer_recent: bool = False,
     ) -> list[GuidanceItem]:
         SessionSQLiteStore.ensure_initialized(workdir, force_migration=False)
         conn = SessionSQLiteStore._connect(workdir)
@@ -1064,19 +1111,81 @@ class GuidanceSQLiteStore:
                 placeholders = ",".join("?" for _ in status_values)
                 status_sql = f" AND status IN ({placeholders})"
                 params.extend(status_values)
-            params.append(max(1, min(int(limit), 500)))
-            rows = conn.execute(
-                f"""
-                SELECT * FROM guidance_items
+            page_size = max(1, min(int(limit), 500))
+            scoped = f"""SELECT * FROM guidance_items
                 WHERE session_id = ? AND tenant_id = ? AND user_id = ?
-                  AND workspace_id = ? AND sequence > ? {status_sql}
-                ORDER BY sequence LIMIT ?
-                """,
-                params,
-            ).fetchall()
+                  AND workspace_id = ? AND sequence > ? {status_sql}"""
+            if prefer_recent:
+                # Only completed history is paged. Never trade a pending item for a notice.
+                active = "('classifying','pending','claimed','deferred','applying')"
+                rows = conn.execute(
+                    f"""WITH scoped AS ({scoped}),
+                    recent_history AS (
+                        SELECT * FROM scoped WHERE status NOT IN {active}
+                        ORDER BY sequence DESC LIMIT ?
+                    )
+                    SELECT * FROM scoped WHERE status IN {active}
+                    UNION ALL SELECT * FROM recent_history ORDER BY sequence""",
+                    (*params, page_size),
+                ).fetchall()
+            else:
+                rows = conn.execute(f"{scoped} ORDER BY sequence LIMIT ?", (*params, page_size)).fetchall()
             return [cls._item_from_row(row) for row in rows]
         finally:
             conn.close()
+
+    @classmethod
+    def historical_ended_turn_ids(
+        cls, *, session_id: str, owner: OwnerScope, workdir: str,
+    ) -> set[str]:
+        """Read verified history only for active steer entries missing current end evidence."""
+        from ..session.event_archive import EventArchiveStore
+        from ..session.events import SessionEventIntegrityError, SessionEventStore
+
+        now = time.time()
+        SessionSQLiteStore.ensure_initialized(workdir, force_migration=False)
+        conn = SessionSQLiteStore._connect(workdir)
+        try:
+            targets = {str(row[0]) for row in conn.execute(
+                f"""SELECT DISTINCT target_turn_id FROM guidance_items
+                WHERE session_id = ? AND tenant_id = ? AND user_id = ? AND workspace_id = ?
+                  AND {_BOUND_NATIVE_STEER} AND status IN (?, ?, ?, ?, ?)
+                  AND NOT ({_ENDED_GUIDANCE_TURN}) AND NOT ({_LIVE_GUIDANCE_TARGET})""",
+                (session_id, *cls._owner_tuple(owner), *_ACTIVE_STATUSES, now, now),
+            )}
+        finally:
+            conn.close()
+        if not targets:
+            return set()
+
+        owner_keys = dict(zip(("tenant_id", "user_id", "workspace_id"), cls._owner_tuple(owner)))
+
+        def ended_id(event: dict[str, Any]) -> str:
+            if (event.get("event_type") != "turn.state"
+                    or (event.get("metadata") or {}).get("terminal") is not True
+                    or any((event.get("owner") or {}).get(key) != value for key, value in owner_keys.items())):
+                return ""
+            return str((event.get("payload") or {}).get("turn_id") or "")
+
+        try:
+            ended = targets.intersection(ended_id(event) for event in SessionEventStore.list(session_id, workdir=workdir))
+        except (OSError, SessionEventIntegrityError):
+            ended = set()
+        for target in targets - ended:
+            try:
+                hits = EventArchiveStore.search(
+                    session_id, query=target, event_type="turn.state", owner=owner_keys, workdir=workdir,
+                )
+                for hit in hits:
+                    event = EventArchiveStore.read(
+                        hit["archive_event_id"], session_id=session_id, owner=owner_keys, workdir=workdir,
+                    )
+                    if event and ended_id(event) == target:
+                        ended.add(target)
+                        break
+            except (OSError, RuntimeError, ValueError, sqlite3.Error, StopIteration):
+                continue  # Unavailable or damaged history isn't evidence of completion.
+        return ended
 
     @classmethod
     def reconcile_expired_claims(
@@ -1086,33 +1195,71 @@ class GuidanceSQLiteStore:
         workdir: str,
         now: Optional[float] = None,
         limit: int = 100,
+        idle_native_session_id: Optional[str] = None,
+        historical_ended_turn_ids: Iterable[str] = (),
     ) -> list[GuidanceItem]:
+        """Repair leases; idle native guidance is settled without ever requeuing it."""
         current = float(now or time.time())
-        with cls._transaction(workdir) as conn:
+        idle_recovery = idle_native_session_id is not None
+        if idle_recovery:
+            scope_sql = f"""
+                AND session_id = ? AND {_BOUND_NATIVE_STEER}
+                AND ({_ENDED_GUIDANCE_TURN} OR target_turn_id IN (SELECT value FROM json_each(?)))
+                AND (
+                    (status IN ('classifying', 'pending', 'deferred') AND claim_token = '')
+                    OR (status IN ('classifying', 'claimed', 'applying') AND claim_token != ''
+                        AND claim_lease_expires_at < ?)
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM guidance_turn_owners
+                    WHERE guidance_turn_owners.session_id = guidance_items.session_id
+                      AND completion_fenced = 0 AND lease_expires_at >= ?
+                )
+            """
+            scope_args = (idle_native_session_id, current, _json_dump(sorted(set(historical_ended_turn_ids))), current, current)
+        else:
+            # Queue/classifier recovery doesn't own native turns from another session.
+            scope_sql = f"""
+                AND status IN ('classifying', 'claimed', 'applying')
+                AND claim_token != '' AND claim_lease_expires_at < ?
+                AND NOT ({_BOUND_NATIVE_STEER} AND (
+                    status IN ('claimed', 'applying') OR {_ENDED_GUIDANCE_TURN}
+                ))
+            """
+            scope_args = (current, current)
+        with cls._transaction(workdir, no_wait=idle_recovery) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM guidance_items
                 WHERE tenant_id = ? AND user_id = ? AND workspace_id = ?
-                  AND status IN ('classifying', 'claimed', 'applying')
-                  AND claim_token != '' AND claim_lease_expires_at < ?
+                {scope_sql}
                 ORDER BY claim_lease_expires_at LIMIT ?
                 """,
-                (*cls._owner_tuple(owner), current, max(1, min(int(limit), 500))),
+                (*cls._owner_tuple(owner), *scope_args, max(1, min(int(limit), 500))),
             ).fetchall()
             reconciled: list[GuidanceItem] = []
             for row in rows:
                 message_exists = conn.execute(
                     """
                     SELECT 1 FROM messages
-                    WHERE session_id = ? AND guidance_id = ? LIMIT 1
+                    WHERE session_id = ? AND guidance_id = ? AND (NOT ? OR role = 'user')
+                    LIMIT 1
                     """,
-                    (str(row["session_id"]), str(row["id"])),
+                    (str(row["session_id"]), str(row["id"]), idle_recovery),
                 ).fetchone()
                 old_status = str(row["status"])
-                if old_status == "applying" and message_exists is not None:
+                failure_code = str(row["failure_code"] or "")
+                failure_detail = str(row["failure_detail"] or "")
+                if (idle_recovery or old_status == "applying") and message_exists is not None:
                     next_status = "applied"
                     applied_at = current
                     effect = str(row["effect"] or "reconciled_message")
+                elif idle_recovery:
+                    next_status = "failed"
+                    applied_at = None
+                    effect = ""
+                    failure_code = "expired_turn_unapplied"
+                    failure_detail = "追加指导未应用，请重新发送。"
                 elif old_status == "classifying":
                     next_status = "classifying"
                     applied_at = row["applied_at"]
@@ -1127,7 +1274,8 @@ class GuidanceSQLiteStore:
                 conn.execute(
                     """
                     UPDATE guidance_items SET status = ?, target_turn_id = ?, effect = ?,
-                        applied_at = ?, claim_owner = '', claim_token = '',
+                        applied_at = ?, failure_code = ?, failure_detail = ?,
+                        claim_owner = '', claim_token = '',
                         claim_lease_expires_at = NULL, updated_at = ?, version = version + 1
                     WHERE id = ?
                     """,
@@ -1136,6 +1284,8 @@ class GuidanceSQLiteStore:
                         target_turn_id,
                         effect,
                         applied_at,
+                        failure_code,
+                        failure_detail,
                         current,
                         str(row["id"]),
                     ),
@@ -1375,9 +1525,10 @@ class GuidanceSQLiteStore:
                 SELECT COUNT(*) AS count FROM guidance_items
                 WHERE session_id = ? AND mode = 'steer'
                   AND runtime_id != 'tcode-native' AND source_run_id != ''
-                  AND status IN ('classifying','pending','claimed','deferred','applying')
+                  AND (status = 'pending' OR (status IN ('claimed','applying') AND effect = ?)
+                      OR (status = 'applying' AND effect = ? AND claim_lease_expires_at < ?))
                 """,
-                (session_id,),
+                (session_id, EXTERNAL_RESTART_READY, EXTERNAL_RESTART_CANCELLING, time.time()),
             ).fetchone()
             return {
                 "pending_steer_count": counts.get("steer", 0),

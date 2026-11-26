@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from ..runtime.guidance import (
+    EXTERNAL_RESTART_CANCELLING,
     GuidanceController,
     GuidanceItem,
     GuidanceMode,
+    GuidanceStaleTurn,
     GuidanceStatus,
     OwnerScope,
 )
@@ -186,6 +188,16 @@ class GuidanceRuntime:
         cancel_turn: CancelTurn,
         post_classify: Optional[PostClassify],
     ) -> None:
+        async def notify_classified(item: GuidanceItem) -> None:
+            if post_classify is not None:
+                try:
+                    await post_classify(item)
+                except GuidanceStaleTurn:
+                    raise
+                except Exception:
+                    # Optional descendant cancellation must not lose guidance.
+                    pass
+
         classifier_id = f"classifier:{uuid.uuid4()}"
         while not self._closed:
             item = await asyncio.to_thread(
@@ -202,6 +214,7 @@ class GuidanceRuntime:
             if item is None:
                 return
             started_at = asyncio.get_running_loop().time()
+            classified = None
             try:
                 timeout = _env_float(
                     "TCODE_GUIDANCE_CLASSIFY_TIMEOUT_SECONDS", 12, 2, 60
@@ -229,16 +242,14 @@ class GuidanceRuntime:
                     owner=owner,
                     workdir=workdir,
                 )
-                if post_classify is not None:
-                    try:
-                        await post_classify(classified)
-                    except Exception:
-                        # Descendant cancellation is conservative and optional;
-                        # failure preserves children and must not lose guidance.
-                        pass
+                restarting_external = classified.effect == EXTERNAL_RESTART_CANCELLING
+                if not restarting_external:
+                    await notify_classified(classified)
                 if classified.status is GuidanceStatus.APPLYING:
                     try:
                         await cancel_turn(classified)
+                    except GuidanceStaleTurn:
+                        raise
                     except Exception as exc:
                         await asyncio.to_thread(
                             GuidanceSQLiteStore.mark_failed,
@@ -249,13 +260,20 @@ class GuidanceRuntime:
                             workdir=workdir,
                         )
                     else:
-                        await asyncio.to_thread(
-                            GuidanceSQLiteStore.mark_applied,
-                            items=[classified],
-                            effect="turn_cancelled",
-                            owner=owner,
-                            workdir=workdir,
-                        )
+                        if restarting_external:
+                            classified = await asyncio.to_thread(
+                                GuidanceSQLiteStore.mark_external_restart_ready,
+                                item=classified, owner=owner, workdir=workdir,
+                            )
+                            await notify_classified(classified)
+                        else:
+                            await asyncio.to_thread(
+                                GuidanceSQLiteStore.mark_applied,
+                                items=[classified],
+                                effect="turn_cancelled",
+                                owner=owner,
+                                workdir=workdir,
+                            )
                 TelemetryGateway.emit(
                     "guidance.classification",
                     {
@@ -274,16 +292,19 @@ class GuidanceRuntime:
                 raise
             except Exception as exc:
                 try:
-                    await asyncio.to_thread(
-                        GuidanceSQLiteStore.fail_classification,
-                        guidance_id=item.id,
-                        claim_token=item.claim_token,
-                        expected_version=item.version,
-                        failure_code="classification_failed",
-                        failure_detail=str(exc),
-                        owner=owner,
-                        workdir=workdir,
-                    )
+                    stale = isinstance(exc, GuidanceStaleTurn)
+                    failure = {
+                        "failure_code": "expired_turn_unapplied" if stale else "classification_failed",
+                        "failure_detail": "追加指导未应用，请重新发送。" if stale else str(exc),
+                        "owner": owner, "workdir": workdir,
+                    }
+                    if stale and classified is not None:
+                        await asyncio.to_thread(GuidanceSQLiteStore.mark_failed, item=classified, **failure)
+                    else:
+                        await asyncio.to_thread(
+                            GuidanceSQLiteStore.fail_classification, guidance_id=item.id,
+                            claim_token=item.claim_token, expected_version=item.version, **failure,
+                        )
                 except Exception:
                     pass
                 TelemetryGateway.emit(

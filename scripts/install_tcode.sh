@@ -52,6 +52,9 @@ TCode ${TCODE_VERSION:-$(cat VERSION)} 已安装到 $VENV_DIR
   mkdir -p workdirs/local
   TCODE_PROJECT_ROOT="$PROJECT_ROOT" "$VENV_DIR/bin/tcode-server" --local --workdir "$PROJECT_ROOT/workdirs/local"
 打开 http://127.0.0.1:8080 在设置中添加模型；已在 .tcode-local/tcode.json 配好模型和凭据的可直接聊天。
-已有部署（加载本机环境文件）：PYTHON_BIN="$VENV_DIR/bin/python" "$PROJECT_ROOT/scripts/start_web.sh" --workdir "$PROJECT_ROOT"
+研究体验 / 带登录 Web（加载本机环境文件，沿用同一数据目录）：
+  PYTHON_BIN="$VENV_DIR/bin/python" "$PROJECT_ROOT/scripts/start_web.sh" --host 127.0.0.1 --port 8080 --workdir "$PROJECT_ROOT/workdirs/local"
+首次登录需先在 .tcode-local/local.env 填管理员密码；研究功能启用步骤：docs/RESEARCH-SETUP.md
+--full 仅增加可选 Python 依赖，不会部署计算、文件或沙箱服务。
 启动 CLI：TCODE_CONFIG_ROOT="$PROJECT_ROOT/.tcode-local" $VENV_DIR/bin/tcode --workdir "$PROJECT_ROOT"
 EOF

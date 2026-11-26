@@ -1,9 +1,10 @@
+import { sourceExperimentPages } from '../utils/sourceExperimentPages';
 import { researchStatusLabel, userFacingTitle } from '../utils/userFacingLabels';
 import ResearchRecordDetails from './ResearchRecordDetails';
 import HypothesisEvidenceMap from './HypothesisEvidenceMap';
 import { readableSourceLabel } from '../utils/evidenceDisplay';
 import { researchSourceTypeLabel } from '../utils/researchKnowledgeDisplay';
-import { For, Show, createMemo, createSignal } from 'solid-js';
+import { For, Show, createEffect, on, createMemo, createSignal } from 'solid-js';
 
 import {
   getResearchPackReadObject,
@@ -36,7 +37,7 @@ type Props = {
   workspaceId?: string;
   onUseInChat: (asset: ResearchPackAsset, detail: ResearchPackAssetDetail | null) => void;
   onReexport: (asset: ResearchPackAsset) => void;
-  onReproduce?: (asset: ResearchPackAsset, experimentId: string) => Promise<void>;
+  onReproduce?: (asset: ResearchPackAsset, experimentId: string, title: string) => Promise<void>;
   onOpen?: (asset: ResearchPackAsset) => void;
 };
 
@@ -59,7 +60,9 @@ export default function ImportedResearchPackCard(props: Props) {
   const [exactObject, setExactObject] = createSignal<Record<string, any> | null>(null);
   const [objectLoading, setObjectLoading] = createSignal(false);
   const [indexRebuilding, setIndexRebuilding] = createSignal(false);
-  const [sourceExperiments, setSourceExperiments] = createSignal<Array<Record<string, any>>>([]);
+  const {items:sourceExperiments,state:experimentState,cursor:experimentCursor,load:loadExperiments,reset:resetExperiments} =
+    sourceExperimentPages(cursor => listResearchPackReadObjects(props.asset.asset_id, {object_type:'experiment', limit:100, cursor}, props.workspaceId));
+  createEffect(on(() => JSON.stringify([props.workspaceId, props.asset.asset_id]), resetExperiments));
   const [reproducing, setReproducing] = createSignal('');
   const [canvases, setCanvases] = createSignal<Array<{ object_id: string; title: string; available: boolean }>>([]);
   const [openedCanvas, setOpenedCanvas] = createSignal<CanvasContentBlock>();
@@ -218,16 +221,10 @@ export default function ImportedResearchPackCard(props: Props) {
       setIndexRebuilding(false);
     }
   };
-  const loadExperiments = async () => {
-    try {
-      const result = await listResearchPackReadObjects(props.asset.asset_id, { object_type: 'experiment', limit: 100 }, props.workspaceId);
-      setSourceExperiments((result.items || []).map((item) => item.payload || item));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '读取实验失败'); }
-  };
-  const reproduce = async (id: string) => {
+  const reproduce = async (id: string, title: string) => {
     if (!props.onReproduce || reproducing()) return;
     setReproducing(id); setError('');
-    try { await props.onReproduce(props.asset, id); }
+    try { await props.onReproduce(props.asset, id, title); }
     catch (reason) { setError(reason instanceof Error ? reason.message : '创建复现实验失败'); }
     finally { setReproducing(''); }
   };
@@ -321,9 +318,13 @@ export default function ImportedResearchPackCard(props: Props) {
         <summary class="cursor-pointer text-xs">假说与证据交接地图</summary>
         <HypothesisEvidenceMap project={{research_id:props.asset.asset_id,title:props.asset.title||'研究包假说与证据'}} workspaceId={props.workspaceId} assetId={props.asset.asset_id}/>
       </details>
-      <details class="mt-3 rounded-lg border border-[#293238] bg-[#0d1216] px-3 py-2" onToggle={(event) => { if (event.currentTarget.open && !sourceExperiments().length) void loadExperiments(); }}>
+      <details class="mt-3 rounded-lg border border-[#293238] bg-[#0d1216] px-3 py-2" onToggle={(event) => { if (event.currentTarget.open && experimentState() === 'idle') void loadExperiments(); }}>
         <summary class="cursor-pointer text-xs font-semibold text-[#9faeb7]">复现来源实验</summary>
-        <div class="research-scroll-content mt-3 space-y-2"><Show when={sourceExperiments().length} fallback={<div class="text-xs text-[#71808a]">资料包中没有可复现的实验。</div>}><For each={sourceExperiments()}>{(item) => <div class="flex items-center justify-between gap-3 rounded-lg border border-[#293238] bg-[#11171b] p-3"><div><div class="text-xs font-semibold text-[#bdc8d1]">{readableSourceLabel(item.title, '来源实验')}</div><div class="mt-1 text-[10px] text-[#71808a]">{researchStatusLabel(item.status)} · {researchStatusLabel(item.decision,'判断未说明')}</div></div><button class="rounded-md border border-[#c4a7ff]/30 px-2.5 py-1 text-xs text-[#d8c8ff] disabled:opacity-50" disabled={!props.onReproduce || reproducing() === item.experiment_id} onClick={() => void reproduce(String(item.experiment_id))}>{reproducing() === item.experiment_id ? '创建中…' : '创建复现实验'}</button></div>}</For></Show></div>
+        <Show when={experimentState() === 'loading'}><p role="status">正在读取来源实验…</p></Show>
+        <Show when={experimentState() === 'error'}><p role="alert">来源实验暂时无法读取。 <button type="button" onClick={() => void loadExperiments()}>重试</button></p></Show>
+        <Show when={experimentState() === 'ready' && !sourceExperiments().length}><p>资料包中没有可复现的实验。</p></Show>
+        <div class="research-scroll-content mt-3 space-y-2"><Show when={sourceExperiments().length}><For each={sourceExperiments()}>{(item) => <div class="flex items-center justify-between gap-3 rounded-lg border border-[#293238] bg-[#11171b] p-3"><div><div class="text-xs font-semibold text-[#bdc8d1]">{readableSourceLabel(item.title, '来源实验')}</div><div class="mt-1 text-[10px] text-[#71808a]">{researchStatusLabel(item.status)} · {researchStatusLabel(item.decision,'判断未说明')}</div></div><button class="rounded-md border border-[#c4a7ff]/30 px-2.5 py-1 text-xs text-[#d8c8ff] disabled:opacity-50" disabled={!props.onReproduce || reproducing() === item.experiment_id} onClick={() => void reproduce(String(item.experiment_id), readableSourceLabel(item.title, '来源实验'))}>{reproducing() === item.experiment_id ? '处理中…' : '创建并尝试启动复现…'}</button></div>}</For></Show></div>
+        <Show when={experimentState() === 'ready' && experimentCursor()}><button type="button" onClick={() => void loadExperiments()}>加载更多来源实验</button></Show>
       </details>
 
       <details class="mt-3 rounded-lg border border-[#293238] p-3" onToggle={e => { if (e.currentTarget.open) void loadCanvases(); }}>

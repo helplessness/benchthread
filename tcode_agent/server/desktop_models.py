@@ -90,35 +90,77 @@ async def probe(service, key, model):
             base += '/v1'
         url, body = base + '/chat/completions', {'model': model, 'max_tokens': 8, 'messages': [{'role': 'user', 'content': 'Reply OK'}]}
         headers.update(opencode_go_headers(base))
+    def check_status(status):
+        if status != 200:
+            messages = {401: '密钥无效或已过期', 403: '服务拒绝访问，请检查账号权限',
+                        404: '接口路径或模型 ID 不存在', 429: '服务限流或额度不足'}
+            if service['kind'] == 'chat':
+                messages.update({403: '请求被拒绝（403），请检查模型服务或代理的访问策略',
+                                 407: '代理认证失败（407），请检查代理凭据，不是模型 API Key'})
+            raise HTTPException(400, messages.get(status, f'服务返回 HTTP {status}，请检查接口配置')) from None
+
+    limit = 2 * 1024 * 1024
     try:
+        if service['kind'] == 'chat':
+            # Use the default HTTP client from the same SDK as the chat provider.
+            # Its proxy discovery may differ from aiohttp or a separate HTTPX install.
+            if service['protocol'] == 'anthropic':
+                from anthropic import DefaultAsyncHttpxClient
+            else:
+                from openai import DefaultAsyncHttpxClient
+            try:
+                client = DefaultAsyncHttpxClient(follow_redirects=False, timeout=None)
+            except Exception as exc:
+                # No model URL or response is involved in constructing the SDK transport.
+                if type(exc).__name__ == 'InvalidURL' or (isinstance(exc, ValueError) and 'proxy' in str(exc).lower()):
+                    raise HTTPException(400, '连接配置无效，请检查代理地址的协议、主机和端口') from None
+                if isinstance(exc, ValueError):
+                    raise HTTPException(400, '无法初始化模型连接，请检查网络和证书配置') from None
+                raise
+            async with asyncio.timeout(20), client:
+                async with client.stream('POST', url, json=body, headers=headers) as response:
+                    check_status(response.status_code)
+                    raw = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        if len(raw) + len(chunk) > limit:
+                            raise ValueError()
+                        raw.extend(chunk)
+            data = json.loads(raw)
+            if not data.get('choices') and not data.get('content'):
+                raise ValueError()
+            return {'ok': True, 'message': '聊天模型连接成功'}
+
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20), trust_env=False) as client:
             async with client.post(url, json=body, headers=headers, allow_redirects=False) as response:
-                if response.status != 200:
-                    messages = {401: '密钥无效或已过期', 403: '服务拒绝访问，请检查账号权限',
-                                404: '接口路径或模型 ID 不存在', 429: '服务限流或额度不足'}
-                    raise HTTPException(400, messages.get(response.status, f'服务返回 HTTP {response.status}，请检查接口配置'))
-                raw = await response.content.read(2 * 1024 * 1024 + 1)
-                if len(raw) > 2 * 1024 * 1024:
+                check_status(response.status)
+                raw = await response.content.read(limit + 1)
+                if len(raw) > limit:
                     raise ValueError()
                 data = json.loads(raw)
-                if service['kind'] == 'embedding':
-                    vector = (data.get('embeddings') or [None])[0] if service['protocol'] == 'ollama' else (data.get('data') or [{}])[0].get('embedding')
-                    if (not isinstance(vector, list) or not vector or len(vector) > 8192
-                            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in vector)
-                            or not any(vector)):
-                        raise ValueError()
-                    return {'ok': True, 'message': f'嵌入模型连接成功，向量维度 {len(vector)}'}
-                if not data.get('choices') and not data.get('content'):
+                vector = (data.get('embeddings') or [None])[0] if service['protocol'] == 'ollama' else (data.get('data') or [{}])[0].get('embedding')
+                if (not isinstance(vector, list) or not vector or len(vector) > 8192
+                        or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in vector)
+                        or not any(vector)):
                     raise ValueError()
-                return {'ok': True, 'message': '聊天模型连接成功'}
+                return {'ok': True, 'message': f'嵌入模型连接成功，向量维度 {len(vector)}'}
     except HTTPException:
         raise
     except asyncio.TimeoutError:
         raise HTTPException(400, '连接超时，请检查服务地址或网络') from None
-    except aiohttp.ClientError:
-        raise HTTPException(400, '无法连接模型服务，请检查地址、网络和证书') from None
     except (ValueError, TypeError, AttributeError, IndexError):
         raise HTTPException(400, '服务返回的格式与所选协议不兼容') from None
+    except aiohttp.ClientError:
+        raise HTTPException(400, '无法连接模型服务，请检查地址、网络和证书') from None
+    except Exception as exc:
+        if service['kind'] != 'chat':
+            raise
+        # An HTTPS CONNECT rejection is a transport exception, not a model response.
+        # HTTPX and HTTPX2 expose the status as the first word. Never echo proxy text.
+        if type(exc).__name__ == 'ProxyError':
+            status = str(exc).partition(' ')[0]
+            if status in {'403', '407'}:
+                check_status(int(status))
+        raise HTTPException(400, '无法连接模型服务，请检查地址、代理、网络和证书') from None
 
 
 async def model_settings(payload):

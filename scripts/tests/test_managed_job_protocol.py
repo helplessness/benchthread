@@ -82,7 +82,7 @@ def test_desktop_owned_gateway_priority(tmp_path, monkeypatch, managed, legacy, 
 
 
 @asynccontextmanager
-async def echo_server():
+async def echo_server(*, before_echo_return=None):
     from fastmcp import FastMCP
 
     server = FastMCP("Disposable echo")
@@ -90,8 +90,10 @@ async def echo_server():
     remote = {}
 
     @server.tool
-    def echo_text(text: str) -> dict:
+    async def echo_text(text: str) -> dict:
         calls[text] = calls.get(text, 0) + 1
+        if before_echo_return is not None:
+            await before_echo_return()
         return {"text": text}
 
     @server.tool
@@ -149,6 +151,373 @@ async def echo_server():
             http.should_exit = True
             with suppress(asyncio.CancelledError):
                 await task
+
+
+@pytest.mark.parametrize("prepare", [True, False], ids=["prepare-before-result", "submit-only"])
+def test_chat_prepares_check_before_real_echo_returns(tmp_path, monkeypatch, prepare):
+    """Script the model, not the clock: hold the actual remote response until its check exists."""
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from tcode_agent.agent.agent import Agent
+    from tcode_agent.mcp import _proxy
+    from tcode_agent.mcp.manager_auto import MCPManager
+    from tcode_agent.providers.base import ChatResponse, ToolDefinition
+    from tcode_agent.tools.base import ToolContext
+    from tcode_agent.types import AgentInfo, ToolState
+
+    monkeypatch.chdir(tmp_path)
+    for key,value in {'TCODE_WORKDIR':str(tmp_path),'TCODE_CONFIG_ROOT':str(tmp_path),
+                      'TCODE_MCP_CONFIG':str(tmp_path/'mcp.json'),'TCODE_ASYNC_EXECUTION_MODE':'bridge',
+                      'TCODE_ASYNC_ACCEPT_END_TURN':'0','TCODE_SANDBOX_ENABLED':'false',
+                      'TCODE_DESKTOP_MANAGED':'0','TCODE_AUTH_REQUIRED':'0','TCODE_RESEARCH_ENABLED':'false'}.items():
+        monkeypatch.setenv(key,value)
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+        script = tmp_path/'verify_echo.py'
+        log = []
+        async def hold():
+            started.set()
+            await asyncio.wait_for(release.wait(), 15)
+            assert script.is_file() == prepare
+            log.append('remote returned')
+        async with echo_server(before_echo_return=hold) as (url,calls,_):
+            config = tmp_path/'mcp.json'
+            config.write_text(json.dumps({'simple-demo-mcp': {'url':url,'invocation_mode':'async'}}))
+            with managed_job_protocol(tmp_path,configs=[config]) as gateway:
+                headers = {'Authorization':'Bearer '+os.environ[LOCAL_TOKEN],WORKER_HEADER:bridge_worker_environment()[WORKER_TOKEN]}
+                async with Client(StreamableHttpTransport(gateway,headers=headers)) as worker:
+                    async def describe(server, tool, args):
+                        assert (server,tool)==('job-protocol-mcp','describe_target_tool')
+                        return {'structuredContent':(await worker.call_tool(tool,args)).structured_content}
+                    monkeypatch.setattr(MCPManager,'is_initialized',lambda:True)
+                    monkeypatch.setattr(MCPManager,'call_tool',describe)
+                    submit = 'mcp_job-protocol-mcp_submit_job'
+                    poll = 'mcp_job-protocol-mcp_get_job_status'
+                    agent = Agent(AgentInfo(name='build',steps=6),SimpleNamespace(name='fixture'),'chat-echo',str(tmp_path))
+                    agent.set_permission_handler(AsyncMock(return_value=True))
+                    engine = agent._engine
+                    defs = [ToolDefinition(n,n,{},provider_id='tcode.builtin' if n=='write' else 'mcp:job-protocol-mcp')
+                            for n in [submit,poll,'write']]
+                    monkeypatch.setattr(engine,'_safe_get_tool_definitions',AsyncMock(return_value=defs))
+                    monkeypatch.setattr(engine,'_safe_preload_recommended_skill',AsyncMock(return_value=None))
+                    monkeypatch.setattr(agent,'_try_async_followup_collect',AsyncMock(side_effect=AssertionError('inline poll')))
+                    receipt = None
+                    normal_execute = engine._execute_turn_tool
+                    async def execute(call, **step):
+                        nonlocal receipt
+                        ctx = ToolContext('chat-echo','msg','build',None,extra={'workdir':str(tmp_path),
+                            'tenant_id':'test','user_id':'alice','workspace_id':'work'})
+                        if call.tool_name==submit:
+                            assert receipt is None
+                            result = await _proxy._submit_authorized_job(_proxy._ProxyTool(server_name='job-protocol-mcp',
+                                tool_name='submit_job'),ctx,'simple-demo-mcp','echo_text','simple-demo-mcp',
+                                {'text':'preparation echo'},'echo_text', 'notify')
+                            assert result.metadata.get('accepted_async'), result
+                            receipt = (await worker.call_tool('submit_job',{'input':result.metadata['submit_input']})).structured_content
+                            await asyncio.wait_for(started.wait(),5)
+                            log.append('accepted')
+                        else:
+                            assert call.tool_name=='write' and not release.is_set()
+                            result = await normal_execute(call, **step)
+                            assert not result.error and script.is_file()
+                            log.append('script written')
+                        call.metadata,call.output,call.state = result.metadata,result.output,ToolState.COMPLETED
+                        return result
+                    monkeypatch.setattr(engine,'_execute_turn_tool',execute)
+                    def tc(name,args,id):
+                        return {'function':{'name':name,'arguments':args},'id':id}
+                    async def model(tools, *, iteration, **_):
+                        if iteration==1:
+                            calls_ = [tc(submit,{'arguments':{'text':'preparation echo'}},'first'),
+                                      tc(poll,{},'premature'),tc(submit,{'arguments':{'text':'preparation echo'}},'duplicate')]
+                        elif iteration==2:
+                            assert not any('LOCAL-' in m.content for m in agent.messages if m.role == 'tool')
+                            assert {t.name for t in tools}=={'write'} and '不依赖' in next(
+                                m.content for m in agent.messages if m.role=='tool' and '受理' in m.content)
+                            if not prepare:
+                                return ('已受理，等待回传。',None,ChatResponse(content='已受理，等待回传。')), []
+                            calls_ = [tc('write',{'filePath':script.name,'content':
+                                'import sys, json\nassert json.load(sys.stdin)["text"] == "preparation echo"\n'},'write')]
+                        else:
+                            assert iteration == 3
+                            calls_ = [tc(poll,{},'hallucinated-poll')]
+                        return ('',calls_,ChatResponse(content='')), []
+                    monkeypatch.setattr(engine,'_call_llm_with_guidance_race',model)
+                    try:
+                        answer = await engine.run('提交一次 echo_text，文本为 preparation echo。'
+                                                  + ('同时准备正式的回显核对脚本。' if prepare else '只提交。'))
+                        assert '等待' in answer.content and log == (['accepted','script written'] if prepare else ['accepted'])
+                    finally:
+                        release.set()
+                    async with asyncio.timeout(8):
+                        while (await worker.call_tool('get_job_status',{'input':receipt})).structured_content['status']!='completed':
+                            await asyncio.sleep(.05)
+                    result = (await worker.call_tool('collect_job_result',{'input':receipt})).structured_content['target_result']
+                    if prepare:
+                        proc = await asyncio.create_subprocess_exec(sys.executable,'-I',str(script),stdin=asyncio.subprocess.PIPE)
+                        await proc.communicate(json.dumps(result).encode())
+                        assert proc.returncode == 0
+                    assert result == {'text':'preparation echo'} and calls=={'preparation echo':1} and log[-1]=='remote returned'
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("prepare,return_during_round,model_timeout,control", [
+    (True, False, False, ''), (True, True, False, ''), (False, False, False, ''), (False, False, True, ''),
+    (True, False, False, 'paused'), (True, False, False, 'stopped')])
+def test_approved_goal_prepares_once_then_resumes_on_echo(tmp_path, monkeypatch, prepare, return_during_round, model_timeout, control):
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+    from tcode_agent.agent.agent import Agent
+    from tcode_agent.providers.base import ChatResponse, ToolDefinition
+    from tcode_agent.runtime import async_watcher as watcher
+    from tcode_agent.runtime.shared_tracker import SharedTracker
+    from tcode_agent.session.manager import SessionManager
+    from tcode_agent.server import _shared, goal_mode, native_execution
+    from tcode_agent.server.goal_computation import resume_approved_computation
+    from tcode_agent.types import AgentInfo
+
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / 'mcp.json'
+    root = str(tmp_path)
+    for key, value in dict(WORKDIR=root, CONFIG_ROOT=root, MCP_CONFIG=str(config), ASYNC_EXECUTION_MODE='bridge',
+                           SANDBOX_ENABLED='false', DESKTOP_MANAGED='0', AUTH_REQUIRED='0', RESEARCH_ENABLED='false').items():
+        monkeypatch.setenv('TCODE_' + key, value)
+    monkeypatch.setattr(SessionManager, '_sessions', {})
+    monkeypatch.setattr(SessionManager, '_lock', None)  # each fixture has its own server event loop
+    monkeypatch.setattr(watcher, '_registry', {})
+    monkeypatch.setattr(watcher, '_injected', set())
+    monkeypatch.setattr(watcher, 'start_watcher', AsyncMock())  # drive its real delivery step at the barrier
+    script = tmp_path / 'check_echo.py'
+    async def run():
+        started, release = asyncio.Event(), asyncio.Event()
+        async def hold():
+            started.set()
+            await asyncio.wait_for(release.wait(), 20)
+            assert script.exists() == prepare
+        async with echo_server(before_echo_return=hold) as (url, calls, _):
+            config.write_text(json.dumps({'simple-demo-mcp': {'url': url, 'invocation_mode': 'async'}}))
+            with managed_job_protocol(tmp_path, configs=[config]) as gateway:
+                headers = {'Authorization':'Bearer '+os.environ[LOCAL_TOKEN], WORKER_HEADER:bridge_worker_environment()[WORKER_TOKEN]}
+                async with Client(StreamableHttpTransport(gateway,headers=headers)) as worker:
+                    goal = dict(id='echo-goal', objective='核对回显' if prepare else '等待回显', criteria='收到真实回显',
+                                status='needs_input', updated_at=time.time(), deadline=time.time()+90, rounds_used=1,
+                                max_rounds=6, steps_per_round=4, run_ids=['goal-first'])
+                    session = await SessionManager.create(workdir=root, agent_name='build', metadata={'goal_mode':goal})
+                    service = goal_mode.GoalModeService()
+                    monkeypatch.setattr(goal_mode, 'goal_service', service)
+                    # This integration must be driven by the actual producers,
+                    # never by a fallback scan discovering the test session.
+                    monkeypatch.setattr(SessionManager, 'list', AsyncMock(return_value=[]))
+                    agent = Agent(AgentInfo(name='build', steps=4, permission={'write':'allow'}),
+                                  SimpleNamespace(name='fixture'),session.id,root)
+                    monkeypatch.setattr(goal_mode.ServerState,'get_or_create_agent',lambda *a,**kw:agent)
+                    monkeypatch.setattr(native_execution,'open_native_agent',AsyncMock(return_value=(agent,None)))
+                    monkeypatch.setattr('tcode_agent.mcp.route_permissions.get_agent_allowed_routed_servers',lambda _: {'simple-demo-mcp'})
+                    async def describe(server, tool, args):
+                        assert (server,tool)==('job-protocol-mcp','describe_target_tool')
+                        return {'structuredContent':(await worker.call_tool(tool,args)).structured_content}
+                    monkeypatch.setattr('tcode_agent.mcp.manager_auto.MCPManager.is_initialized',lambda:True)
+                    monkeypatch.setattr('tcode_agent.mcp.manager_auto.MCPManager.call_tool',describe)
+                    review = SharedTracker.upsert_review(dict(id='echo-review', identifier='REVIEW-echo', status='approved',
+                        tool_server='simple-demo-mcp', tool_name='echo_text',tool_args={'text':'goal echo'},
+                        review_data={'session_id':session.id,'origin_request_id':'goal-first','proxy_source':'job_protocol_submit',
+                                     'goal_computation':{'goal_id':goal['id'],'max_submissions':1}}),root)
+                    async def deliver():
+                        release.set()
+                        async with asyncio.timeout(8):
+                            while (await worker.call_tool('get_job_status',{'input':ref})).structured_content['status'] != 'completed':
+                                await asyncio.sleep(.05)
+                        result = (await worker.call_tool('collect_job_result',{'input':ref})).structured_content
+                        SharedTracker.patch_task(identifier=receipt['identifier'], status='completed', result_summary=json.dumps(result),
+                            workspace_patch={'job_id':ref['job_id'], 'job_ref':ref,'transfer_state':'ready'}, workdir=root)
+                        await watcher._check_completed_jobs(workdir=root)
+                        result_key = (session.id, goal['id'], 'result:' + receipt['identifier'])
+                        assert (result_key in service._seen) == (not control)
+                        # Replay the same completion, independently of the watcher's own dedup.
+                        stored = await SessionManager.get(session.id)
+                        service.result_delivered(stored, 'goal-first', receipt['identifier'])
+
+                    engine = agent._engine
+                    submit = 'mcp_job-protocol-mcp_submit_job'
+                    poll = 'mcp_job-protocol-mcp_get_job_status'
+                    defs = [ToolDefinition(n,n,{},provider_id='tcode.builtin' if n=='write' else 'mcp:broker') for n in ('write',poll,submit)]
+                    monkeypatch.setattr(engine,'_safe_get_tool_definitions',AsyncMock(return_value=defs))
+                    monkeypatch.setattr(agent,'_discoverable_tool_definitions',lambda: defs)
+                    def tc(name,args):
+                        return {'id':name,'function':{'name':name,'arguments':args}}
+                    async def model(tools, *, iteration, **_):
+                        assert {t.name for t in tools} == {'write'}
+                        if iteration==1 and prepare:
+                            return ('',[tc(submit,{}),tc('write',{'filePath':script.name,'content':
+                                'import json,sys\nassert json.load(sys.stdin)["target_result"]["text"] == "goal echo"\n'}),tc(poll,{})],
+                                    ChatResponse(content='')),[]
+                        return ('等待回传。',None,ChatResponse(content='等待回传。')),[]
+                    monkeypatch.setattr(engine,'_call_llm_with_guidance_race',model)
+                    phases = []
+                    async def turn(*, run_input, **_):
+                        phases.append(agent._goal_queue_preparation)
+                        if agent._goal_queue_preparation:
+                            await asyncio.wait_for(started.wait(),5)
+                            assert '不依赖' in run_input.latest_user_text() and not release.is_set()
+                            if model_timeout:
+                                raise TimeoutError('optional preparation unavailable')
+                            await engine.run(run_input.latest_user_text())
+                            assert script.exists() == prepare
+                            if prepare:
+                                assert {c.tool_name for m in agent.messages if m.role=='tool' for c in (m.tool_calls or [])
+                                        if (c.metadata or {}).get('reason')=='async_preparation'} == {submit,poll}
+                            if return_during_round:
+                                await deliver()
+                        else:
+                            events = (await SessionManager.get(session.id)).metadata['async_completion_events']
+                            event = next(e for e in events if e['identifier']==receipt['identifier'])
+                            assert event['status']=='completed'
+                            if prepare:
+                                verified = await asyncio.create_subprocess_exec(sys.executable,'-I',str(script),stdin=asyncio.subprocess.PIPE)
+                                await verified.communicate(SharedTracker.get_task(identifier=event['identifier'],workdir=root)['result_summary'].encode())
+                                assert verified.returncode==0
+                            agent._goal_checkpoint_callback({'state':'blocked','progress':'已收到并核对回显','next_step':'等待用户确认'})
+                    monkeypatch.setattr(native_execution,'run_native_turn',turn)
+                    async def until(status, rounds):
+                        async with asyncio.timeout(6):
+                            while True:
+                                current = goal_mode.public_goal(await SessionManager.get(session.id))
+                                if current['status'] == status and current['rounds_used'] == rounds:
+                                    return current
+                                await asyncio.sleep(.01)
+                    await service.start()
+                    try:
+                        admitted = await _shared._resume_session_after_human_review(review)
+                        assert admitted['started'], admitted
+                        receipt = admitted['approved_action']
+                        ref = (await worker.call_tool('submit_job',{'input':receipt['submit_input']})).structured_content
+                        if not return_during_round:
+                            interim = await until('waiting_external',2)
+                            assert phases==[True] and not interim.get('validation')
+                            if control:
+                                await goal_mode.change_goal(session.id,goal_mode.owner(session),goal['id'],status=control)
+                            await deliver()
+                        if control:
+                            # Drain a wake queued just before a user stop/pause as well.
+                            await service.tick((session.id,goal['id']))
+                            assert phases==[True] and (await until(control,2))['status']==control
+                            assert (await SessionManager.get(session.id)).metadata['async_completion_events']
+                        else:
+                            resumed = await until('needs_input',3)
+                            assert phases==[True,False] and resumed['progress']=='已收到并核对回显', resumed
+                        assert not (await resume_approved_computation(review))['started'] and calls=={'goal echo':1}
+                    finally:
+                        release.set()
+                        await service.stop()
+    asyncio.run(run())
+
+
+def test_preparation_requires_spare_round_and_own_live_job(monkeypatch):
+    from types import SimpleNamespace
+    from tcode_agent.server.goal_mode import _can_prepare_while_waiting, TaskRuntimeStore
+    session = SimpleNamespace(id='mine', workdir='unused')
+    pending = {'pending_preparation_job':'LOCAL-one', 'status':'waiting_external','rounds_used':1,'max_rounds':3}
+    row = {'session_id':session.id,'runtime_kind':'mcp_job','status':'queued'}
+    monkeypatch.setattr(TaskRuntimeStore,'get',lambda *a,**kw:row)
+    def allowed(waiting='waiting_external', **changes):
+        return _can_prepare_while_waiting(session,pending | changes,waiting)
+    assert allowed()
+    assert not allowed(max_rounds=2) and not allowed(questions=[{'status':'pending'}])
+    assert not allowed(waiting='needs_input') and not allowed(pending_preparation_job='')
+    for status in ('paused','stopped','recovering','budget_exhausted'):
+        assert not allowed(status=status)
+    for status in ('completed','collecting','cancelled','failed'):
+        row['status'] = status
+        assert not allowed()
+    row.update(session_id='other',status='running')
+    assert not allowed()
+
+
+def test_goal_guidance_wakes_only_owner_and_scan_recovers_missed_signal(tmp_path, monkeypatch):
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from tcode_agent.server import goal_api, goal_mode
+    from tcode_agent.session.manager import SessionManager
+
+    async def scenario():
+        service = goal_mode.GoalModeService()
+        service.fallback_seconds = .25
+        sessions = {sid: SimpleNamespace(id=sid, workdir=str(tmp_path), user_id='user', tenant_id='tenant',
+            workspace_id='ws', messages=[], metadata={'goal_mode': dict(id='goal-'+sid, status='needs_input',
+            objective='echo', criteria='echo', updated_at=time.time(), deadline=time.time()+60, rounds_used=1,
+            max_rounds=5, steps_per_round=3)}) for sid in ('a','b')}
+        async def get(sid, **_): return sessions[sid]
+        async def mutate(sid, fn, **_): return fn(sessions[sid])
+        monkeypatch.setattr(SessionManager,'get',get)
+        monkeypatch.setattr(SessionManager,'mutate',mutate)
+        listed = []
+        monkeypatch.setattr(SessionManager,'list', AsyncMock(side_effect=lambda **_: list(listed)))
+        monkeypatch.setattr(goal_api,'goal_service',service)
+        monkeypatch.setattr(goal_api,'scoped_session',AsyncMock(return_value=(sessions['a'],{})))
+        seen = []
+        ran = {sid:asyncio.Event() for sid in sessions}
+        async def round_(session, goal):
+            seen.append(session.id)
+            ran[session.id].set()
+        monkeypatch.setattr(service,'_round',round_)
+        await service.start()
+        try:
+            body = goal_api.GoalAction(workspace_id='ws', goal_id='goal-a', action='guide', note='补充目标说明')
+            await goal_api._apply_goal_action('a',body,None)
+            await asyncio.wait_for(ran['a'].wait(),2)
+            for _ in range(3):
+                service.wake('a','goal-a','guidance:1')
+                service.wake('a','replaced-goal','late-result')
+            sessions['b'].metadata['goal_mode']['status'] = 'ready'
+            listed.append(sessions['b'])  # simulate a missed notification, recovered by scan
+            await asyncio.wait_for(ran['b'].wait(),2)
+            assert seen == ['a','b']
+            sessions['a'].metadata['goal_mode']['status'] = 'paused'
+            await goal_api._apply_goal_action('a',body,None)
+            assert sessions['a'].metadata['goal_mode']['status'] == 'paused'
+            assert ('a','goal-a','guidance:2') not in service._seen
+        finally:
+            await service.stop()
+    asyncio.run(scenario())
+
+
+def test_only_ordinary_accepted_submission_can_prepare(monkeypatch):
+    from types import SimpleNamespace
+    from tcode_agent.harness.engine import _ordinary_queue_receipt
+    from tcode_agent.runtime.async_resume import active_resume
+    from tcode_agent.types import ToolCall, ToolResult
+    monkeypatch.setenv('TCODE_ASYNC_ACCEPT_END_TURN','0')
+    submit = ToolCall(tool_name='mcp_job-protocol-mcp_submit_job',arguments={},call_id='submit')
+    data = dict(identifier='LOCAL-test',identifier_kind='local_acceptance_id',tracker='sqlite',
+                status='queued',accepted_async=True)
+    def eligible(agent, **extra):
+        return _ordinary_queue_receipt(agent,submit,ToolResult(title='receipt',output='',metadata=data|extra))
+    agent = SimpleNamespace()
+    assert eligible(agent)
+    from tcode_agent.harness.engine import AgentHarnessEngine
+    receipt = ToolResult(title='receipt', output='accepted LOCAL-test', metadata=data)
+    public = AgentHarnessEngine._build_terminal_turn_response(None, receipt)
+    assert '已受理' in public and 'LOCAL-test' not in public
+    assert receipt.metadata['identifier'] == 'LOCAL-test'
+    for overrides in [{'human_review_required':True},{'status':'unknown'},{'accepted_async':False},
+                      {'identifier_kind':'remote_job_id'},{'tool_loop_terminal':True}]:
+        assert not eligible(agent,**overrides)
+    for override in [dict(_active_tool_trace_context={'workflow_run_id':'workflow'}),
+                     dict(_goal_checkpoint_callback=lambda:None),dict(_active_async_completion_receipt={'id':'receipt'})]:
+        assert not eligible(SimpleNamespace(**override))
+    token = active_resume.set({'identifier':'LOCAL-old'})
+    try:
+        assert not eligible(agent)
+    finally:
+        active_resume.reset(token)
+    monkeypatch.setenv('TCODE_ASYNC_ACCEPT_END_TURN','1')
+    assert not eligible(agent)
 
 
 @pytest.mark.parametrize("launcher_kind", ["desktop", "web"])

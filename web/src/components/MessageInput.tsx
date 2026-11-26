@@ -12,7 +12,8 @@ import GoalModePanel from './GoalModePanel';
 import HarnessSwitchNotice from './HarnessSwitchNotice';
 import { createComposerLayout } from './composer/createComposerLayout';
 import InteractionPanel from './composer/InteractionPanel';
-import { nativeModelTurnBlock, resolveActiveModel } from './composer/modelSelection';
+import { modelDisplayLabel, nativeModelTurnBlock, resolveActiveModel } from './composer/modelSelection';
+import type { ModelOption } from '../api/catalog';
 import { navigateInputHistory, type InputHistoryState } from './composer/inputHistory';
 import SlashCommandMenu from './composer/SlashCommandMenu';
 import { builtinCommands, filterCommands, findCommandTrigger, parseBuiltinCommand, skillCommandItems, type CommandItem } from './composer/slashCommands';
@@ -89,6 +90,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   const [skillCatalog, setSkillCatalog] = createSignal<SkillCatalogItem[]>([]);
   const [skillsLoading, setSkillsLoading] = createSignal(false);
   const [skillsError, setSkillsError] = createSignal('');
+  const roundRef = () => composerDrafts.get(draftKey()).roundRef;
+  const roundSendHint = '已关联实验运行，请在空闲的普通原生会话中发送，或先移除运行引用。';
   const selectedSkills = () => composerDrafts.get(draftKey()).selectedSkills || [];
   const setSelectedSkills = (names: string[]) => composerDrafts.update(draftKey(), { selectedSkills: names });
   const attachedFiles = () => composerDrafts.get(draftKey()).files;
@@ -133,9 +136,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   const [agents, setAgents] = createSignal<
     Array<{ name: string; description: string; mode: string }>
   >([]);
-  const [models, setModels] = createSignal<
-    Array<{ id: string; provider_id: string; model_id: string; name: string; supports_images?: boolean | null }>
-  >([]);
+  const [models, setModels] = createSignal<ModelOption[]>([]);
   const [modelLoadError, setModelLoadError] = createSignal('');
   const [modelsLoading, setModelsLoading] = createSignal(false);
   const [nativeModelCatalogSession, setNativeModelCatalogSession] = createSignal<string>();
@@ -287,6 +288,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   const {
     activeGuidanceItems,
     latestActiveGuidance,
+    latestUnappliedGuidance,
+    dismissUnappliedGuidance,
     guidanceStatusLabel,
     guidanceCancellable,
     refreshGuidanceQueue,
@@ -377,6 +380,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
 
   const resetComposer = () => {
     closeFileMentionMenu();
+    composerDrafts.update(draftKey(), {roundRef:undefined});
     setInput('');
     setAttachedFiles([]);
     setStructureRefs([]);
@@ -392,6 +396,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     mode: 'steer' | 'queue' = 'steer',
     staged?: StagedGuidance,
   ) => {
+    if (!staged && roundRef()) { setCommandFeedback(roundSendHint); return; }
     if (selectedSkills().length) { setCommandFeedback('请等待当前任务完成后发送带 Skill 的任务'); return; }
     const sessionId = sessionStore.currentSessionId();
     const key = draftKey();
@@ -454,6 +459,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   };
 
   const stageRunningGuidance = () => {
+    if (roundRef()) { setCommandFeedback(roundSendHint); return; }
     const finalMessage = buildFinalMessage();
     if (!finalMessage) return;
     if (attachedFiles().some(isImageAttachment)) {
@@ -486,6 +492,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   };
 
   const handleSideQuestionSubmit = async () => {
+    if (roundRef()) { setCommandFeedback(roundSendHint); return; }
     if (selectedSkills().length) { setCommandFeedback('已选 Skill 的任务请使用当前会话的发送按钮'); return; }
     const parentSessionId = sessionStore.currentSessionId();
     const finalMessage = buildFinalMessage();
@@ -543,8 +550,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
       const options = selectedRuntimeId() === 'tcode-native' ? visibleModelOptions()
         : (runtimeOptions().find(runtime => runtime.runtime_id === selectedRuntimeId())?.models || [])
           .map(id => ({ id, name: id }));
-      return filterCommands(options.map(model => ({ id: model.id, label: model.name || model.id, value: model.id,
-        description: model.id, kind: 'model', current: model.id === activeModel(),
+      return filterCommands(options.map(model => ({ id: model.id, label: modelDisplayLabel(model), value: model.id,
+        description: '', kind: 'model', current: model.id === activeModel(),
         disabled: sessionStore.isRunning() || modelChangePending() || runtimeChangePending() ? '请等待当前任务或切换完成' : undefined })), commandQuery());
     }
     if (view === 'skills') return filterCommands(availableSkillItems(), commandQuery());
@@ -1134,9 +1141,11 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
       );
       sessionStore.applyServerHarnessState(sessionId, response);
       setSelectedModel(confirmedModel);
-      recordModelSwitch(sessionId, prev, confirmedModel);
+      const label = (id: string) => modelDisplayLabel(models().find(item => item.id === id) || { id, name: id });
+      const labels = { from: label(prev), to: label(confirmedModel) };
+      recordModelSwitch(sessionId, prev, confirmedModel, labels);
       await loadAvailableModels(sessionId);
-      sessionStore.setStatus(`模型已切换：${confirmedModel}`);
+      sessionStore.setStatus(`模型已切换：${labels.to}`);
     } catch (e) {
       console.error('Failed to switch model:', e);
       setSelectedModel(prev);
@@ -1240,8 +1249,10 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     const requestedModel = activeModel();
     if (modelNoticeSession && !sessionStore.isRunning() && !guidingExistingGoal()) {
       if (!await confirmModelSwitch(modelNoticeSession, requestedModel)) return;
-      if (composerIdentity() !== modelNoticeIdentity || activeModel() !== requestedModel || sessionStore.isRunning() || modelTurnBlock()) return;
+      if (sessionStore.currentSessionId() !== modelNoticeSession || composerIdentity() !== modelNoticeIdentity || activeModel() !== requestedModel || sessionStore.isRunning() || modelTurnBlock()) return;
     }
+    const submittedRound = roundRef();
+    if (submittedRound && (goalMode() || sessionStore.isRunning() || selectedRuntimeId() !== 'tcode-native')) { setCommandFeedback(roundSendHint); return; }
     if (goalMode()) {
       if (selectedSkills().length) { setCommandFeedback('目标模式暂不支持指定 Skill，请让 Agent 按需加载技能。'); return; }
       if (attachedFiles().filter(isImageAttachment).length > 2) { setCommandFeedback('每轮最多上传 2 张图片供 Agent 视觉处理。'); return; }
@@ -1291,12 +1302,16 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     }
     const submittedSkills = [...selectedSkills()];
     if (submittedSkills.length && selectedRuntimeId() !== 'tcode-native') { setCommandFeedback('当前 Harness 不支持 TCode Skill 选择'); return; }
+    const submittedKey = draftKey();
+    const roundDraft = submittedRound ? { text: input(), files: attachedFiles(), structureRefs: structureRefs(),
+      selectedSkills: submittedSkills, roundRef: submittedRound } : undefined;
     resetComposer();
     setSelectedSkills([]);
 
     void sendMessage(finalMessage, {
       agent_name: sessionStore.selectedAgentName(),
       selected_skills: submittedSkills,
+      round_ref: submittedRound,
       model: activeModel(),
       runtime_id: currentHarnessState().runtime_id,
       reasoning_effort: sessionStore.selectedReasoningEffort(),
@@ -1325,6 +1340,9 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
     }).catch((error) => {
       console.error('Failed to send message:', error);
       if (submittedSessionId && submittedIdentity === composerIdentity()) {
+        if (roundDraft) composerDrafts.update(submittedKey, { failed: {
+          ...roundDraft, id: generateId(), error: error instanceof Error ? error.message : '提交失败',
+        } });
         sessionStore.setSessionStatus(submittedSessionId, error instanceof Error ? error.message : '提交失败');
       }
     });
@@ -1498,6 +1516,7 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
         <Show when={commandFeedback()}><div role="status" class="mb-2 flex items-center justify-between gap-2 text-xs text-[#aab6bf]">
           <span>{commandFeedback()}</span><button type="button" aria-label="关闭命令提示" onClick={() => setCommandFeedback('')}>×</button>
         </div></Show>
+        <Show when={roundRef()}><div class="composer-skill-chip">已关联所选实验运行 <button type="button" aria-label="移除运行引用" onClick={() => composerDrafts.update(draftKey(), {roundRef:undefined})}>×</button></div></Show>
         <Show when={selectedSkills().length}><div class="mb-2 flex flex-wrap gap-2">
           <For each={selectedSkills()}>{name => <span data-testid="selected-skill" class="composer-skill-chip">
             <span>${name}</span><button type="button" aria-label={`移除技能 ${name}`} onClick={() => setSelectedSkills(selectedSkills().filter(item => item !== name))}>×</button>
@@ -1512,7 +1531,9 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
         <Show when={composerDrafts.get(draftKey()).failed}>
           {(failure) => <div role="alert" class="mb-3 rounded-xl border border-red-500/40 p-3 text-sm text-red-300">
             {failure().error}。内容已保留，可恢复后重试。
-            <button type="button" class="ml-2 underline" onClick={() => composerDrafts.restoreFailed(draftKey())}>恢复提交内容</button>
+            <button type="button" class="ml-2 underline" onClick={() => {
+              if (composerDrafts.restoreFailed(draftKey()) === false) setCommandFeedback('已保留两份内容。请先处理当前草稿，再恢复原实验轮次。');
+            }}>恢复提交内容</button>
           </div>}
         </Show>
         <Show when={activeWikiPage()}>
@@ -1576,6 +1597,24 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
         </Show>
         <InteractionPanel mode="permissions" />
 
+        <Show when={latestUnappliedGuidance()}>
+          {(item) => (
+            <div class="mb-2 flex min-w-0 items-center gap-2 px-1 text-xs text-[#ffc176]">
+              <div class="min-w-0 flex-1" role="status">
+                <div>追加指导未应用，请重新发送。</div>
+                <div class="truncate text-[#b8c8d2]" title={item().message}>{item().message}</div>
+              </div>
+              <button
+                type="button"
+                class="min-h-11 shrink-0 rounded px-3 text-[#b8c8d2] hover:text-white"
+                aria-label="关闭未应用指导提示"
+                onClick={() => dismissUnappliedGuidance(item().id)}
+              >
+                关闭
+              </button>
+            </div>
+          )}
+        </Show>
         <Show when={latestActiveGuidance()}>
           {(item) => (
             <div
@@ -1587,7 +1626,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
               <span class="shrink-0 text-[#b8c8d2]">{guidanceStatusLabel(item().status)}</span>
               <span class="min-w-0 flex-1 truncate" title={item().message}>{item().message}</span>
               <Show when={activeGuidanceItems().length > 1}>
-                <span class="shrink-0">+{activeGuidanceItems().length - 1}</span>
+                <span aria-hidden="true" class="shrink-0">+{activeGuidanceItems().length - 1}</span>
+                <span class="sr-only">还有 {activeGuidanceItems().length - 1} 条待处理指导</span>
               </Show>
               <Show when={guidanceCancellable(item().status)}>
                 <button

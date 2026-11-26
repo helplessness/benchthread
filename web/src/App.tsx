@@ -732,7 +732,8 @@ export default function App(props: AppProps) {
             closeCompanion(`page:research`); navigate('console'); setResearchSessionTab('task');
             const key = composerKey(session.session_id);
             const draft = composerDrafts.get(key);
-            composerDrafts.update(key, {text:[draft.text, detail.prompt || `请接续课题“${detail.title || researchId}”：先读取研究摘要、未解决问题和冲突，再说明下一步建议。不要自动开始持续运行。`].filter(Boolean).join('\n\n')});
+            if (draft.roundRef && detail.roundRef && draft.roundRef.run_id !== detail.roundRef.run_id) { await showFeedback('草稿已关联另一轮运行。请先发送草稿或移除原引用。'); return; }
+            composerDrafts.update(key, {roundRef:detail.roundRef || draft.roundRef, text:[draft.text, detail.prompt || `请接续课题“${detail.title || researchId}”：先读取研究摘要、未解决问题和冲突，再说明下一步建议。不要自动开始持续运行。`].filter(Boolean).join('\n\n')});
             window.dispatchEvent(new CustomEvent('tcode-focus-composer'));
           } catch (error) {await showFeedback(error instanceof Error ? error.message : '打开接续会话失败');}
           finally {openingResearch = false;}

@@ -307,6 +307,10 @@ async def list_models(request: Request, session_id: str = Query("")):
     if not isinstance(providers, dict):
         providers = {}
 
+    desktop_services = config.get("desktop_model_services", {})
+    if not isinstance(desktop_services, dict):
+        desktop_services = {}
+
     models = []
     for provider_id, provider_cfg in providers.items():
         if not isinstance(provider_cfg, dict):
@@ -314,6 +318,11 @@ async def list_models(request: Request, session_id: str = Query("")):
         model_map = provider_cfg.get("models", {})
         if not isinstance(model_map, dict):
             continue
+
+        # Desktop stores the user-facing service name separately from the provider key.
+        service = desktop_services.get(provider_id.removeprefix("desktop-")) if provider_id.startswith("desktop-") else None
+        service_name = service.get("name") if isinstance(service, dict) else None
+        provider_name = str(service_name or provider_cfg.get("name") or "").strip()
 
         for model_id, model_cfg in model_map.items():
             model_ref = f"{provider_id}/{model_id}"
@@ -327,6 +336,7 @@ async def list_models(request: Request, session_id: str = Query("")):
                 {
                     "id": model_ref,
                     "provider_id": provider_id,
+                    "provider_name": provider_name,
                     "model_id": model_id,
                     "name": model_name,
                     "supports_images": supports_images,

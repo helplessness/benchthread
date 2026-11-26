@@ -298,7 +298,7 @@ function HumanReviewRequiredCard(props: { alert: HumanReviewAlert }) {
   );
 }
 
-function AsyncJobCompletionCard(props: { alert: AsyncJobCompletionAlert }) {
+function AsyncJobCompletionCard(props: { alert: AsyncJobCompletionAlert; toolText?: string }) {
   const [submitting, setSubmitting] = createSignal(false);
   const [notice, setNotice] = createSignal('');
   const continuationAvailable = createMemo(() => props.alert.status === 'completed');
@@ -354,12 +354,13 @@ function AsyncJobCompletionCard(props: { alert: AsyncJobCompletionAlert }) {
     return `继续异步任务 ${props.alert.identifier}。`;
   };
 
-  const displaySummary = createMemo(() =>
-    props.alert.returnedFiles.length
-      ? '文件已回传到当前工作区：\n' + props.alert.returnedFiles.join('\n')
-      : props.alert.catalogOnly ? '已登记远端文件清单，文件尚未自动下载到工作区。'
-      : hideTargetId(formatAsyncResultSummary(props.alert.summary).text)
-  );
+  const displaySummary = createMemo(() => {
+    if (props.alert.returnedFiles.length) return '文件已回传到当前工作区：\n' + props.alert.returnedFiles.join('\n');
+    if (props.alert.catalogOnly) return '已登记远端文件清单，文件尚未自动下载到工作区。';
+    const summary = formatAsyncResultSummary(props.alert.summary);
+    if (props.toolText && !summary.structured && /^[\[{]/.test(summary.raw)) return '任务摘要不完整，工具返回文本见下方。';
+    return hideTargetId(summary.text);
+  });
 
   const continueAsyncJob = async () => {
     const sessionId = sessionStore.currentSessionId();
@@ -423,6 +424,23 @@ function AsyncJobCompletionCard(props: { alert: AsyncJobCompletionAlert }) {
           <div class={`text-base font-semibold ${tone().text}`}>{props.alert.title}</div>
           <Show when={displaySummary()}>
             <div class={`mt-2 whitespace-pre-line text-sm ${tone().soft}`}>{displaySummary()}</div>
+          </Show>
+          <Show when={props.alert.status === 'completed' && typeof props.toolText === 'string' && props.toolText}>
+            {(value) => {
+              const text = () => hideTargetId(value());
+              const preview = () => text().slice(0, 240).split('\n').slice(0, 4).join('\n');
+              return <section aria-label="工具返回文本" class={`mt-3 min-w-0 whitespace-pre-wrap wrap-anywhere text-sm ${tone().text}`}>
+                <div class="mb-1 text-xs font-semibold">工具返回文本</div>
+                <Show when={preview().length < text().length} fallback={<div>{text()}</div>}>
+                  <details class="group">
+                    <summary class="cursor-pointer py-1"><span class="group-open:hidden">展开文本</span><span class="hidden group-open:inline">收起文本</span>
+                      <span class="block group-open:hidden">{preview()}…</span>
+                    </summary>
+                    <div class="max-h-64 overflow-y-auto">{text()}</div>
+                  </details>
+                </Show>
+              </section>;
+            }}
           </Show>
 
           <div class="mt-3 flex flex-wrap gap-2 text-xs">
@@ -1848,7 +1866,7 @@ function MessageItem(props: MessageItemProps) {
                           </Show>
                         }
                       >
-                        {(alert) => <AsyncJobCompletionCard alert={alert()} />}
+                        {(alert) => <AsyncJobCompletionCard alert={alert()} toolText={props.message.metadata?.tool_result_text} />}
                       </Show>
                     }
                   >
