@@ -15,6 +15,64 @@ def record(ref, content, *, view='evidence', state=ToolState.COMPLETED):
     ])
 
 
+def test_progress_uses_new_results_artifacts_and_verdicts_not_call_ids_or_narration():
+    from tcode_agent.server.goal_mode import _round_progress
+    goal = {}
+    session = SimpleNamespace(id='s', metadata={})
+
+    def step(messages=(), verdict=None, state='ready', preparation=False):
+        seen, count = _round_progress(goal, messages, verdict, session, state=state, preparation=preparation)
+        goal.update(progress_observations=seen, no_progress_rounds=count)
+        return count
+
+    def observed(tool, output, ref, args=None, **meta):
+        return Message(role='tool', content=output, tool_calls=[ToolCall(tool_name=tool, arguments=args or {},
+            call_id=ref, state=ToolState.COMPLETED, metadata=meta)])
+
+    first = observed('read', 'row A', '1')
+    assert step([first]) == 0
+    assert step([observed('read', 'row A', '2'), observed('goal_checkpoint', '换了一种说法', '3')]) == 1
+    assert step([observed('read', 'row B', '4')]) == 0
+    assert step([first]) == 1  # alternating two old results does not work
+    assert step([observed('export', '', '5', artifacts=[{'path':'review.csv','sha256':'v1'}])]) == 0
+    assert step([observed('export', '', '6', artifacts=[{'path':'review.csv','sha256':'v1','observed_at':99}])]) == 1
+    assert step([observed('export', '', '7', artifacts=[{'path':'review.csv','sha256':'v2'}])]) == 0
+    assert step([observed('write', 'ok', '8', {'filePath':'notes','content':'first'})]) == 0
+    assert step([observed('write', 'ok', '9', {'filePath':'notes','content':'second'})]) == 0
+    assert step([observed('write', 'ok', '10', {'filePath':'notes','content':'second'})]) == 1
+    status = {'verdict':'partial','criterion_results':[{'criterion_id':'A','status':'uncertain'}]}
+    assert step(verdict=status) == 0
+    assert step(verdict={**status, 'warnings':['措辞变化'], 'confidence':.9}) == 1
+    assert step(verdict={**status, 'criterion_results':[{'criterion_id':'A','status':'pass'}]}) == 0
+    assert step([observed('exec', 'bad', '11', exitCode=1), observed('read', 'skipped', '12', synthetic=True),
+                 observed('question','pending','13'), observed('submit','queued','14',accepted_async=True)]) == 1
+    assert step(state='waiting_external') == step(preparation=True) == 1
+    assert step([observed('goal_checkpoint','下一轮继续','15')]) == 2
+    assert step([observed('inspect','first receipt','16',result_fingerprint='same-view')]) == 0
+    assert step([observed('inspect','different receipt','17',result_fingerprint='same-view'),
+                 observed('mcp_lookup','remote error','18',raw_mcp_result={'isError':True})]) == 1
+    assert 'row A' not in str(goal) and 'review.csv' not in str(goal)
+
+
+def test_only_new_owned_successful_async_receipt_counts_as_progress():
+    from tcode_agent.server.goal_mode import _round_progress
+    event = dict(session_id='s', origin_request_id='old', identifier='job', status='completed',
+                 result_receipt={'status':'completed','validated':True,'rejected_artifact_count':0})
+    session = SimpleNamespace(id='s',metadata={'async_completion_events':[event]})
+    goal = {'run_ids':['current'], 'progress_observations':[], 'no_progress_rounds':1}
+    def snapshot():
+        return _round_progress(goal, [], None, session, state='ready', preparation=False)
+    assert snapshot() == ([], 2)
+    event['origin_request_id'] = 'current'
+    event['result_receipt']['target_is_error'] = True
+    assert snapshot() == ([], 2)
+    event['result_receipt']['target_is_error'] = False
+    seen, count = snapshot()
+    assert len(seen) == 1 and count == 0
+    goal.update(progress_observations=seen, no_progress_rounds=count)
+    assert snapshot() == (seen, 1)
+
+
 def test_bound_excerpt_is_resolved_from_the_exact_record_and_prioritized():
     claim = 'Release A ran the mixed workload in 12 seconds'
     quote = 'On the mixed workload, Release A took 12 seconds.'

@@ -4654,11 +4654,19 @@ async def _resume_session_after_human_review(
 
     if isinstance(review_data.get("goal_tool_execution"), dict):
         from .goal_tool_review import resume_review
-        return await resume_review(review, decision=decision)
-
-    if isinstance(review_data.get("goal_computation"), dict):
+        goal_grant = review_data["goal_tool_execution"]
+        goal_result = await resume_review(review, decision=decision)
+    elif isinstance(review_data.get("goal_computation"), dict):
         from .goal_computation import resume_approved_computation
-        return await resume_approved_computation(review, decision=decision)
+        goal_grant = review_data["goal_computation"]
+        goal_result = await resume_approved_computation(review, decision=decision)
+    else:
+        goal_grant = None
+    if goal_grant is not None:
+        if goal_result.get("status") in {"completed", "queued"} or goal_result.get("reason") == "revision_requested":
+            from .goal_mode import goal_service
+            goal_service.wake(session_id, goal_grant.get("goal_id"), f"review:{review.get('id')}:{decision}")
+        return goal_result
 
     if ServerState.is_running(session_id):
         return {

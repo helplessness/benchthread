@@ -61,9 +61,13 @@ class OutcomeValidationResult:
     verification_mode: str = ""
     max_repair_attempts: int = 0
     criterion_assessments: dict[str, str] = field(default_factory=dict)
+    # Ephemeral handoff for goal chat only; never project private source excerpts.
+    goal_repair_sources: list = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value.pop("goal_repair_sources")
+        return value
 
 
 def public_outcome_projection(value: Any) -> dict[str, Any]:
@@ -1026,6 +1030,13 @@ async def _semantic_validation(
     }.get(mode, "") + "This review is advisory: report limitations and confidence; never demand user confirmation or block delivery. " + prompt
     if mode == "strict":
         prompt += "\nAlso return criterion_assessments: an object mapping EVERY success_criteria criterion_id to pass, fail, or uncertain. A global verdict alone does not satisfy strict review."
+    offer_sources = contract.metadata.get("goal_chat_text_repair") is True and policy["repairs"] > 0
+    if offer_sources:
+        prompt += ("\nOptional goal_repair_sources: only for verdict repair when ALL defects are omissions "
+                   "in the chat text and the already observed read/webfetch records suffice to fix them. "
+                   "Give 1-4 objects with call_id and a verbatim quote (24-480 characters) from the result "
+                   "supporting each omission. Otherwise omit this key, especially for missing data, "
+                   "unsupported conclusions, new execution, artifacts, unresolved requirements or authority.")
     timeout_seconds = policy["timeout"]
     options = _semantic_provider_options(provider)
     options["max_tokens"] = min(options["max_tokens"], policy["max_tokens"])
@@ -1110,6 +1121,9 @@ async def _semantic_validation(
                   if isinstance(item, dict) and item.get("status") in {"failed", "unverified"}][:5]
         if isinstance(parsed.get("findings"), list) else [],
         validator="semantic",
+        goal_repair_sources=parsed["goal_repair_sources"]
+        if (offer_sources and parsed.get("verdict") == "repair" and not needs_user_confirmation
+            and isinstance(parsed.get("goal_repair_sources"), list) and 1 <= len(parsed["goal_repair_sources"]) <= 4) else [],
         validator_confidence=validator_confidence,
         needs_user_confirmation=needs_user_confirmation,
         criterion_assessments={str(key): value for key, value in (parsed.get("criterion_assessments") or {}).items()

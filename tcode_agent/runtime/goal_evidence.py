@@ -86,3 +86,24 @@ def resolve_goal_evidence(candidate, rows, messages):
         resolved.append({'claim': claim, 'call_id': ref, 'quote': quote, 'section': section,
                          'source_tool': call.tool_name})
     return resolved, invalid
+
+
+def verified_repair_sources(rows, messages):
+    """A review hint is not evidence: recover every quoted omission or decline."""
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 4:
+        return []
+    sources = []
+    for row in rows:
+        if (not isinstance(row, dict) or row.keys() != {'call_id', 'quote'}
+                or not all(isinstance(row[k], str) and 0 < len(row[k]) <= limit
+                           for k, limit in (('call_id', 160), ('quote', 480)))):
+            return []
+        found, bad = resolve_goal_evidence(row['quote'], [dict(row, claim=row['quote'])], messages)
+        if bad or not found or found[0]['source_tool'] not in {'read', 'webfetch'}:
+            return []
+        matches = [call for msg in messages if msg.role == 'tool' for call in msg.tool_calls or []
+                   if call.call_id == row['call_id']]
+        if len(matches) != 1 or matches[0].compacted_at or (matches[0].metadata or {}).get('synthetic'):
+            return []
+        sources.append({key: found[0][key] for key in ('call_id', 'quote')})
+    return sources

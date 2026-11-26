@@ -825,7 +825,8 @@ async def _inject_result(
     from ..session.manager import SessionManager
     from ..server.session_lifecycle import _SESSION_DELETE_PENDING
     session_deleted = session_id in _SESSION_DELETE_PENDING
-    if not session_deleted and session_id and await SessionManager.get(session_id) is None:
+    origin_session = await SessionManager.get(session_id) if not session_deleted and session_id else None
+    if not session_deleted and session_id and origin_session is None:
         from ..session.events import SessionEventStore
         projection = await asyncio.to_thread(SessionEventStore.project, session_id)
         session_deleted = bool(projection.get('deleted'))
@@ -1051,6 +1052,16 @@ async def _inject_result(
             },
         )
 
+        # Only after settlement and runtime projection. A missed wake must
+        # never turn a delivered result into a failed delivery/recollection.
+        if (getattr(origin_session, 'metadata', None) or {}).get('goal_mode'):
+            try:
+                from ..server.goal_mode import goal_service
+                origin = reg.get('origin_request_id') or (issue.get('resume_data') or {}).get('origin_request_id')
+                goal_service.result_delivered(origin_session, origin, identifier)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception('Goal wake deferred to reconciliation')
         # Step 3: Notify frontend so it can trigger a new agent turn
         if agent_event_emitter is not None:
             try:
