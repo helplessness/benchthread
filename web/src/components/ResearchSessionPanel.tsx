@@ -3,6 +3,8 @@ import { continuationNotice, continuationBudgetExhausted, formatKnownCost } from
 import ResearchRecordDetails from './ResearchRecordDetails';
 import { proteinRunArtifactUrl } from '../api/proteinRuns';
 import { isStructurePath } from './StructureWorkspace';
+import { readResearchSections } from '../utils/researchReads';
+import { latestScopedRead } from '../utils/latestScopedRead';
 import { confirmAction } from './FeedbackDialog';
 import { For, Show, createEffect, createMemo, createSignal, on } from 'solid-js';
 import {
@@ -66,8 +68,8 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
   const [runOptions, setRunOptions] = createSignal<Array<{run_id: string; title: string; status: string}>>([]);
   const [runPage, setRunPage] = createSignal(1), [runPages, setRunPages] = createSignal(1), [runError, setRunError] = createSignal('');
   const [notice, setNotice] = createSignal('');
-  const talkAboutResearch = (prompt: string) => window.dispatchEvent(new CustomEvent('tcode-continue-research', {detail: {
-    researchId: props.researchId, workspaceId: props.workspaceId, prompt: `${prompt}\n当前课题请按平台提供的研究上下文定位。请先查询真实研究目标，再展示操作预览；存在同名记录时请让我确认，不要猜测。仅创建记录不代表启动计算；未经独立确认不要提交计算任务。`,
+  const talkAboutResearch = (prompt: string, roundRef?: {experiment_id:string;run_id:string;research_id:string}) => window.dispatchEvent(new CustomEvent('tcode-continue-research', {detail: {
+    researchId: props.researchId, workspaceId: props.workspaceId, roundRef, prompt: roundRef ? prompt : `${prompt}\n当前课题请按平台提供的研究上下文定位。请先查询真实研究目标，再展示操作预览；存在同名记录时请让我确认，不要猜测。仅创建记录不代表启动计算；未经独立确认不要提交计算任务。`,
   }}));
   const loadRuns = async (page = 1) => {
     const key = researchLoadKey(); setRunError('');
@@ -113,17 +115,25 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
     const result = await listResearchHypotheses(props.researchId, props.workspaceId);
     if (key === researchLoadKey()) setHypotheses(result.hypotheses || []);
   };
+  const experimentReads = latestScopedRead(researchLoadKey);
+  const comparisonReads = latestScopedRead(() => JSON.stringify([researchLoadKey(),compareLeft(),compareRight()]));
+  const reproductionReads = latestScopedRead(researchLoadKey);
+  createEffect(on(researchLoadKey, () => { experimentReads.invalidate(); comparisonReads.invalidate(); reproductionReads.invalidate(); }));
   const loadExperiments = async () => {
-    const key = researchLoadKey();
-    const [hypothesisResult, experimentResult] = await Promise.all([
+    const current = experimentReads.begin();
+    const {results:[hypothesisResult, experimentResult]} = await readResearchSections([
       listResearchHypotheses(props.researchId, props.workspaceId),
       listResearchExperiments(props.researchId, props.workspaceId),
-    ]);
-    if (key !== researchLoadKey()) return;
-    setHypotheses(hypothesisResult.hypotheses || []);
-    setExperiments(experimentResult.experiments || []);
+    ], ['假说','实验']);
+    if (!current()) return;
+    setSectionErrors({hypotheses:hypothesisResult.status === 'rejected',experiments:experimentResult.status === 'rejected'});
+    setHypotheses(hypothesisResult.status === 'fulfilled' ? hypothesisResult.value.hypotheses || [] : []);
+    setExperiments(experimentResult.status === 'fulfilled' ? experimentResult.value.experiments || [] : []);
   };
 
+  type Section = 'hypotheses' | 'experiments' | 'source' | 'state' | 'continuous';
+  const [sectionErrors, setSectionErrors] = createSignal<Partial<Record<Section, boolean>>>({});
+  const retrySection = (name: string) => <p role="alert">{name}暂时无法读取。 <button type="button" class={buttonClass} onClick={() => setReloadRevision(v => v + 1)}>重试读取</button></p>;
   let loadedScope = '';
   createEffect(on(
     researchLoadKey,
@@ -143,9 +153,12 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
     setLoading(true); setError('');
     try {
       if (tab === 'overview' || tab === 'continuation') {
-        const [source, state, continuous] = await Promise.all([getResearchProjectProvenance(researchId, workspaceId), getResearchCheckpoint(researchId, workspaceId), getResearchContinuation(researchId, workspaceId)]);
+        const [source, state, continuous] = await Promise.allSettled([getResearchProjectProvenance(researchId, workspaceId), getResearchCheckpoint(researchId, workspaceId), getResearchContinuation(researchId, workspaceId)]);
         if (key !== researchLoadKey()) return;
-        setProvenance(source); setCheckpoint(state.checkpoint); setContinuation(continuous.continuation);
+        setSectionErrors({source: source.status === 'rejected', state: state.status === 'rejected', continuous: continuous.status === 'rejected'});
+        setProvenance(source.status === 'fulfilled' ? source.value : null);
+        setCheckpoint(state.status === 'fulfilled' ? state.value.checkpoint : null);
+        setContinuation(continuous.status === 'fulfilled' ? continuous.value.continuation : null);
       } else if (tab === 'hypotheses') await loadHypotheses();
       else if (tab === 'experiments') await loadExperiments();
       else if (tab === 'evidence') {
@@ -230,12 +243,14 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
   };
   const runComparison = async () => {
     if (!compareLeft() || !compareRight() || compareLeft() === compareRight()) return;
-    try { setComparison(await compareResearchExperiments(compareLeft(), compareRight(), props.workspaceId)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : '实验对比失败'); }
+    const current = comparisonReads.begin(); setComparison(null);
+    try { const value = await compareResearchExperiments(compareLeft(), compareRight(), props.workspaceId); if (current()) setComparison(value); }
+    catch (cause) { if (current()) setError(cause instanceof Error ? cause.message : '实验对比失败'); }
   };
   const runReproductionComparison = async (item: ResearchExperiment) => {
-    try { setReproductionComparison(await compareResearchReproduction(item.experiment_id, props.workspaceId)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : '复现差异加载失败'); }
+    const current = reproductionReads.begin(); setReproductionComparison(null);
+    try { const value = await compareResearchReproduction(item.experiment_id, props.workspaceId); if (current()) setReproductionComparison(value); }
+    catch (cause) { if (current()) setError(cause instanceof Error ? cause.message : '复现差异加载失败'); }
   };
   const changeContinuation = async (action: 'start' | 'pause' | 'resume') => {
     if (props.readOnly) return;
@@ -264,10 +279,15 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
     <Show when={!loading()}>
       <Show when={props.tab === 'overview' || props.tab === 'continuation'}><div class="space-y-4">
         <Show when={props.tab === 'overview'}>
-        <section class="research-overview-hero rounded-2xl border border-[#2a3136] bg-[#11171b] p-6"><div class="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8ed5ff]">研究概览</div><h2 class="research-project-title mt-2 text-2xl font-bold text-[#f1f5f9]">{provenance()?.project.title || '未命名研究课题'}</h2><p class="research-project-summary mt-3 text-sm leading-6 text-[#9faeb7]">{checkpoint()?.research_goal || provenance()?.project.description || provenance()?.initial_intent || '尚未形成研究目标摘要。'}</p><div class="mt-5 grid gap-3 sm:grid-cols-3"><div class="research-metric rounded-xl bg-[#171c20] p-4"><div class="text-xs font-medium text-[#71808a]">关联会话</div><div class="mt-1 text-2xl font-semibold text-[#e6edf3]">{provenance()?.counts.sessions || 0}</div></div><div class="research-metric rounded-xl bg-[#171c20] p-4"><div class="text-xs font-medium text-[#71808a]">研究活动</div><div class="mt-1 text-2xl font-semibold text-[#e6edf3]">{provenance()?.counts.activities || 0}</div></div><div class="research-metric rounded-xl bg-[#171c20] p-4"><div class="text-xs font-medium text-[#71808a]">研究产物</div><div class="mt-1 text-2xl font-semibold text-[#e6edf3]">{provenance()?.counts.artifacts || 0}</div></div></div></section>
-        <section class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5"><h3 class="text-sm font-semibold text-[#d7dee4]">下一步</h3><Show when={values(checkpoint()?.next_actions).length} fallback={<p class="mt-3 text-sm text-[#71808a]">尚未形成明确的下一步。</p>}><ul class="mt-3 space-y-2"><For each={values(checkpoint()?.next_actions)}>{(item) => <li class="rounded-lg bg-[#171c20] px-3 py-2 text-sm text-[#bdc8d1]">{item}</li>}</For></ul></Show></section>
+        <Show when={!sectionErrors().source} fallback={<>{retrySection('课题资料')}<Show when={checkpoint()?.research_goal}><p>{checkpoint()?.research_goal}</p></Show></>}><section class="research-overview-hero rounded-2xl border border-[#2a3136] bg-[#11171b] p-6"><div class="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8ed5ff]">研究概览</div><h2 class="research-project-title mt-2 text-2xl font-bold text-[#f1f5f9]">{provenance()?.project.title || '未命名研究课题'}</h2><p class="research-project-summary mt-3 text-sm leading-6 text-[#9faeb7]">{checkpoint()?.research_goal || provenance()?.project.description || provenance()?.initial_intent || (sectionErrors().state ? '研究检查点暂不可用。' : '尚未形成研究目标摘要。')}</p><div class="mt-5 grid gap-3 sm:grid-cols-3"><div class="research-metric rounded-xl bg-[#171c20] p-4"><div class="text-xs font-medium text-[#71808a]">关联会话</div><div class="mt-1 text-2xl font-semibold text-[#e6edf3]">{provenance()?.counts.sessions || 0}</div></div><div class="research-metric rounded-xl bg-[#171c20] p-4"><div class="text-xs font-medium text-[#71808a]">研究活动</div><div class="mt-1 text-2xl font-semibold text-[#e6edf3]">{provenance()?.counts.activities || 0}</div></div><div class="research-metric rounded-xl bg-[#171c20] p-4"><div class="text-xs font-medium text-[#71808a]">研究产物</div><div class="mt-1 text-2xl font-semibold text-[#e6edf3]">{provenance()?.counts.artifacts || 0}</div></div></div></section></Show>
+        <Show when={!sectionErrors().state} fallback={retrySection('研究检查点')}><section class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5"><h3 class="text-sm font-semibold text-[#d7dee4]">下一步</h3><Show when={values(checkpoint()?.next_actions).length} fallback={<p class="mt-3 text-sm text-[#71808a]">尚未形成明确的下一步。</p>}><ul class="mt-3 space-y-2"><For each={values(checkpoint()?.next_actions)}>{(item) => <li class="rounded-lg bg-[#171c20] px-3 py-2 text-sm text-[#bdc8d1]">{item}</li>}</For></ul></Show></section></Show>
         </Show>
-        <details open={props.tab === 'continuation' || Boolean(continuation())} class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5"><summary class="cursor-pointer text-sm font-semibold">持续研究控制与预算</summary>
+        <Show when={!sectionErrors().continuous} fallback={retrySection('持续研究状态')}><details open={props.tab === 'continuation'} class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5"><summary class="cursor-pointer text-sm font-semibold">
+          <Show when={props.tab === 'overview' && continuation()} fallback="持续研究控制与预算">{item => <>
+            持续研究：{researchStatusLabel(item().status)} · 已运行 {item().runs_started}/{item().max_runs} 轮
+            <Show when={item().stop_reason}> · {researchStatusLabel(item().stop_reason, '请展开核对停止原因')}</Show>
+          </>}</Show>
+        </summary>
           <div class="flex items-center justify-between gap-4"><div><h3 class="text-sm font-semibold text-[#d7dee4]">持续研究</h3><p class="mt-1 text-xs leading-5 text-[#71808a]">设置自动续跑的停止条件。运行次数和持续时间必须填写；可选预算填 0 表示不单独限制。</p></div><span class="research-status-pill shrink-0 text-xs text-[#8ed5ff]">{continuation()?researchStatusLabel(continuation()?.status):'未启用'}</span></div>
           <Show when={continuation()} fallback={
             <div class="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -279,7 +299,7 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
               <label class="research-budget-field"><span>允许失败次数</span><small>累计失败达到次数后不再创建下一轮</small><div class="flex gap-2"><input class={inputClass} type="number" min="0" value={maxFailures()} onInput={(e) => setMaxFailures(Number(e.currentTarget.value))}/><button class={`${buttonClass} shrink-0 px-4`} disabled={saving()} onClick={() => changeContinuation('start')}>启动</button></div></label>
             </div>
           }>{(item) => <div class="mt-3 rounded-xl bg-[#171c20] p-3"><div class="flex flex-wrap items-center justify-between gap-2"><div class="text-xs text-[#9faeb7]">运行 {item().runs_started}/{item().max_runs} · 模型用量 {item().tokens_used}/{item().max_tokens || '∞'} · 工具 {item().tool_calls_used}/{item().max_tool_calls || '∞'} · 失败 {item().failures_used}/{item().max_failures || '∞'} · 费用 {formatKnownCost(item().cost_used_micros / 1_000_000, item().cost_status || 'unknown')} / 上限 {item().max_cost_micros ? `$${(item().max_cost_micros / 1_000_000).toFixed(2)}` : '不限'}<Show when={item().stop_reason}> · {researchStatusLabel(item().stop_reason,'停止原因尚未说明')}</Show></div><Show when={item().status === 'running'} fallback={<button class={buttonClass} disabled={saving() || continuationBudgetExhausted(item())} title={continuationBudgetExhausted(item()) ? '预算已达上限，恢复不会追加预算；请明确调整续跑预算后再继续。' : undefined} onClick={() => changeContinuation('resume')}>恢复续跑</button>}><button class={buttonClass} disabled={saving()} onClick={() => changeContinuation('pause')}>暂停续跑</button></Show></div><p class="mt-2 text-xs text-[#9faeb7]" role="status">{continuationNotice(item())}</p><Show when={item().cost_status !== 'known'}><p class="mt-2 text-xs text-[#9faeb7]">费用信息不完整，当前费用上限无法保证总支出；请同时限制轮次与时间。</p></Show><Show when={item().final_summary}><div class="mt-2 text-xs text-[#9ee6bb]">最佳交付：{item().final_summary}</div></Show></div>}</Show>
-        </details>
+        </details></Show>
       </div></Show>
 
       <Show when={props.tab === 'hypotheses'}><fieldset disabled={props.readOnly} class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5">
@@ -300,7 +320,8 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
       <Show when={notice()}><p role="status" class="mb-3 text-sm">{notice()}</p></Show>
       <Show when={props.tab === 'experiments'}><div class="space-y-4"><section class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5">
         <div class="flex items-center justify-between gap-3"><div><h2 class="text-lg font-semibold text-[#f1f5f9]">{hasExperimentBranches() ? '实验路线与分支' : '实验记录'}</h2><p class="mt-1 text-xs text-[#9faeb7]">先创建记录，再独立准备并启动计算，最后关联运行与结果。完成后冻结，后续尝试保留为新路线。</p></div><button class={buttonClass} disabled={props.readOnly || !approvedHypotheses().length} onClick={() => openExperimentForm()}>新建实验记录</button></div>
-        <Show when={showExperimentForm()}><fieldset disabled={props.readOnly} class="mt-4 grid gap-3 rounded-xl border border-[#355264] bg-[#121b20] p-4">
+        <Show when={sectionErrors().hypotheses}>{retrySection('假说列表')}</Show>
+        <Show when={showExperimentForm() && !sectionErrors().hypotheses}><fieldset disabled={props.readOnly} class="mt-4 grid gap-3 rounded-xl border border-[#355264] bg-[#121b20] p-4">
           <label>已批准假说<select class={inputClass} value={experimentHypothesisId()} disabled={!!parentExperimentId()} onChange={(e) => setExperimentHypothesisId(e.currentTarget.value)}><option value="">选择已批准假说</option><For each={approvedHypotheses()}>{item => <option value={item.hypothesis_id}>{item.statement}</option>}</For></select></label>
           <label>实验名称（必填）<input class={inputClass} value={experimentTitle()} onInput={(e) => setExperimentTitle(e.currentTarget.value)}/></label>
           <label>本次改变与验证目的<textarea class={inputClass} value={experimentReason()} onInput={(e) => setExperimentReason(e.currentTarget.value)}/></label>
@@ -312,7 +333,7 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
           <label>执行位置<select class={inputClass} value={executionMode()} onChange={(e) => setExecutionMode(e.currentTarget.value as any)}><option value="shared_workspace">共享工作区（不隔离）</option><option value="isolated_directory">独立运行目录（数据/远程任务）</option><option value="git_worktree">Git 隔离工作区（代码实验）</option></select></label>
           <p class="text-xs leading-6">此操作仅创建记录并准备执行位置，不提交计算。Git 模式要求干净且已有提交的仓库。</p>
           <div class="flex justify-end gap-2"><button class={buttonClass} onClick={() => setShowExperimentForm(false)}>取消</button><button class={buttonClass} disabled={saving() || !experimentTitle().trim() || !experimentHypothesisId()} onClick={saveExperiment}>仅创建实验记录</button></div></fieldset></Show>
-        <Show when={experiments().length} fallback={<p class="mt-4 text-sm text-[#9faeb7]">当前还没有实验。先批准一个假说，再创建首个实验记录；创建不会启动计算。</p>}><div class="research-scroll-content mt-4 space-y-3"><For each={experiments()}>{(item) => <article class="rounded-xl border border-[#30383e] p-4" style={{ 'margin-left': `${Math.min(experimentDepth(item), 4) * 20}px` }}>
+        <Show when={experiments().length} fallback={sectionErrors().experiments ? retrySection('实验列表') : <p class="mt-4 text-sm text-[#9faeb7]">当前还没有实验。先批准一个假说，再创建首个实验记录；创建不会启动计算。</p>}><div class="research-scroll-content mt-4 space-y-3"><For each={experiments()}>{(item) => <article class="rounded-xl border border-[#30383e] p-4" style={{ 'margin-left': `${Math.min(experimentDepth(item), 4) * 20}px` }}>
           <div class="flex flex-wrap items-start justify-between gap-3"><div class="min-w-0"><h3 class="text-sm font-semibold">{item.title}</h3><p class="mt-1 text-xs">{researchStatusLabel(item.status)} · 假说第 {item.hypothesis_revision} 版 · {item.frozen_at ? '已冻结，继续需新建路线' : '可整理记录'}<Show when={item.decision}> · {researchStatusLabel(item.decision)}</Show></p></div>
             <div class="flex flex-wrap gap-2"><button type="button" class={buttonClass} disabled={props.readOnly} onClick={() => talkAboutResearch(`请查看实验“${item.title}”。${item.frozen_at ? '我想基于它尝试另一条路线，请询问本次改动，展示新记录的创建预览。' : '请帮我整理结果或关联已有计算运行，先展示对应操作预览，不要直接冻结。'}`)}>{item.frozen_at ? '对话中尝试另一条路线' : '对话中整理这次尝试'}</button>
             <Show when={item.source_experiment_id}><button class={buttonClass} onClick={() => runReproductionComparison(item)}>原始/复现差异</button></Show><Show when={item.frozen_at}><button class={buttonClass} disabled={props.readOnly} onClick={() => openExperimentForm(item)}>手动创建后续记录</button></Show></div></div>
@@ -337,7 +358,7 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
                   </div>
                 </Show>}</For>
                 <Show when={!item.frozen_at && !props.readOnly && run.lifecycle_status === 'completed'}>
-                  <button type="button" class={buttonClass} onClick={() => talkAboutResearch(`基于实验“${item.title}”的 Boltz 运行 ${run.run_id} 准备下一轮。请等我上传或指定新主输入文件，仅替换 tools_input；先确认，不要直接提交。`)}>对话中换文件继续</button>
+                  <button type="button" class={buttonClass} onClick={() => talkAboutResearch(`基于实验“${item.title}”中选定的运行准备下一轮。等我指定新主输入文件后，先展示变更，不要直接提交。`, {research_id:props.researchId, experiment_id:item.experiment_id, run_id:run.run_id})}>对话中换文件继续</button>
                 </Show>
               </div>}</For>
             </details>
@@ -347,7 +368,7 @@ export default function ResearchSessionPanel(props: { tab: ResearchSessionTab; r
           </details>
         </article>}</For></div></Show>
       </section>
-      <Show when={experiments().length > 1}><section class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5"><h3 class="text-sm font-semibold">对比实验</h3><p class="mt-2 text-xs">比较记录与运行快照；没有指标或结果时，不自动判断哪条路线更好。</p><div class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"><label>实验 A<select class={inputClass} value={compareLeft()} onChange={(e) => setCompareLeft(e.currentTarget.value)}><option value="">选择实验 A</option><For each={experiments()}>{(item) => <option value={item.experiment_id}>{item.title}</option>}</For></select></label><label>实验 B<select class={inputClass} value={compareRight()} onChange={(e) => setCompareRight(e.currentTarget.value)}><option value="">选择实验 B</option><For each={experiments()}>{(item) => <option value={item.experiment_id}>{item.title}</option>}</For></select></label><button class={buttonClass} disabled={!compareLeft() || !compareRight() || compareLeft() === compareRight()} onClick={runComparison}>对比</button></div><Show when={comparison()}>{(result) => <div class="mt-4 grid gap-3 sm:grid-cols-2"><For each={[result().left, result().right]}>{(item) => <div class="rounded-xl bg-[#171c20] p-4"><div class="text-sm font-medium">{item.title}</div><p class="mt-2 text-xs leading-6">状态：{researchStatusLabel(item.status)}<br/>判断：{researchStatusLabel(item.decision,'判断尚未说明')}<br/>本次改变与目的：{item.reason || '未记录'}<br/>假说版本：第 {item.hypothesis_revision} 版<br/>输入 {item.input_artifacts?.length || 0} · 产物 {item.output_artifacts?.length || 0}</p><p class="mt-2 text-xs leading-6">结果：{item.result_summary || '暂无结果摘要，无法据此判断优劣'}</p><ResearchRecordDetails value={{指标:item.metrics||{}}}/><SnapshotSummary experiment={item}/></div>}</For></div>}</Show></section></Show></div></Show>
+      <Show when={experiments().length > 1}><section class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5"><h3 class="text-sm font-semibold">对比实验</h3><p class="mt-2 text-xs">比较记录与运行快照；没有指标或结果时，不自动判断哪条路线更好。</p><div class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"><label>实验 A<select class={inputClass} value={compareLeft()} onChange={(e) => {comparisonReads.invalidate(); setComparison(null); setCompareLeft(e.currentTarget.value);}}><option value="">选择实验 A</option><For each={experiments()}>{(item) => <option value={item.experiment_id}>{item.title}</option>}</For></select></label><label>实验 B<select class={inputClass} value={compareRight()} onChange={(e) => {comparisonReads.invalidate(); setComparison(null); setCompareRight(e.currentTarget.value);}}><option value="">选择实验 B</option><For each={experiments()}>{(item) => <option value={item.experiment_id}>{item.title}</option>}</For></select></label><button class={buttonClass} disabled={!compareLeft() || !compareRight() || compareLeft() === compareRight()} onClick={runComparison}>对比</button></div><Show when={comparison()}>{(result) => <div class="mt-4 grid gap-3 sm:grid-cols-2"><For each={[result().left, result().right]}>{(item) => <div class="rounded-xl bg-[#171c20] p-4"><div class="text-sm font-medium">{item.title}</div><p class="mt-2 text-xs leading-6">状态：{researchStatusLabel(item.status)}<br/>判断：{researchStatusLabel(item.decision,'判断尚未说明')}<br/>本次改变与目的：{item.reason || '未记录'}<br/>假说版本：第 {item.hypothesis_revision} 版<br/>输入 {item.input_artifacts?.length || 0} · 产物 {item.output_artifacts?.length || 0}</p><p class="mt-2 text-xs leading-6">结果：{item.result_summary || '暂无结果摘要，无法据此判断优劣'}</p><ResearchRecordDetails value={{指标:item.metrics||{}}}/><SnapshotSummary experiment={item}/></div>}</For></div>}</Show></section></Show></div></Show>
 
       <Show when={props.tab === 'experiments' && reproductionComparison()}>{(result) => <section class="mt-4 rounded-2xl border border-[#c4a7ff]/30 bg-[#11171b] p-5"><h3 class="text-sm font-semibold text-[#d8c8ff]">原始实验与复现实验差异</h3><div class="mt-3 space-y-2"><For each={Object.entries(result().differences || {})}>{([field, values]) => <div class="grid gap-2 rounded-lg bg-[#171c20] p-3 text-xs sm:grid-cols-[120px_1fr_1fr]"><strong class="text-[#9faeb7]">{researchFieldLabel(field)}</strong><span class="text-[#8b99a4]">原始：{researchValueText((values as any).original,field)}</span><span class="text-[#d7dee4]">复现：{researchValueText((values as any).reproduction,field)}</span></div>}</For></div></section>}</Show>
       <Show when={props.tab === 'evidence'}><section class="rounded-2xl border border-[#2a3136] bg-[#11171b] p-5"><h2 class="text-lg font-semibold text-[#f1f5f9]">证据</h2><Show when={(knowledge()?.links || []).length} fallback={<p class="mt-4 text-sm text-[#71808a]">当前还没有已关联的证据。</p>}><div class="research-scroll-content mt-4 space-y-3"><For each={knowledge()?.links || []}>{(item) => <article class="rounded-xl border border-[#30383e] p-4"><div class="text-sm text-[#d7dee4]">{researchSourceLabel(item)}</div><div class="mt-1 text-xs text-[#596873]">{researchRelationLabel(item.relation)} · {researchSourceTypeLabel(item.object_type)}</div></article>}</For></div></Show></section></Show>

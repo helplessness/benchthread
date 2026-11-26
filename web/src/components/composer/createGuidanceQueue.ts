@@ -2,10 +2,26 @@ import { createSignal, createMemo, createEffect, on, onMount, onCleanup } from '
 import { getChatGuidanceQueue, deleteChatGuidanceItem, type ChatGuidanceQueueItem } from '../../api/client';
 import { sessionStore } from '../../stores/session';
 
+const DISMISSED_GUIDANCE_KEY = 'tcode-dismissed-unapplied-guidance-v1';
+
+function loadDismissedGuidance(): string[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DISMISSED_GUIDANCE_KEY) || '[]');
+    return Array.isArray(stored) ? stored.filter(id => typeof id === 'string' && id) : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Own the active session's guidance queue and its polling lifetime. */
 export function createGuidanceQueue() {
   const [guidanceQueue, setGuidanceQueue] = createSignal<ChatGuidanceQueueItem[]>([]);
   const [deletingGuidanceIds, setDeletingGuidanceIds] = createSignal<Set<string>>(new Set());
+  const [dismissedUnappliedIds, setDismissedUnappliedIds] = createSignal(new Set(loadDismissedGuidance()));
+  const latestUnappliedGuidance = createMemo(() => guidanceQueue().slice().reverse().find(item =>
+    item.status === 'failed' && item.failure_code === 'expired_turn_unapplied'
+    && !dismissedUnappliedIds().has(item.id)
+  ));
   const activeGuidanceItems = createMemo(() =>
     guidanceQueue()
       .filter(item => (
@@ -15,7 +31,6 @@ export function createGuidanceQueue() {
           String(item.status || ''),
         )
       ))
-      .slice(-12)
   );
   const latestActiveGuidance = createMemo(() => {
     const items = activeGuidanceItems();
@@ -37,6 +52,15 @@ export function createGuidanceQueue() {
   };
   const guidanceCancellable = (status?: string) =>
     !status || ['classifying', 'pending', 'deferred'].includes(status);
+  const dismissUnappliedGuidance = (id: string) => {
+    const next = new Set([...dismissedUnappliedIds(), ...loadDismissedGuidance(), id]);
+    setDismissedUnappliedIds(next);
+    try {
+      localStorage.setItem(DISMISSED_GUIDANCE_KEY, JSON.stringify([...next]));
+    } catch {
+      // Storage disabled: still dismiss for the lifetime of this composer.
+    }
+  };
   const refreshGuidanceQueue = async (showLoading = false) => {
     const sessionId = sessionStore.currentSessionId();
     if (!sessionId) {
@@ -102,6 +126,8 @@ export function createGuidanceQueue() {
   return {
     activeGuidanceItems,
     latestActiveGuidance,
+    latestUnappliedGuidance,
+    dismissUnappliedGuidance,
     guidanceStatusLabel,
     guidanceCancellable,
     refreshGuidanceQueue,

@@ -48,7 +48,10 @@ import { dismissDetailsOnOutsideClick } from '../utils/dismissDetails';
 import {
   WIKI_CLAIM_EVIDENCE_PREFIX,
   buildWikiAgentDisplayContent,
+  supportLabel,
 } from '../utils/wikiEvidenceDisplay';
+import { latestScopedRead } from '../utils/latestScopedRead';
+import { wikiHitBlock } from '../utils/wikiSearchLocation';
 import MarkdownContent from './MarkdownContent';
 import MarkdownEditor from './MarkdownEditor';
 import { ZoomableImage } from './ImageLightbox';
@@ -252,7 +255,7 @@ export default function PaperWikiWorkspace(props: Props) {
   ));
   const filteredClaims = createMemo(() => selectedClaims().filter((claim) => fuzzyMatchesFields([
     claim.statement,
-    claim.support_status,
+    claim.support_status, supportLabel(claim.support_status),
     relationSummary(claim),
     ...(claim.evidence_ids || []),
   ], claimQuery())));
@@ -302,7 +305,16 @@ export default function PaperWikiWorkspace(props: Props) {
     setEntityTypes(result.types || []);
   };
 
-  const loadPages = async (preserveSelection = true) => {
+  let listRequest = 0, pageRequest = 0;
+  let evidenceHeading: HTMLHeadingElement | undefined;
+  let readingBody: HTMLDivElement | undefined;
+  const [filteredList, setFilteredList] = createSignal(false);
+  const [moreOffset, setMoreOffset] = createSignal(0);
+  const [appending, setAppending] = createSignal(false);
+  const loadPages = async (preserveSelection = true, offset = 0) => {
+    if (!offset) setMoreOffset(0);
+    const request = ++listRequest, scope = sourceId(), workspace = workspaceId();
+    const type = pageType(), term = query().trim();
     const statusFilter = pageStatusFilter();
     const includeArchived = statusFilter !== 'active';
     const status = statusFilter === 'archived' ? 'archived' : '';
@@ -313,14 +325,23 @@ export default function PaperWikiWorkspace(props: Props) {
           pageType: pageType(),
           status,
           includeArchived,
-          limit: 200,
+          limit: 200, offset,
           sourceId: sourceId(),
         });
+    if (request !== listRequest || scope !== sourceId() || workspace !== workspaceId()) return;
+    const nextOffset = 'pages' in result ? offset + result.pages.length : 0;
+    setMoreOffset('pages' in result && result.pages.length && nextOffset < result.total ? nextOffset : 0);
+    if (offset && 'pages' in result) {
+      setPages(old => [...old, ...result.pages.filter(p => !old.some(x => x.page_id === p.page_id))]);
+      return;
+    }
+    ++pageRequest;
+    setFilteredList(Boolean(term || type || statusFilter !== 'active'));
     const nextPages = 'hits' in result ? result.hits : result.pages;
     setSearchMode('hits' in result ? String(result.search_mode || 'fts') : '');
-    setPages(pageType() && query().trim() ? nextPages.filter((item) => item.page_type === pageType()) : nextPages);
+    setPages(type && term ? nextPages.filter((item) => item.page_type === type) : nextPages);
     const currentId = preserveSelection ? selectedPage()?.page_id : '';
-    if (currentId && nextPages.some((item) => item.page_id === currentId)) {
+    if (currentId && pages().some((item) => item.page_id === currentId)) {
       await selectPage(currentId);
     } else {
       setSelectedPage(null);
@@ -328,8 +349,14 @@ export default function PaperWikiWorkspace(props: Props) {
     }
   };
 
+  const detailScope = () => JSON.stringify([workspaceId(), sourceId(), isActive()]);
+  const evidenceReads = latestScopedRead(detailScope), proposalReads = latestScopedRead(detailScope);
+  const [evidenceError,setEvidenceError] = createSignal('');
+  let proposalsListVersion = 0;
   const loadProposals = async () => {
+    const scope = detailScope(), version = ++proposalsListVersion;
     const result = await listWikiProposals(workspaceId(), '', sourceId());
+    if (version !== proposalsListVersion || scope !== detailScope()) return;
     setProposals(result.proposals || []);
     const currentId = selectedProposal()?.proposal_id;
     if (currentId) {
@@ -416,7 +443,7 @@ export default function PaperWikiWorkspace(props: Props) {
       // force 只要求重新同步；不等于全量重新嵌入。
       const result = await rebuildWikiVectorIndex(workspaceId(), true);
       setNotice(result.job?.job_id
-        ? `向量索引增量更新任务已提交：${result.job.job_id}`
+        ? '已提交索引更新，可在后台任务中查看进度。'
         : `未创建向量任务：${result.status === 'disabled' ? '功能已关闭，继续使用 FTS5' : 'FAISS 不可用，继续使用 FTS5'}`);
       await Promise.all([loadJobs(), loadStats()]);
     } catch (e) {
@@ -427,6 +454,8 @@ export default function PaperWikiWorkspace(props: Props) {
   };
 
   createEffect(on(() => [workspaceId(), sourceId(), isActive()] as const, ([, , active]) => {
+    evidenceReads.invalidate(); proposalReads.invalidate();
+    setEvidenceOpen(false); setSelectedProposal(null);
     if (active) void refreshAll();
   }));
 
@@ -449,17 +478,30 @@ export default function PaperWikiWorkspace(props: Props) {
     onCleanup(() => window.clearInterval(timer));
   });
 
-  const selectPage = async (pageId: string) => {
+  const selectPage = async (pageId: string, hit?: WikiPage, chunkIndex = 0) => {
+    const request = ++pageRequest, scope = sourceId(), workspace = workspaceId();
+    const current = () => request === pageRequest && scope === sourceId() && workspace === workspaceId();
     setError('');
     try {
       const page = await getWikiPage(pageId, workspaceId(), true, sourceId());
+      if (!current()) return;
       setSelectedPage(page);
       setClaimQuery('');
       setClaimPage(1);
       setEditing(false);
       setEditContent(page.user_notes || '');
+      const chunk = hit?.matched_chunks?.[chunkIndex];
+      if (chunk) requestAnimationFrame(() => {
+        if (!current() || selectedPage()?.page_id !== pageId) return;
+        const blocks = Array.from(readingBody?.querySelectorAll<HTMLElement>('p,h1,h2,h3,h4,h5,h6,li,pre,td,th') || []);
+        const index = page.revision === hit?.revision ? wikiHitBlock(chunk.content, blocks.map(b => b.textContent || '')) : -1;
+        const block = blocks[index];
+        if (!block) { setNotice('已打开页面，但无法准确定位这段搜索结果。请重新搜索或在正文中核对。'); return; }
+        block.scrollIntoView({block: 'center', behavior: 'instant'});
+        block.animate?.([{outline: '2px solid var(--tcode-accent, #38bdf8)'}, {outline: '2px solid transparent'}], {duration: 2400});
+      });
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载 Wiki 页面失败');
+      if (current()) setError(e instanceof Error ? e.message : '加载 Wiki 页面失败');
     }
   };
 
@@ -595,17 +637,37 @@ export default function PaperWikiWorkspace(props: Props) {
     }
   };
 
+  const startEvidence = () => {
+    const valid = evidenceReads.begin(); setEvidenceError('');
+    return () => evidenceOpen() && valid();
+  };
   const openEvidence = async (claim: WikiClaim) => {
+    const current = startEvidence();
     setEvidenceOpen(true);
     setEvidenceLoading(true);
     setEvidenceData(emptyEvidencePanelData(claim));
     try {
-      setEvidenceData(await getClaimEvidence(claim.claim_id, workspaceId(), sourceId()));
+      const data = await getClaimEvidence(claim.claim_id, workspaceId(), sourceId());
+      if (current()) setEvidenceData(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载原始证据失败');
+      if (current()) setEvidenceError('原始证据暂时无法读取，请关闭后重试。');
     } finally {
-      setEvidenceLoading(false);
+      if (current()) setEvidenceLoading(false);
     }
+  };
+
+  const copyEvidence = async () => {
+    const data = evidenceData(), claim = data.claim;
+    if (!claim) return;
+    const text = [claim.statement, '支持情况：' + supportLabel(claim.support_status),
+      !data.requested_evidence_ids.length && !data.evidence.length ? '未关联论文来源，不能据此验证结论。' : '',
+      data.missing_evidence_ids.length ? '部分来源未能读取，证据链不完整。' : '',
+      ...data.evidence.map(e => [readableSourceLabel(e.title,'来源材料'), relationLabel(e.wiki_relation),
+        e.status && e.status !== 'active' ? '来源状态：' + supportLabel(e.status) : '',
+        ...evidenceRows(e).map(row => row.join('：')), e.content].filter(Boolean).join('\n'))
+    ].filter(Boolean).join('\n\n');
+    try { await navigator.clipboard.writeText(text); setNotice('已复制结论与出处。'); }
+    catch { setError('无法访问剪贴板，可选择原文后手动复制。'); }
   };
 
   const openAgentContentEvidence = (markerId: string) => {
@@ -619,11 +681,13 @@ export default function PaperWikiWorkspace(props: Props) {
   };
 
   const openProposalEvidence = async (claim: WikiClaim) => {
+    const current = startEvidence();
     setEvidenceOpen(true);
     setEvidenceLoading(true);
     setEvidenceData(emptyEvidencePanelData(claim));
     try {
       const result = await getWikiEvidence(claim.evidence_ids || [], workspaceId(), sourceId());
+      if (!current()) return;
       const links = evidenceLinksFor(claim);
       const linkById = new Map(links.map((link) => [link.evidence_id, link]));
       setEvidenceData({
@@ -638,19 +702,22 @@ export default function PaperWikiWorkspace(props: Props) {
         })),
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载 Proposal 原始证据失败');
+      if (current()) setEvidenceError('原始证据暂时无法读取，请关闭后重试。');
     } finally {
-      setEvidenceLoading(false);
+      if (current()) setEvidenceLoading(false);
     }
   };
 
   const selectProposal = async (proposal: WikiProposal) => {
+    const current = proposalReads.begin();
+    setSelectedProposal(null);
     setError('');
     setReviewComment('');
     setRejectReason('');
     setRegenerationInstructions('');
     try {
       const detail = await getWikiProposal(proposal.proposal_id, workspaceId(), sourceId());
+      if (!current()) return;
       setSelectedProposal(detail);
       const reviewOperations = detail.review_model?.operations || [];
       setSelectedChangeIds(new Set(
@@ -663,7 +730,7 @@ export default function PaperWikiWorkspace(props: Props) {
       ));
       setSelectedOperations(new Set(reviewOperations.map((item) => item.operation_index)));
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载 Wiki Proposal 失败');
+      if (current()) setError(e instanceof Error ? e.message : '加载审核详情失败');
     }
   };
 
@@ -721,20 +788,20 @@ export default function PaperWikiWorkspace(props: Props) {
     const proposal = selectedProposal();
     if (!proposal) return;
     if (selectedReviewCount() <= 0) {
-      setError('请至少勾选一项页面或 Claim 修改');
+      setError('请至少勾选一项页面或结论修改');
       return;
     }
     if (!await confirmAction(`确认批准并应用已勾选的 ${selectedReviewCount()} 项 Wiki 修改？未勾选内容不会写入正式页面。`)) return;
     setSaving(true);
     setError('');
     try {
-      const applied = await approveWikiProposal(
+      await approveWikiProposal(
         proposal,
         workspaceId(),
         reviewComment(),
         currentReviewSelection(),
       );
-      setNotice(`已应用选中的 Wiki 修改，approval_hash=${applied.approval_hash || '已记录'}。`);
+      setNotice('已应用选中的修改。');
       setSelectedProposal(null);
       await Promise.all([loadStats(), loadPages(false), loadProposals()]);
     } catch (e) {
@@ -748,16 +815,16 @@ export default function PaperWikiWorkspace(props: Props) {
     if (isReadOnly()) return;
     const proposal = selectedProposal();
     if (!proposal) return;
-    if (!await confirmAction('确认让 LLM 基于当前 Evidence 和审核意见重新生成 Proposal？原 Proposal 会在新 Proposal 成功生成后标记为 superseded。')) return;
+    if (!await confirmAction('根据现有证据和审核意见重新生成修改建议？新建议生成成功后才会替代原建议。')) return;
     setSaving(true);
     setError('');
     try {
-      const result = await regenerateWikiProposal(
+      await regenerateWikiProposal(
         proposal,
         regenerationInstructions().trim(),
         workspaceId(),
       );
-      setNotice(`LLM 重新生成任务已提交：${result.job?.job_id || '后台处理中'}`);
+      setNotice('已提交重新生成任务。完成后请审核新的修改建议。');
       await Promise.all([loadJobs(), loadStats()]);
     } catch (e) {
       setError(e instanceof Error ? e.message : '提交 LLM 重新生成失败');
@@ -776,7 +843,7 @@ export default function PaperWikiWorkspace(props: Props) {
     setSaving(true);
     try {
       await rejectWikiProposal(proposal, rejectReason().trim(), workspaceId());
-      setNotice('Proposal 已驳回，正式 Wiki 页面没有变化。');
+      setNotice('修改建议已驳回，正式 Wiki 页面没有变化。');
       setSelectedProposal(null);
       await Promise.all([loadStats(), loadProposals()]);
     } catch (e) {
@@ -874,9 +941,9 @@ export default function PaperWikiWorkspace(props: Props) {
               <Show when={isReadOnly()}><span class="rounded-full border border-[#f1a02b]/35 bg-[#f1a02b]/10 px-2 py-0.5 text-[10px] text-[#ffc176]">共享只读</span></Show>
             </div>
             <div class="wiki-source">
-              <select aria-label="知识来源" title={selectedSource() ? `来自 ${selectedSource()!.owner.name || selectedSource()!.owner.email || selectedSource()!.owner_user_id}，授权范围 ${selectedSource()!.page_ids.length} 页 + ${selectedSource()!.page_types.length} 类` : '知识来源'} class="max-w-[360px] rounded-lg border border-[#303539] bg-[#0f1418] px-2 py-1 text-[11px] text-[#bdc8d1]" value={sourceId()} onChange={(event) => { setSourceId(event.currentTarget.value); setSelectedPage(null); setSelectedProposal(null); setEditing(false); setViewMode('pages'); }}>
+              <select aria-label="知识来源" title={selectedSource() ? `来自 ${selectedSource()!.owner.name || selectedSource()!.owner.email || '共享来源'}，授权范围 ${selectedSource()!.page_ids.length} 页 + ${selectedSource()!.page_types.length} 类` : '知识来源'} class="max-w-[360px] rounded-lg border border-[#303539] bg-[#0f1418] px-2 py-1 text-[11px] text-[#bdc8d1]" value={sourceId()} onChange={(event) => { setSourceId(event.currentTarget.value); setSelectedPage(null); setSelectedProposal(null); setEditing(false); setViewMode('pages'); }}>
                 <option value="">我的 Wiki · {workspaceId() || 'default'}</option>
-                <For each={sharedSources()}>{(source) => <option value={source.source_id}>共享 · {source.owner.name || source.owner.email || source.owner_user_id} / {source.workspace_id}</option>}</For>
+                <For each={sharedSources()}>{(source) => <option value={source.source_id}>共享 · {source.owner.name || source.owner.email || '共享来源'} / {source.workspace_id}</option>}</For>
               </select>
             </div>
           </div>
@@ -991,9 +1058,9 @@ export default function PaperWikiWorkspace(props: Props) {
               <div class="rounded-lg border border-[#303539] bg-[#0f1418]/70 px-3 py-2 text-[10px] leading-4 text-[#6f7d87]">Wiki 页面由 Agent 根据论文与 Evidence 生成；选择页面后可添加自己的笔记。</div>
             </div>
             <div class="tcode-scrollbar min-h-0 flex-1 overflow-y-auto p-2">
-              <Show when={pages().length > 0} fallback={<div class="p-4 text-center text-xs leading-5 text-[#6f7d87]">暂无页面。导入论文后系统会生成待审核的 Wiki Proposal，也可以手动新建页面。</div>}>
+              <Show when={pages().length > 0} fallback={<div class="p-4 text-center text-xs leading-5 text-[#6f7d87]"><Show when={filteredList()} fallback={isReadOnly() ? '当前共享范围内暂无可见页面。' : '当前没有可见页面。导入论文并审核生成的修改后，页面会出现在这里。'}>没有匹配的页面。 <button type="button" class="underline" onClick={() => { setQuery(''); setPageType(''); setPageStatusFilter('active'); void loadPages(false); }}>清除筛选</button></Show></div>}>
                 <For each={pages()}>{(page) => (
-                  <button class={`mb-1 w-full rounded-xl border px-3 py-2.5 text-left transition-colors ${selectedPage()?.page_id === page.page_id ? 'border-[#38bdf8]/32 bg-[#38bdf8]/10' : 'border-transparent hover:border-[#303539] hover:bg-[#171c20]'}`} onClick={() => void selectPage(page.page_id)}>
+                  <><button class={`mb-1 w-full rounded-xl border px-3 py-2.5 text-left transition-colors ${selectedPage()?.page_id === page.page_id ? 'border-[#38bdf8]/32 bg-[#38bdf8]/10' : 'border-transparent hover:border-[#303539] hover:bg-[#171c20]'}`} onClick={() => void selectPage(page.page_id, page)}>
                     <div class="flex items-start justify-between gap-2">
                       <div class="line-clamp-1 text-sm font-semibold text-[#e6edf3]">{page.title}</div>
                       <span class={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] ${statusClass(page.status)}`}>{statusLabel(page.status)}</span>
@@ -1008,33 +1075,38 @@ export default function PaperWikiWorkspace(props: Props) {
                         </div>
                       )}
                     </Show>
-                  </button>
+                  </button><Show when={(page.matched_chunks?.length || 0) > 1}><details class="px-3 text-xs"><summary>另有 {(page.matched_chunks?.length || 1)-1} 处命中</summary><For each={page.matched_chunks?.slice(1)}>{(c,i) => <button class="block p-2 text-left" onClick={() => void selectPage(page.page_id,page,i()+1)}>第 {c.line_start} 行 · {c.content.slice(0,90)}</button>}</For></details></Show></>
                 )}</For>
               </Show>
+              <Show when={moreOffset() && !query().trim()}><button disabled={appending()} onClick={async () => {
+                setAppending(true); try { await loadPages(true, moreOffset()); } catch { setError('暂时无法读取更多页面，请重试。'); } finally { setAppending(false); }
+              }}>{appending() ? '正在加载…' : '加载更多页面'}</button></Show>
             </div>
           </aside>
 
           <main class="tcode-scrollbar min-w-0 flex-1 overflow-y-auto bg-[#0f1418]/72">
             <Show when={editing()} fallback={
-              <Show when={selectedPage()} fallback={<div class="flex h-full items-center justify-center p-8 text-center text-sm text-[#6f7d87]">从左侧选择页面，或新建一个 Wiki 页面。</div>}>
+              <Show when={selectedPage()} fallback={<div class="flex h-full items-center justify-center p-8 text-center text-sm text-[#6f7d87]">{pages().length ? '从页面目录选择要阅读的内容。' : '尚未选择页面。'}</div>}>
                 {(selected) => (
                   <article class="wiki-reading-page mx-auto max-w-5xl p-5 md:p-8">
                     <div class="flex flex-wrap items-start justify-between gap-3 border-b border-[#2a3136] pb-5">
                       <div class="min-w-0">
-                        <div class="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-[#6f7d87]"><span>{selected().page_type}</span><span>revision {selected().revision}</span><span>{selected().updated_by}</span></div>
                         <h2 class="mt-2 text-2xl font-semibold text-[#f7fafc]">{selected().title}</h2>
                         <Show when={selected().summary}><p class="mt-2 max-w-3xl text-sm leading-6 text-[#9faeb7]">{selected().summary}</p></Show>
                       </div>
                       <div class="flex flex-wrap gap-2">
+                        <Show when={selectedClaims().length}><button class="rounded-lg border px-3 py-2 text-xs" onClick={() => { evidenceHeading?.focus({preventScroll:true}); evidenceHeading?.scrollIntoView({block:'start'}); }}>查看证据</button></Show>
+                        <details class="text-xs"><summary class="cursor-pointer rounded-lg border px-3 py-2">页面信息与操作</summary>
+                          <p class="my-2">版本 {selected().revision} · 更新者：{selected().updated_by || '未记录'}</p>
                         <Show when={!isReadOnly()}><button class="rounded-lg border border-[#a78bfa]/30 bg-[#a78bfa]/10 px-3 py-2 text-xs text-[#c4b5fd]" onClick={() => openShare({ type: 'page', id: selected().page_id, label: selected().title })}>共享</button></Show>
-                        <Show when={!isReadOnly()}><button class="rounded-lg border border-[#303539] bg-[#171c20] px-3 py-2 text-xs text-[#8ed5ff]" onClick={startEdit}>编辑笔记</button></Show>
                         <Show when={!isReadOnly()}><button class={`rounded-lg border px-3 py-2 text-xs ${selected().status === 'archived' ? 'border-[#38b46a]/30 bg-[#38b46a]/10 text-[#9ee6bb]' : 'border-[#f1a02b]/30 bg-[#f1a02b]/10 text-[#ffc176]'}`} onClick={() => void toggleArchive()}>{selected().status === 'archived' ? '恢复' : '归档'}</button></Show>
                         <Show when={!isReadOnly() && selected().status === 'archived'}><button class="rounded-lg border border-[#da3633]/35 bg-[#da3633]/10 px-3 py-2 text-xs text-[#ffb6b0] hover:bg-[#da3633]/18 disabled:cursor-not-allowed disabled:opacity-50" disabled={saving()} onClick={openPermanentDelete}>永久删除</button></Show>
+                        </details>
                       </div>
                     </div>
                     <section class="mt-6">
                       <div class="mb-2 flex items-center justify-between gap-3"><h3 class="text-sm font-semibold text-[#f7fafc]">Agent 整理内容</h3><span class="rounded-full border border-[#3e484f] px-2 py-0.5 text-[9px] text-[#8b949e]">只读 · 来源于论文 Evidence</span></div>
-                      <div class="rounded-2xl border border-[#2a3136] bg-[#11171b]/75 p-5"><MarkdownContent content={selectedAgentContent()} role="assistant" renderKey={`${selected().page_id}:${selected().revision}`} onEvidenceClick={openAgentContentEvidence} /></div>
+                      <div ref={readingBody} class="rounded-2xl border border-[#2a3136] bg-[#11171b]/75 p-5"><MarkdownContent content={selectedAgentContent()} role="assistant" renderKey={`${selected().page_id}:${selected().revision}`} onEvidenceClick={openAgentContentEvidence} /></div>
                     </section>
                     <Show when={!isReadOnly()}>
                       <section class="mt-6 rounded-2xl border border-[#a78bfa]/25 bg-[#a78bfa]/7 p-5">
@@ -1046,7 +1118,7 @@ export default function PaperWikiWorkspace(props: Props) {
                       <section class="mt-6">
                         <div class="flex flex-wrap items-end justify-between gap-3">
                           <div>
-                            <h3 class="text-sm font-semibold text-[#f7fafc]">结构化结论与证据</h3>
+                            <h3 ref={evidenceHeading} tabindex="-1" class="text-sm font-semibold text-[#f7fafc]">结构化结论与证据</h3>
                             <div class="mt-1 text-[10px] text-[#6f7d87]" aria-live="polite">
                               共 {selectedClaims().length} 条
                               <Show when={claimQuery().trim()}> · 找到 {filteredClaims().length} 条</Show>
@@ -1073,7 +1145,7 @@ export default function PaperWikiWorkspace(props: Props) {
                           <div class="mt-3 space-y-2">
                           <For each={pagedClaims()}>{(claim) => (
                             <button class="w-full rounded-xl border border-[#2a3136] bg-[#11171b]/70 p-3 text-left hover:border-[#7bd0ff]/30" onClick={() => void openEvidence(claim)}>
-                              <div class="flex flex-wrap items-center gap-2"><span class={`rounded-full border px-2 py-0.5 text-[9px] ${statusClass(claim.support_status === 'supported' ? 'canonical' : 'stale')}`}><HighlightedText text={claim.support_status} query={claimQuery()} /></span><span class="text-[10px] text-[#6f7d87]">置信度 {Math.round((claim.confidence || 0) * 100)}%</span></div>
+                              <div class="flex flex-wrap items-center gap-2"><span class={`rounded-full border px-2 py-0.5 text-[9px] ${statusClass(claim.support_status === 'supported' ? 'canonical' : 'stale')}`}><HighlightedText text={supportLabel(claim.support_status)} query={claimQuery()} /></span><span class="text-[10px] text-[#6f7d87]">置信度 {Math.round((claim.confidence || 0) * 100)}%</span></div>
                               <HighlightedText class="mt-2 block text-sm leading-6 text-[#d8dee4]" text={claim.statement} query={claimQuery()} />
                               <div class="mt-2 text-[10px] text-[#7bd0ff]">{(claim.evidence_ids || []).length > 0 ? `已关联 ${(claim.evidence_ids || []).length} 条论文证据` : '没有关联论文证据'} · 查看来源 →</div>
                             </button>
@@ -1159,9 +1231,8 @@ export default function PaperWikiWorkspace(props: Props) {
               <Show when={reviewProposals().length > 0} fallback={<div class="rounded-xl border border-dashed border-[#303539] p-6 text-center text-xs leading-5 text-[#6f7d87]">{isReadOnly() ? '该共享范围暂无关联 Proposal。' : '暂无待审核修改。新论文入库或 Agent 提交知识修改后会出现在这里。'}</div>}>
                 <For each={reviewProposals()}>{(proposal) => (
                   <button class={`w-full rounded-xl border p-3 text-left ${selectedProposal()?.proposal_id === proposal.proposal_id ? 'border-[#f1a02b]/35 bg-[#f1a02b]/9' : 'border-[#2a3136] bg-[#171c20]/60 hover:border-[#f1a02b]/25'}`} onClick={() => selectProposal(proposal)}>
-                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold text-[#e6edf3]">{proposal.trigger_kind}</span><span class={`rounded-full border px-2 py-0.5 text-[9px] ${statusClass(proposal.status)}`}>{statusLabel(proposal.status)}</span></div>
+                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold text-[#e6edf3]">{proposal.operations?.[0]?.page?.title || '页面修改建议'}</span><span class={`rounded-full border px-2 py-0.5 text-[9px] ${statusClass(proposal.status)}`}>{statusLabel(proposal.status)}</span></div>
                     <div class="mt-2 text-[11px] text-[#9faeb7]">{proposal.operation_count ?? proposal.operations?.length ?? 0} 项页面修改</div>
-                    <div class="mt-1 truncate font-mono text-[9px] text-[#6f7d87]">{proposal.proposal_id}</div>
                   </button>
                 )}</For>
               </Show>
@@ -1171,16 +1242,16 @@ export default function PaperWikiWorkspace(props: Props) {
             <Show when={selectedProposal()} fallback={<div class="flex h-full items-center justify-center text-sm text-[#6f7d87]">选择一个 Proposal 查看页面级和 Claim 级差异。</div>}>
               {(selected) => (
                 <div class="mx-auto max-w-5xl">
-                  <div class="flex flex-wrap items-start justify-between gap-3 border-b border-[#2a3136] pb-5"><div><div class="text-[10px] uppercase tracking-[0.16em] text-[#ffc176]">Human review required</div><h2 class="mt-1 text-xl font-semibold text-[#f7fafc]">Wiki 变更审核</h2><div class="mt-2 font-mono text-[10px] text-[#6f7d87]">{selected().proposal_id}</div></div><div class="text-right text-[11px] text-[#8b949e]"><div>触发：{selected().trigger_kind}</div><div class="mt-1">来源论文：{selected().trigger_doc_ids.join(', ') || '无'}</div></div></div>
+                  <div class="flex flex-wrap items-start justify-between gap-3 border-b border-[#2a3136] pb-5"><div><div class="text-[10px] uppercase tracking-[0.16em] text-[#ffc176]">人工审核</div><h2 class="mt-1 text-xl font-semibold text-[#f7fafc]">Wiki 变更审核</h2><details class="mt-2 text-xs"><summary>审核记录编号</summary><code class="select-all">{selected().proposal_id}</code></details></div><div class="text-right text-[11px] text-[#8b949e]"><div>来源：{selected().trigger_kind === 'paper_ingest' ? '论文入库' : selected().trigger_kind === 'llm_regeneration' ? '按审核意见重新生成' : '知识库变更'}</div><div class="mt-1">来源论文：{selected().trigger_doc_ids.length} 篇</div></div></div>
                   <Show when={(selected().validation?.warnings || []).length > 0}><div class="mt-4 rounded-xl border border-[#f1a02b]/25 bg-[#f1a02b]/8 p-3 text-xs text-[#ffc176]"><For each={selected().validation.warnings || []}>{(warning) => <div>• {warning}</div>}</For></div></Show>
                   <div class="mt-5 space-y-4">
                     <For each={selected().operations || []}>{(operation, index) => (
                       <section class="rounded-2xl border border-[#2a3136] bg-[#11171b]/70 p-4">
-                        <div class="flex items-center justify-between gap-3"><div><span class="rounded-full border border-[#7bd0ff]/25 bg-[#38bdf8]/8 px-2 py-0.5 text-[9px] text-[#8ed5ff]">{operationLabel(operation)}</span><span class="ml-2 text-sm font-semibold text-[#f7fafc]">{operation.page?.title || operation.page_id}</span></div><span class="text-[10px] text-[#6f7d87]">#{index() + 1}</span></div>
+                        <div class="flex items-center justify-between gap-3"><div><span class="rounded-full border border-[#7bd0ff]/25 bg-[#38bdf8]/8 px-2 py-0.5 text-[9px] text-[#8ed5ff]">{operationLabel(operation)}</span><span class="ml-2 text-sm font-semibold text-[#f7fafc]">{operation.page?.title || (operation as any).before?.title || '未命名页面'}</span></div><span class="text-[10px] text-[#6f7d87]">#{index() + 1}</span></div>
                         <Show when={reviewOperation(index())}>{(review) => <div class="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-[#303539] bg-[#0f1418] px-3 py-2 text-[11px] text-[#9faeb7]">
                           <Show when={review().type !== 'upsert_page' || review().is_new}><label class="flex items-center gap-2"><input type="checkbox" disabled={isReadOnly()} checked={selectedOperations().has(index())} onChange={(event) => toggleReviewOperation(index(), event.currentTarget.checked)} /><span>{review().is_new ? '创建这个页面' : '应用这个页面操作'}</span></label></Show>
                           <Show when={review().type === 'upsert_page' && !review().is_new && review().page_fields_changed}><label class="flex items-center gap-2"><input type="checkbox" disabled={isReadOnly()} checked={selectedPageFields().has(index())} onChange={(event) => toggleSetValue(setSelectedPageFields, index(), event.currentTarget.checked)} /><span>应用标题、摘要、正文和页面属性修改</span></label></Show>
-                          <span class="text-[#6f7d87]">Claim 可在下方逐条选择</span>
+                          <span class="text-[#6f7d87]">可在下方逐条选择结论</span>
                         </div>}</Show>
                         <Show when={(operation as any).before}><div class="mt-3 grid gap-3 md:grid-cols-2"><div class="rounded-xl border border-[#da3633]/18 bg-[#da3633]/5 p-3"><div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#ff9c96]">修改前 · r{(operation as any).before?.revision}</div><div class="mt-2 text-xs leading-5 text-[#9faeb7]">{(operation as any).before?.summary || '无摘要'}</div></div><div class="rounded-xl border border-[#38b46a]/18 bg-[#38b46a]/5 p-3"><div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9ee6bb]">修改后</div><div class="mt-2 text-xs leading-5 text-[#bdc8d1]">{operation.page?.summary || '无摘要'}</div></div></div></Show>
                         <Show when={(reviewOperation(index())?.claim_changes || []).length > 0}>
@@ -1190,7 +1261,7 @@ export default function PaperWikiWorkspace(props: Props) {
                               return <label class={`flex cursor-pointer gap-3 rounded-xl border p-3 ${selectedChangeIds().has(change.change_id) ? 'border-[#38bdf8]/30 bg-[#38bdf8]/7' : 'border-[#303539] bg-[#0f1418] opacity-65'}`}>
                                 <input class="mt-1" type="checkbox" disabled={isReadOnly()} checked={selectedChangeIds().has(change.change_id)} onChange={(event) => toggleSetValue(setSelectedChangeIds, change.change_id, event.currentTarget.checked)} />
                                 <div class="min-w-0 flex-1">
-                                  <div class="flex flex-wrap items-center gap-2"><span class={`rounded-full border px-2 py-0.5 text-[9px] ${change.kind === 'added' ? 'border-[#38b46a]/30 text-[#9ee6bb]' : change.kind === 'removed' ? 'border-[#da3633]/30 text-[#ffb6b0]' : 'border-[#f1a02b]/30 text-[#ffc176]'}`}>{change.kind === 'added' ? '新增' : change.kind === 'removed' ? '移除' : '修改'}</span><span class="font-mono text-[9px] text-[#6f7d87]">{change.change_id}</span></div>
+                                  <div class="flex flex-wrap items-center gap-2"><span class={`rounded-full border px-2 py-0.5 text-[9px] ${change.kind === 'added' ? 'border-[#38b46a]/30 text-[#9ee6bb]' : change.kind === 'removed' ? 'border-[#da3633]/30 text-[#ffb6b0]' : 'border-[#f1a02b]/30 text-[#ffc176]'}`}>{change.kind === 'added' ? '新增' : change.kind === 'removed' ? '移除' : '修改'}</span></div>
                                   <Show when={change.kind === 'modified'}><div class="mt-2 rounded-lg border border-[#da3633]/15 bg-[#da3633]/5 px-3 py-2 text-[11px] leading-5 text-[#9faeb7]">修改前：{change.before?.statement}</div></Show>
                                   <div class="mt-2 text-xs leading-5 text-[#d8dee4]">{change.kind === 'removed' ? change.before?.statement : change.after?.statement}</div>
                                   <div class="mt-1 flex flex-wrap items-center justify-between gap-2"><span class="text-[10px] text-[#7bd0ff]">{(claim()?.evidence_ids || []).length > 0 ? `已关联 ${(claim()?.evidence_ids || []).length} 条论文证据` : '没有关联论文证据'}</span><Show when={(claim()?.evidence_ids || []).length > 0}><button type="button" class="text-[10px] text-[#8ed5ff] hover:underline" onClick={(event) => { event.preventDefault(); void openProposalEvidence(claim() as WikiClaim); }}>查看原始证据</button></Show></div>
@@ -1250,9 +1321,10 @@ export default function PaperWikiWorkspace(props: Props) {
       <Show when={evidenceOpen()}>
         <div class="fixed inset-0 z-[120] flex justify-end bg-black/55" onClick={(event) => { if (event.target === event.currentTarget) setEvidenceOpen(false); }}>
           <aside class="tcode-scrollbar h-full w-full max-w-xl overflow-y-auto border-l border-[#2a3136] bg-[#11171b] p-5 shadow-2xl">
-            <div class="flex items-start justify-between gap-3 border-b border-[#2a3136] pb-4"><div><div class="text-[10px] text-[#7bd0ff]">原始证据（Original evidence）</div><h2 class="mt-1 text-lg font-semibold text-[#f7fafc]">结论证据（Claim evidence）</h2></div><button class="text-sm text-[#8b949e] hover:text-[#dee3e8]" onClick={() => setEvidenceOpen(false)}>关闭</button></div>
+            <div class="flex items-start justify-between gap-3 border-b border-[#2a3136] pb-4"><div><div class="text-[10px] text-[#7bd0ff]">原始证据</div><h2 class="mt-1 text-lg font-semibold text-[#f7fafc]">结论证据</h2></div><button class="text-sm text-[#8b949e] hover:text-[#dee3e8]" onClick={() => setEvidenceOpen(false)}>关闭</button></div>
             <div class="mt-4 rounded-xl border border-[#303539] bg-[#0f1418] p-4 text-sm leading-6 text-[#dee3e8]">{evidenceData().claim?.statement}</div>
-            <Show when={!evidenceLoading()} fallback={<div class="p-8 text-center text-sm text-[#8b949e]">正在加载论文证据…</div>}>
+            <Show when={!evidenceError()} fallback={<p class="p-4 text-sm" role="alert">{evidenceError()}</p>}><Show when={!evidenceLoading()} fallback={<div class="p-8 text-center text-sm text-[#8b949e]">正在加载论文证据…</div>}>
+              <Show when={evidenceData().claim}><button type="button" class="mt-3 rounded border px-3 py-1 text-xs" onClick={() => void copyEvidence()}>复制结论与出处</button></Show>
               <Show when={evidenceData().missing_evidence_ids.length > 0 && evidenceData().evidence.length > 0}>
                 <div class="mt-4 rounded-xl border border-[#f1a02b]/25 bg-[#f1a02b]/8 p-4 text-xs leading-5 text-[#ffc176]">
                   <div class="font-semibold">部分证据暂时不可读取，当前结论的证据链不完整。</div>
@@ -1304,14 +1376,14 @@ export default function PaperWikiWorkspace(props: Props) {
                             </div>
                           </div>
                         </Show>
-                        <div class="mt-3 text-[11px] font-semibold text-[#8b949e]">证据内容（Content）</div>
+                        <div class="mt-3 text-[11px] font-semibold text-[#8b949e]">原文摘录</div>
                         <pre class="mt-2 whitespace-pre-wrap break-words rounded-lg border border-[#252c31] bg-[#0b1014] p-3 text-xs leading-5 text-[#bdc8d1]">{evidence.content}</pre>
                       </article>
                     )}
                   </For>
                 </div>
               </Show>
-            </Show>
+            </Show></Show>
           </aside>
         </div>
       </Show>

@@ -359,6 +359,9 @@ class AgentPromptBuilder:
     def _user_chat_message_for_prompt(self, message: Any) -> ChatMessage:
         user_images = self._message_input_images_for_prompt(message)
         user_content = str(getattr(message, "content", "") or "")
+        research_round = (getattr(message, "metadata", {}) or {}).get("research_round")
+        if research_round:
+            user_content += "\n\n本条消息附带的实验运行引用（仅定位记录，不授权执行）：" + json.dumps(research_round, ensure_ascii=True)
         if (getattr(message, "metadata", {}) or {}).get("turn_interruption"):
             user_content = (
                 "[STOPPED REQUEST — HISTORY ONLY]\n"

@@ -1,5 +1,7 @@
 import { researchStatusLabel, researchFieldLabel, researchValueText, userFacingTitle, toolDisplayLabel, researchAgentLabel } from '../utils/userFacingLabels';
 import { promptAction } from './FeedbackDialog';
+import { readResearchSections, confirmResearchReproduction } from '../utils/researchReads';
+import { latestScopedRead } from '../utils/latestScopedRead';
 import { confirmAction, showFeedback } from './FeedbackDialog';
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { dismissDetailsOnOutsideClick } from '../utils/dismissDetails';
@@ -627,7 +629,10 @@ export default function ResearchWorkspace(props: Props) {
     safePendingPage() * PAGE_SIZE,
   ));
 
+  const candidateReads = latestScopedRead(() => JSON.stringify([workspaceId(), selectedCandidateId(), props.active]));
   const loadDetail = async (candidateId: string) => {
+    const current = candidateReads.begin();
+    setCandidateDetail(null);
     if (!candidateId) {
       setCandidateDetail(null);
       return;
@@ -635,33 +640,43 @@ export default function ResearchWorkspace(props: Props) {
     try {
       const target = workspaceId();
       const detail = await getResearchCandidate(candidateId, target);
-      if (target !== workspaceId() || selectedCandidateId() !== candidateId) return;
+      if (!current() || selectedCandidateId() !== candidateId) return;
       if (detail.candidate.state === 'confirmed') {
         setCandidateDetail(null);
         return;
       }
       setCandidateDetail(detail);
     } catch (e) {
+      if (!current()) return;
       setCandidateDetail(null);
       setError(e instanceof Error ? e.message : '加载候选详情失败');
     }
   };
 
+  const [unavailable,setUnavailable] = createSignal<string[]>([]);
   let loadGeneration = 0;
   const load = async (preserveSelection = true) => {
     const generation = ++loadGeneration, targetWorkspace = workspaceId();
     setLoading(true);
     setError('');
     try {
-      const [healthResult, centerResult, candidateResult, activityResult, importResult, assetResult] = await Promise.all([
+      const { results, unavailable: failed } = await readResearchSections([
         getResearchHealth(workspaceId()),
         getResearchCenter(workspaceId()),
         listResearchCandidates(workspaceId(), true),
         listResearchActivities(workspaceId(), ''),
         listResearchPackImports(workspaceId(), false, listingOffsets().import),
         listResearchPackAssets(workspaceId(), false, listingOffsets().asset),
-      ]);
+      ], ['功能状态','课题','候选','研究活动','导入记录','研究资料']);
       if (generation !== loadGeneration || workspaceId() !== targetWorkspace) return;
+      setUnavailable(failed);
+      const [h,p,c,a,i,s] = results;
+      const healthResult = h.status === 'fulfilled' ? h.value : null;
+      const centerResult = p.status === 'fulfilled' ? p.value : {current_project:null,history:[]};
+      const candidateResult = c.status === 'fulfilled' ? c.value : {candidates:[]};
+      const activityResult = a.status === 'fulfilled' ? a.value : {activities:[]};
+      const importResult = i.status === 'fulfilled' ? i.value : {imports:[],next_offset:undefined,settings:undefined};
+      const assetResult = s.status === 'fulfilled' ? s.value : {assets:[],next_offset:undefined};
       setHealth(healthResult);
       setCandidates(candidateResult.candidates || []);
       const centerProjects = [
@@ -954,6 +969,9 @@ export default function ResearchWorkspace(props: Props) {
 
   const changeProjectStatus = async (project: ResearchProject) => {
     const action = project.status === 'archived' ? 'activate' : 'archive';
+    const target = workspaceId();
+    if (action === 'archive' && !await confirmAction(`归档“${project.title}”？关联聊天也会归档，不会删除工作区文件。之后可在「研究中心 → 当前课题与历史」恢复课题及随它归档的聊天。`, {confirmLabel:'归档课题'})) return;
+    if (target !== workspaceId()) return;
     setBusy(`project:${project.research_id}`);
     try {
       const result = await setResearchProjectStatus(project.research_id, action, workspaceId());
@@ -1105,13 +1123,17 @@ export default function ResearchWorkspace(props: Props) {
       },
     }));
   };
-  const reproducePackExperiment = async (asset: ResearchPackAsset, experimentId: string) => {
+  const reproducePackExperiment = async (asset: ResearchPackAsset, experimentId: string, title: string) => {
     const project = activeProjects()[0];
     if (!project) throw new Error('请先确认当前 Workspace 的正式课题');
+    const target = workspaceId();
+    await confirmResearchReproduction(() => confirmAction(`将在课题“${project.title}”中，基于资料包“${asset.title}”中的“${title}”创建复现记录。兼容性检查通过时会启动复现运行，不只是保存记录。确认继续？`),
+      () => workspaceId() === target && activeProjects()[0]?.research_id === project.research_id, async () => {
     const result = await createResearchReproduction(project.research_id, asset.asset_id, experimentId, workspaceId(), String(sessionStore.currentSessionId() || ''));
     setNotice(result.reproduction_ready
       ? '已创建并启动独立复现实验；结果会冻结后用于原始/复现对比。'
       : `已创建复现实验，但兼容性检查阻止自动运行：${result.compatibility_issues.join('、')}`);
+    });
   };
 
   const copyEventContent = async (eventId: string, content: string) => {
@@ -1360,10 +1382,10 @@ export default function ResearchWorkspace(props: Props) {
           <div class="py-16 text-center text-sm text-[#8b99a4]">正在加载研究投影…</div>
         </Show>
 
-        <Show when={!loading() && tab() === 'projects'}>
+        <Show when={!loading() && !unavailable().includes('课题') && tab() === 'projects'}>
           <Show when={activeProjects()[0]} fallback={<section class="space-y-3"><h2 class="text-base font-semibold">课题可以随着研究逐步形成</h2><p class="text-sm">可以继续提问、查看资料，或选择候选核对依据。不必先确认课题才能开始研究。</p>
             <div class="flex flex-wrap gap-3"><button type="button" class="rounded-lg border p-3 text-sm" onClick={() => setTab('import')}>查看资料与成果</button><button type="button" class="rounded-lg border p-3 text-sm" onClick={() => setShareTarget({mode:'workspace_period',title:'当前工作区的研究经历'})}>分享一段研究经历</button><Show when={archivedProjects().length}><button type="button" class="rounded-lg border p-3 text-sm" onClick={() => setTab('history')}>查看历史课题</button></Show></div>
-            <Show when={!candidatePool().length}><p class="text-xs">暂时没有待确认候选。可以开始研究，或在高级菜单重新扫描已有记录。</p></Show>
+            <Show when={!unavailable().includes('候选') && !candidatePool().length}><p class="text-xs">暂时没有待确认候选。可以开始研究，或在高级菜单重新扫描已有记录。</p></Show>
             <For each={candidatePool()}>{candidate => <button type="button" class="block w-full rounded-xl border border-[#30383e] p-4 text-left" onClick={() => {selectCandidate(candidate.candidate_id); setTab('candidates');}}><strong>{candidate.suggested_title}</strong><p class="mt-2 text-xs">{candidate.goal_summary || '查看记录并确认研究范围'}</p></button>}</For>
           </section>}>{project => <ResearchStatePanel onEvidenceMap={p=>{setSelectedProjectId(p.research_id);setTab('evidence');}} workspaceId={workspaceId()} projects={projects()} initialResearchId={project().research_id} view="overview"
             onShare={p => setShareTarget({mode:'project', researchId:p.research_id, title:p.title})} onProjectChanged={() => load()} />}</Show>
@@ -1373,7 +1395,7 @@ export default function ResearchWorkspace(props: Props) {
             <p class="text-sm">这些记录尚未明确归属，或结论之间存在冲突。处理前先核对内容和依据。</p>
             <Show when={candidatePool().length > 0}><button type="button" class="block rounded-lg border p-3 text-sm" onClick={() => setTab('candidates')}>核对 {candidatePool().length} 个研究候选：确认它们是否属于要开展的课题</button></Show>
             <Show when={pendingItems().length > 0}><button type="button" class="block rounded-lg border p-3 text-sm" onClick={() => setTab('pending')}>可选整理 · {pendingItems().length} 组记录尚未归属，可以稍后处理</button></Show>
-            <Show when={!candidatePool().length && !pendingItems().length}><p class="text-xs">没有需要确认的课题或待归属记录。</p></Show>
+            <Show when={!unavailable().includes('候选') && !unavailable().includes('研究活动') && !candidatePool().length && !pendingItems().length}><p class="text-xs">没有需要确认的课题或待归属记录。</p></Show>
             <Show when={activeProjects()[0]}>{project => <ResearchStatePanel onEvidenceMap={p=>{setSelectedProjectId(p.research_id);setTab('evidence');}} workspaceId={workspaceId()} projects={projects()} initialResearchId={project().research_id} view="review" onReviewSources={() => {setSelectedProjectId(project().research_id);setStateView('assets');setTab('state');}} onProjectChanged={() => load()} />}</Show>
           </section>
         </Show>
@@ -1399,7 +1421,7 @@ export default function ResearchWorkspace(props: Props) {
             <Show when={activeProjects()[0]}>{project => <ResearchStatePanel onEvidenceMap={p=>{setSelectedProjectId(p.research_id);setTab('evidence');}} workspaceId={workspaceId()} projects={projects()} initialResearchId={project().research_id} view="advanced" onProjectChanged={() => load()} />}</Show>
           </section>
         </Show>
-        <Show when={!loading() && tab() === 'candidates'}>
+        <Show when={!loading() && !unavailable().includes('候选') && tab() === 'candidates'}>
           <div class="grid min-h-full gap-4 xl:grid-cols-[minmax(320px,0.85fr)_minmax(420px,1.4fr)]">
             <div class="space-y-3">
               <div class="flex items-center justify-between gap-3">
@@ -1622,7 +1644,7 @@ export default function ResearchWorkspace(props: Props) {
           </div>
         </Show>
 
-        <Show when={!loading() && tab() === 'pending'}>
+        <Show when={!loading() && !unavailable().includes('研究活动') && tab() === 'pending'}>
           <div class="mx-auto max-w-5xl space-y-4">
             <div class="rounded-xl border border-[#2a3136] bg-[#11171b]/70 p-4">
               <div class="flex flex-wrap items-end justify-between gap-3">
@@ -1663,7 +1685,7 @@ export default function ResearchWorkspace(props: Props) {
           </div>
         </Show>
 
-        <Show when={!loading() && tab() === 'history'}>
+        <Show when={!loading() && !unavailable().includes('课题') && tab() === 'history'}>
           <div class="mx-auto max-w-5xl space-y-6">
             <section>
               <div class="mb-3 flex items-center justify-between gap-3">
@@ -1794,7 +1816,7 @@ export default function ResearchWorkspace(props: Props) {
                 </div>
                 <button type="button" class="rounded-lg border border-[#30383e] px-3 py-2 text-xs" onClick={() => setTab('upload')}>检查并导入研究资料</button>
               </div>
-              <Show when={packAssets().length === 0}>
+              <Show when={!unavailable().includes('研究资料') && packAssets().length === 0}>
                 <div class="mt-4 rounded-xl border border-dashed border-[#34404a] p-8 text-center text-sm text-[#71808a]">
                   还没有导入研究资料。点击“检查并导入研究资料”选择研究包，先核对内容再接收。
                 </div>
@@ -1831,7 +1853,7 @@ export default function ResearchWorkspace(props: Props) {
                 </div>
                 <span class="rounded-full border border-[#c4a7ff]/30 bg-[#c4a7ff]/8 px-2.5 py-1 text-[11px] text-[#d8c8ff]">只读来源资料 · 本地接力记录</span>
               </div>
-              <Show when={!packImportEnabled()}>
+              <Show when={!unavailable().includes('导入记录') && !packImportEnabled()}>
                 <div class="mt-3 rounded-lg border border-[#f1a02b]/30 bg-[#f1a02b]/10 px-3 py-2 text-xs text-[#ffc176]">
                   当前 Workspace 未开启 ResearchPack Importer。
                 </div>
@@ -1937,7 +1959,7 @@ export default function ResearchWorkspace(props: Props) {
 
             <section class="rounded-xl border border-[#2a3136] bg-[#11171b] p-4">
               <h3 class="text-sm font-semibold text-[#d7dee4]">最近导入记录</h3>
-              <Show when={packImports().length === 0}>
+              <Show when={!unavailable().includes('导入记录') && packImports().length === 0}>
                 <div class="mt-3 rounded-lg border border-dashed border-[#34404a] p-6 text-center text-xs text-[#71808a]">还没有 ResearchPack 导入记录。</div>
               </Show>
               <div class="research-scroll-list mt-3 space-y-2" aria-label="导入记录列表" tabIndex={0}>
@@ -2004,6 +2026,7 @@ export default function ResearchWorkspace(props: Props) {
           </div>
         </div>
 
+        <Show when={unavailable().length}><p role="alert">暂时无法读取：{unavailable().join('、')}。可点击刷新重试。</p></Show>
         <Show when={Boolean(health()) && !topicsEnabled()}>
           <div class="mt-3 rounded-lg border border-[#f1a02b]/30 bg-[#f1a02b]/10 px-3 py-2 text-xs text-[#ffc176]">
             当前 Workspace 未开启 Topic Candidate Preview。已记录的 Session 不受影响。
@@ -2041,6 +2064,7 @@ export default function ResearchWorkspace(props: Props) {
       <Show when={tab()==='changes'}><div class="research-changes-page"><header><button type="button" onClick={()=>setTab('projects')}>返回研究概览</button><div><small>研究变化比较</small><h2>{projects().find(p=>p.research_id===selectedProjectId())?.title}</h2></div></header><Show when={projects().find(p=>p.research_id===selectedProjectId())}>{project=><ResearchChangesPanel project={project()} workspaceId={workspaceId()} focus={props.focusRequest?.comparison}/>}</Show></div></Show>
       <Show when={!['projects','import','review','changes','evidence'].includes(tab())}>
         <ResearchDialog title={viewTitles[tab()]} onClose={() => setTab(returnTab())} busy={Boolean(busy())}>
+          <Show when={unavailable().length}><p role="alert">暂时无法读取：{unavailable().join('、')}。<button type="button" onClick={() => void load()}>重试读取</button></p></Show>
           <Show when={error()}><p role="alert">{error()}</p></Show>
           <Show when={notice()}><p role="status">{notice()}</p></Show>
           {renderContent()}

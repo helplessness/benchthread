@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from ..presentation.job_results import tmcp_content_blocks, tmcp_summary_text
+from ..presentation.job_results import async_tool_text, tmcp_content_blocks, tmcp_summary_text
 
 _registry: dict[str, dict[str, Any]] = {}
 _injected: set[str] = set()
@@ -825,7 +825,8 @@ async def _inject_result(
     from ..session.manager import SessionManager
     from ..server.session_lifecycle import _SESSION_DELETE_PENDING
     session_deleted = session_id in _SESSION_DELETE_PENDING
-    if not session_deleted and session_id and await SessionManager.get(session_id) is None:
+    origin_session = await SessionManager.get(session_id) if not session_deleted and session_id else None
+    if not session_deleted and session_id and origin_session is None:
         from ..session.events import SessionEventStore
         projection = await asyncio.to_thread(SessionEventStore.project, session_id)
         session_deleted = bool(projection.get('deleted'))
@@ -1051,6 +1052,16 @@ async def _inject_result(
             },
         )
 
+        # Only after settlement and runtime projection. A missed wake must
+        # never turn a delivered result into a failed delivery/recollection.
+        if (getattr(origin_session, 'metadata', None) or {}).get('goal_mode'):
+            try:
+                from ..server.goal_mode import goal_service
+                origin = reg.get('origin_request_id') or (issue.get('resume_data') or {}).get('origin_request_id')
+                goal_service.result_delivered(origin_session, origin, identifier)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception('Goal wake deferred to reconciliation')
         # Step 3: Notify frontend so it can trigger a new agent turn
         if agent_event_emitter is not None:
             try:
@@ -1943,6 +1954,7 @@ def _build_continuation_payload(
         "message": "\n".join(lines),
         "content_blocks": content_blocks,
         "presentation_summary": _short_text(presentation_summary, 4000),
+        "tool_result_text": async_tool_text(collect_payload) if status == "completed" else "",
         "result_summary": _short_text(result_summary, 4000),
         "result_receipt": result_receipt,
         "error_summary": _short_text(error_summary, 4000),
@@ -2033,6 +2045,7 @@ async def _append_or_queue_continuation(
             content=str(next_continuation.get("message") or ""),
             id=f"msg-async-continuation-{identifier}",
             presentation="async_completion",
+            metadata={"tool_result_text": next_continuation["tool_result_text"]} if next_continuation.get("tool_result_text") else {},
             content_blocks=list(next_continuation.get("content_blocks") or []),
         )
         messages.append(message)

@@ -17,7 +17,8 @@ export type StructureRef = {
   jobId?: string; artifactRoot?: string;
   model_index: number; chain: string; residue_number: number; insertion_code: string; name: string; operator: string;
 };
-export type ComposerDraft = { text: string; files: AttachedFile[]; structureRefs?: StructureRef[]; selectedSkills?: string[] };
+export type RoundRef = { experiment_id: string; run_id: string; research_id: string };
+export type ComposerDraft = { roundRef?: RoundRef; text: string; files: AttachedFile[]; structureRefs?: StructureRef[]; selectedSkills?: string[] };
 export type FailedSubmission = ComposerDraft & { id: string; error: string };
 export type StagedGuidance = ComposerDraft & { id: string; mode: 'steer' | 'queue' };
 type GuidanceSubmission = ComposerDraft & { id: string; mode: 'steer' | 'queue' };
@@ -78,6 +79,7 @@ export const composerDrafts = {
       const value = JSON.parse(localStorage.getItem(prefix + key) || '{}');
       return {
         text: typeof value.text === 'string' ? value.text : '',
+        roundRef: value.roundRef && ['experiment_id','run_id','research_id'].every(k => typeof value.roundRef[k] === 'string') ? value.roundRef : undefined,
         selectedSkills: Array.isArray(value.selectedSkills) ? value.selectedSkills.filter((name: unknown) => typeof name === 'string').slice(0, 8) : [],
         files: sanitizeFiles(value.files, key),
         structureRefs: sanitizeStructureRefs(value.structureRefs, key),
@@ -151,10 +153,16 @@ export const composerDrafts = {
       stagedGuidance: (current.stagedGuidance || []).filter(item => item.id !== id),
     });
   },
-  restoreFailed(key: string): void {
+  restoreFailed(key: string): false | void {
     const current = this.get(key);
     if (!current.failed) return;
     const failed = current.failed;
+    if (failed.roundRef) {
+      if (current.text || current.files.length || current.roundRef || current.structureRefs?.length || current.selectedSkills?.length) return false;
+      this.update(key, { text: failed.text, files: failed.files, structureRefs: failed.structureRefs,
+        roundRef: failed.roundRef, selectedSkills: failed.selectedSkills, failed: undefined });
+      return;
+    }
     this.update(key, {
       text: current.text === failed.text ? current.text : [failed.text, current.text].filter(Boolean).join('\n\n'),
       files: [...failed.files, ...current.files.filter(file => !failed.files.some(old => old.id === file.id))],

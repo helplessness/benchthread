@@ -32,7 +32,7 @@ def test_boltz_rounds_survive_reload_and_keep_original(tmp_path, monkeypatch):
     def experiment(experiment_id, **owner):
         if experiment_id != "experiment" or owner["workspace_id"] != "workspace":
             raise LookupError("experiment not found")
-        return SimpleNamespace(frozen_at="")
+        return SimpleNamespace(frozen_at="", research_id="project")
 
     monkeypatch.setattr(ResearchExperimentStore, "get_experiment", experiment)
     monkeypatch.delenv("TCODE_PROTEIN_RUNS_ROOT", raising=False)
@@ -49,6 +49,13 @@ def test_boltz_rounds_survive_reload_and_keep_original(tmp_path, monkeypatch):
     first, = boltz_rounds.rounds_for(tmp_path, ["experiment"])["experiment"]
     assert first["run_id"] == link["run_id"]
     assert first["outputs"]
+    ref = {"experiment_id": "experiment", "run_id": first["run_id"], "research_id": "project"}
+    owner = boltz_rounds.owner_for(context)
+    assert boltz_rounds.checked_chat_round(ref, session_project="project", **owner) == {
+        "experiment_id": "experiment", "source_run_id": first["run_id"]}
+    for wrong in ({"research_id":"other"}, {"run_id":"missing"}, {"experiment_id":"other"}):
+        with pytest.raises(ValueError):
+            boltz_rounds.checked_chat_round({**ref, **wrong}, session_project="project", **owner)
     with pytest.raises(ValueError, match="上一轮"):
         boltz_rounds.next_round(context, "other", link["run_id"], str(replacement))
     new_args = boltz_rounds.next_round(context, "experiment", link["run_id"], str(replacement))
@@ -62,6 +69,17 @@ def test_boltz_rounds_survive_reload_and_keep_original(tmp_path, monkeypatch):
         link["run_id"]: "", next_link["run_id"]: link["run_id"],
     }
     assert original.read_text() == "first"
+
+
+def test_selected_round_is_model_context_not_visible_message_text():
+    from tcode_agent.harness.prompt_builder import AgentPromptBuilder
+    msg = SimpleNamespace(content="基于所选运行换文件，先确认。", metadata={
+        "research_round": {"experiment_id": "exp-test", "source_run_id": "run-test"}})
+    builder = SimpleNamespace(_message_input_images_for_prompt=lambda message: [])
+    sent = AgentPromptBuilder._user_chat_message_for_prompt(builder, msg)
+    assert "run-test" in sent.content and "run-test" not in msg.content
+    msg.metadata.clear()
+    assert AgentPromptBuilder._user_chat_message_for_prompt(builder, msg).content == msg.content
 
 
 def test_research_metadata_is_not_forwarded_as_boltz_tool_arguments():

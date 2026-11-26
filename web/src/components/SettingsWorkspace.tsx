@@ -11,6 +11,7 @@ import { deleteMCPConfig, getMCPConfig, reloadMCPConfig, testMCPConnection, save
 import { ontologyRequest } from '../api/ontology';
 import { useClientPlatform } from '../clientPlatform';
 import { getAgents, getChatRuntimes, getModels, selectModel, type ModelOption } from '../api/catalog';
+import { modelDisplayLabel } from './composer/modelSelection';
 import { autoSwarmAvailability } from '../utils/schedulerCapabilities';
 import SchedulerOptions from './composer/SchedulerOptions';
 import { sessionStore } from '../stores/session';
@@ -447,7 +448,7 @@ export default function SettingsWorkspace(props: {
       <Show when={section()==='notifications'}><div class="settings-page"><h2>通知</h2><div class="settings-section"><h3>任务提醒</h3><section class="settings-group"><Show when={desktop}>{toggle('系统通知','异步任务完成、失败或取消时发送桌面系统通知。',notify(),setNotify,false,'需要操作系统授予 TCode 通知权限，仅桌面端可用。')}</Show>{toggle('应用内提醒','在窗口右下角显示最多三条任务完成卡片。',inAppNotify(),setInAppNotify)}</section></div><button class="settings-save" onClick={saveNotifications}>保存更改</button></div></Show>
       <Show when={section()==='models'}><div class="settings-page"><h2>模型与执行</h2><p>设置当前任务和后续新任务的默认模型与运行方式。</p>
         <div class="settings-section"><h3>模型</h3><section class="settings-group">
-          <Show when={models().length}>{selectRow('默认文本模型','保存后立即切换当前任务，并写入当前工作区配置。',<select value={selectedModel()} disabled={busy()} onChange={event=>setSelectedModel(event.currentTarget.value)}><For each={models()}>{model=><option value={model.id}>{model.name}（{model.id}）</option>}</For></select>,'切换模型不会中断正在生成的回复，下一次发送开始使用新模型。')}</Show>
+          <Show when={models().length}>{selectRow('默认文本模型','保存后立即切换当前任务，并写入当前工作区配置。',<select value={selectedModel()} disabled={busy()} onChange={event=>setSelectedModel(event.currentTarget.value)}><For each={models()}>{model=><option value={model.id}>{modelDisplayLabel(model)}</option>}</For></select>,'切换模型不会中断正在生成的回复，下一次发送开始使用新模型。')}</Show>
           {selectRow('默认推理强度','可在聊天输入框旁为单次任务覆盖。',<select value={reasoning()} onChange={event=>setReasoning(event.currentTarget.value as any)}><option value="minimal">最低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select>,'推理强度越高，复杂任务通常更稳，但响应时间和 token 消耗可能增加。')}
         </section></div>
         <div class="settings-section"><h3>任务调度</h3><section class="settings-group">

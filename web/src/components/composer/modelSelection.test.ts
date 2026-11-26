@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest';
 
-import { nativeModelTurnBlock, resolveActiveModel, shouldAcceptResponseModel } from './modelSelection';
+import { modelDisplayLabel, nativeModelTurnBlock, resolveActiveModel, shouldAcceptResponseModel } from './modelSelection';
+
+describe('modelDisplayLabel', () => {
+  it('uses readable service names to distinguish identical model IDs', () => {
+    const model = { id: 'desktop-ab1234/deepseek-v4-flash', provider_id: 'desktop-ab1234', name: 'DeepSeek V4 Flash' };
+    expect(modelDisplayLabel({ ...model, provider_name: 'OpenCode Go' })).toBe('DeepSeek V4 Flash · OpenCode Go');
+    expect(modelDisplayLabel({ ...model, id: 'desktop-cd4567/deepseek-v4-flash', provider_id: 'desktop-cd4567', provider_name: '实验室网关' }))
+      .toBe('DeepSeek V4 Flash · 实验室网关');
+  });
+
+  it('hides managed IDs for legacy options and preserves unmanaged runtime labels', () => {
+    const id = 'desktop-ab1234/vendor/text';
+    expect(modelDisplayLabel({ id, name: id })).toBe('vendor/text');
+    expect(modelDisplayLabel({ id, name: '文本模型', provider_name: 'desktop-ab1234' })).toBe('文本模型');
+    expect(modelDisplayLabel({ id: 'web-model-cd4567/text', name: 'text' })).toBe('text');
+    expect(modelDisplayLabel({ id: 'opencode-go/kimi', name: 'opencode-go/kimi' })).toBe('opencode-go/kimi');
+    expect(modelDisplayLabel({ id: '', name: '无可用模型' })).toBe('无可用模型');
+  });
+});
 
 describe('resolveActiveModel', () => {
   it('keeps a server-confirmed selection when a background projection is stale', () => {

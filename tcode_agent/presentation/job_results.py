@@ -28,7 +28,7 @@ def _json_object(value: Any) -> dict[str, Any] | None:
         return None
     try:
         loaded = json.loads(text)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError, RecursionError):
         return None
     return loaded if isinstance(loaded, dict) else None
 
@@ -61,6 +61,33 @@ def extract_tmcp_presentation(value: Any) -> dict[str, Any] | None:
 
 def _text(value: Any, maximum: int = MAX_TEXT) -> str:
     return str(value or "").strip()[:maximum]
+
+
+def async_tool_text(receipt: Any) -> str:
+    """Project only the tool's text, never the collection receipt or file bundle."""
+    receipt = _json_object(receipt) or {}
+    if receipt.get("isError"):
+        return ""
+    if "target_result" not in receipt and isinstance(receipt.get("content"), list):
+        for block in receipt["content"]:  # Legacy summaries can contain one MCP envelope.
+            nested = _json_object(block.get("text")) if isinstance(block, dict) and block.get("type") == "text" else None
+            if nested and "target_result" in nested:
+                receipt = nested
+                break
+    target = receipt.get("target_result")
+    text = target if isinstance(target, str) else ""
+    if isinstance(target, dict) and not target.get("isError"):
+        for source in (target, target.get("structuredContent"), target.get("data")):
+            if isinstance(source, dict):
+                text = next((source[k] for k in ("text", "result") if isinstance(source.get(k), str) and source[k].strip()), "")
+                if text:
+                    break
+        if not text and isinstance(target.get("content"), list):
+            text = "\n".join(b["text"] for b in target["content"] if isinstance(b, dict)
+                             and b.get("type") == "text" and isinstance(b.get("text"), str))
+    if not text.strip():
+        return ""
+    return text if len(text) <= MAX_TEXT else text[:MAX_TEXT] + "\n…（显示长度已达上限）"
 
 
 def _scalar(value: Any) -> Any:

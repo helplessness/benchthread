@@ -158,6 +158,12 @@ async def resume_approved_computation(review, *, decision='approved'):
             if accepted or key in claims or result.get('error') not in {'goal_not_active', 'goal_budget_exhausted'}:
                 claims[key] = {'status': result.get('status', 'failed'), 'identifier': result.get('identifier', ''), 'max_submissions': 1}
             latest['computation_reviews'] = claims
+            # Only a fresh durable admission arms preparation. Replayed approvals,
+            # deduplication and legacy tasks must not schedule another attempt.
+            if (result.get('status') == 'queued' and result.get('tracker') == 'sqlite'
+                    and result.get('identifier_kind') == 'local_acceptance_id'
+                    and str(result.get('identifier') or '').startswith('LOCAL-')):
+                latest['pending_preparation_job'] = result['identifier']
             if latest['status'] not in {'paused', 'stopped', 'completed', 'budget_exhausted'}:
                 latest.update(status='waiting_external' if accepted else 'needs_input',
                               reason='已批准的一次计算已受理，等待结果；不会重复提交' if accepted else str(result.get('error') or '计算未受理，请检查后重新申请'))

@@ -14,6 +14,25 @@ vi.mock('../api/client', () => ({hasActiveChatSocket: () => false}));
 vi.mock('./MarkdownContent', () => ({default: (props: any) => <p>{props.content}</p>}));
 import MessageItem from './MessageItem';
 
+it('keeps the completion summary, shows short tool text literally and folds longer returns', () => {
+  const card = (text?: string, summary = '处理成功') => renderToString(() => <MessageItem message={{
+    id:'msg-async-continuation-test', role:'assistant', presentation:'async_completion',
+    content:'[Symphony:test]\ntranslation 异步任务已完成。\n任务编号: test\n任务状态: Done\n结果摘要: ' + summary,
+    metadata:{tool_result_text:text},
+  }}/>);
+  expect(card()).not.toContain('工具返回文本');
+  const short = card('<b>译文</b>');
+  expect(short).toContain('处理成功');
+  expect(short).toContain('&lt;b>译文&lt;/b>');
+  expect(short).not.toContain('展开文本');
+  expect(card('译文', '{"content":[')).not.toContain('请打开原会话');
+  for (const text of ['长'.repeat(300)+'末尾', '一\n二\n三\n四\n末尾']) {
+    const html = card(text);
+    expect(html).toMatch(/<details[^>]*><summary[^>]*>[\s\S]*?展开文本/);
+    expect(html).toContain(text);
+  }
+});
+
 const verification = {advisory:true, verification_status:'PARTIAL' as const, confidence:.23,
   criteria_total:2, criteria_passed:0, criteria_failed:1, criteria_unverified:1,
   findings:[{status:'failed' as const,title:'报告完整性',reason:'报告缺少计算依据'}]};

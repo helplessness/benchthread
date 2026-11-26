@@ -136,6 +136,36 @@ def test_chat_catalog_preserves_normalized_default_model(instance):
     assert client.get("/api/models").json()["current_model"] == "private/lab-model"
 
 
+def test_chat_catalog_adds_desktop_service_names_without_changing_model_refs(instance, monkeypatch):
+    client, root = instance
+    first, second = "desktop-ab1234/text", "desktop-cd4567/text"
+    config_file = root / "tcode.json"
+    config_file.write_text(json.dumps({
+        "model": first,
+        "desktop_model_services": {
+            "ab1234": {"name": "主服务"},
+            "cd4567": {"name": "备用服务"},
+        },
+        "provider": {
+            "desktop-ab1234": {"models": {"text": {"name": "文本模型"}}, "options": {"apiKey": SECRET}},
+            "desktop-cd4567": {"models": {"text": {"name": "文本模型"}}},
+        },
+    }))
+    original = config_file.read_bytes()
+    monkeypatch.setattr(catalog_api.ServerState, "sessions", {
+        "old-chat": {"model": second, "workdir": str(root)},
+    })
+    default = client.get("/api/models")
+    assert SECRET not in default.text
+    assert default.json()["current_model"] == first
+    assert [(row["id"], row["name"], row["provider_name"]) for row in default.json()["models"]] == [
+        (first, "文本模型", "主服务"),
+        (second, "文本模型", "备用服务"),
+    ]
+    assert client.get("/api/models?session_id=old-chat").json()["current_model"] == second
+    assert config_file.read_bytes() == original
+
+
 def test_public_template_models_are_not_available_until_configured(instance, gateway, monkeypatch):
     client, root = instance
     base, calls = gateway
