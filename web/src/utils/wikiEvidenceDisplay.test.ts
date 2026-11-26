@@ -3,6 +3,7 @@ import type { WikiClaim } from '../api/paperWiki';
 import {
   WIKI_CLAIM_EVIDENCE_PREFIX,
   buildWikiAgentDisplayContent,
+  supportLabel,
 } from './wikiEvidenceDisplay';
 
 const claim = (overrides: Partial<WikiClaim> = {}): WikiClaim => ({
@@ -16,6 +17,11 @@ const claim = (overrides: Partial<WikiClaim> = {}): WikiClaim => ({
 });
 
 describe('Wiki 综合结论 Evidence 展示', () => {
+  it('区分相互冲突、已撤回、过时和未知状态', () => {
+    expect(['conflicting', 'retracted', 'stale', 'unknown'].map(supportLabel)).toEqual([
+      '证据存在冲突', '已撤回', '证据状态已过时', '支持情况待核对',
+    ]);
+  });
   it('只在只读综合结论中添加可点击的 Claim 标记', () => {
     const content = [
       'A107N retains strong inhibition.',

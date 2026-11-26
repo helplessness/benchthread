@@ -1533,7 +1533,7 @@ class PaperWikiStore:
                 page = dict(pages_by_id.get(page_id) or {})
                 if not page:
                     continue
-                page.pop("content", None)
+                body = page.pop("content", "") or ""
                 claims = self._claims_for(connection, page_id)
                 matched = [
                     claim
@@ -1546,6 +1546,19 @@ class PaperWikiStore:
                 page["vector_score"] = vector_scores.get(page_id, 0.0)
                 page["score"] = hybrid_score
                 page["matched_chunks"] = vector_chunks.get(page_id, [])
+                if not page["matched_chunks"] and page_id in lexical_scores:
+                    offset = 0
+                    for number, raw in enumerate(body.splitlines(keepends=True), 1):
+                        line = raw.rstrip("\r\n")
+                        if lowered in line.casefold() and len(line) <= 1200:
+                            page["matched_chunks"].append({
+                                "chunk_id": f"{page_id}:line:{number}", "content": line,
+                                "line_start": number, "line_end": number, "byte_start": offset,
+                                "byte_end": offset + len(line.encode()), "score": lexical_scores[page_id],
+                            })
+                            if len(page["matched_chunks"]) == 3:
+                                break
+                        offset += len(raw.encode())
                 hits.append(page)
             used_vector = bool(vector_scores)
             return {
