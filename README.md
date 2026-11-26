@@ -1,25 +1,54 @@
 # BenchThread
 
-BenchThread（原 TCode）是一个可自托管的 AI 研究工作台。把文献、工具调用、远程计算和分析结果留在同一个工作区，方便复查、继续或交给同事。蛋白质研究是其中一个应用场景，不是使用前提。
+### 为研究而生，让每一次探索都有积累。
 
-目前处于开源 Alpha，尚未验收生产多租户部署。界面与截图可能仍显示 TCode；`tcode`、`tcode-server` 和 Python 包名 `tcode-agent` 不变。
+一个可自托管的 AI 研究工作台。连接文献、工具与计算，将零散的探索沉淀为可追溯、可交接、可继续的研究。
 
-## 项目特色
+**从问题出发，在证据中推进。**
 
-- **远程工具能接文件，也能把结果带回工作区**：给自己的 FastMCP 工具接入 [Artifact Python SDK](packages/artifact-sdk/README.md#最小-fastmcp-示例)，就可以用文件引用传参，不用让远端机器识别你电脑上的路径。[用 `echo_file` 跑通一次完整往返](packages/artifact-sdk/README.md#echo_file-快速开始)。不做计算时，也可以直接说「从实验室文件服务下载 `results/report.csv` 到当前工作区」，[无需绑定 MCP](docs/RUNNING.md#不绑定-mcp-使用-artifact)。
-- **计算可以在远端继续**：接入支持可恢复任务的服务后，可用原任务 ID 查进度、取结果，不必重新提交。
-- **研究过程可以回查**：在同一个工作区整理文献、假说、实验和证据，查看交互图表与分子结构。
-- **任务由你把关**：设置目标和预算，必要时审核工具参数。结果验收会标明未通过或缺证据的部分，不等于科学结论已证实。
+**[开始使用](#快速开始)** · **[探索功能](#功能亮点)**
+
+面向希望把资料整理、工具执行与结果复查串起来的研究者，以及希望接入已有工具的开发者。蛋白质研究是一个应用场景，不是使用前提。先配置模型即可聊天，研究能力和外部服务按需启用。
+
+BenchThread 原名 TCode，目前处于开源 Alpha，尚未验收生产多租户部署。界面与截图可能仍显示 TCode；`tcode`、`tcode-server` 和 Python 包名 `tcode-agent` 不变。研究记录与验收反馈提供复查依据，不保证科学结论正确。
+
+## 功能亮点
+
+### 组织研究，让过程可以积累
+
+- **可积累、可交接的研究档案**：将研究资料与记录逐步整理进研究包，选择内容导出、分享或导入，在已有资料上继续研究。不只是保存聊天截图，也不等于备份完整计算环境。
+- **课题确认与分支探索**：先探索问题，再核对候选并确认正式课题；围绕假说创建实验记录，将后续尝试保留为新的研究路线。记录关联不代表所有聊天内容都已自动归档，创建实验也不会自动提交计算。
+- **可复用的研究工作流**：导入、编辑和复用流程定义，在当前会话创建运行实例并查看步骤结果。由对话生成临时流程的能力仍属**实验性**，需要检查步骤、参数和工具可用性后再确认执行。
+
+### 执行与检查，让结果不止是一段文字
+
+- **对话式三维结构探索**：用自然语言让 Agent 在 Mol* 视图中聚焦、着色、选择区域和测距，直接检查结构与数值。需要实际结构文件和操作授权，不修改原始结构文件。
+- **远程工具与文件往返**：把工作区文件交给已接入的远程 MCP 工具，执行后将输出取回原工作区，减少手动搬运。需配置文件服务、显式绑定及文件字段；任务重启恢复还要求远端支持持久任务。[试一次文件往返](packages/artifact-sdk/README.md#echo_file-快速开始)
+- **浏览器操作与人工接管**：让 Agent 执行网页任务；在桌面端，遇到登录或需要你判断的步骤，可以接管浏览器，处理后再交还。Linux Web 的浏览器执行需另配沙箱环境。[部署说明](docs/RUNNING.md#linux-web-启用-agent-浏览器)
+- **授权电脑控制**：在 **macOS 桌面端**授权 Agent 观察和操作本机应用，并保留暂停与人工接管能力。需要对应驱动和系统权限，不是基础聊天的必需组件。
+
+以上能力按实际配置启用，并非首次启动全部可用。**目标模式仍处于实验阶段**：已有目标、预算、指导和暂停恢复等机制，但不承诺无人值守可靠完成长任务，暂不作为成熟主打能力。
+
+![BenchThread 研究工作区：对话、结果表格与后续验证建议](docs/screenshots/research-chat.png)
+
+*真实界面，使用虚构数据和本地演示模型，展示结果如何留在工作区；不代表实际科研结果。*
+
+**第一次体验需要什么？** 聊天需要可用的对话模型；文件往返另外需要示例 MCP、文件服务和异步网关，教程会说明如何启动。无需 GPU、私有 TMCP 或 Docker 沙箱。先完成[基础聊天](#快速开始)，再跟着 [`echo_file` 教程](packages/artifact-sdk/README.md#echo_file-快速开始)配置并核对结果。没有模型凭据时可做[协议冒烟验证](docs/PUBLIC-ALPHA.md)，但它不能替代真实聊天体验。
 
 ## 快速开始
+
+**想体验上面的研究功能？走[完整研究体验部署路线](docs/RESEARCH-SETUP.md)。** 下方最短命令只跑通聊天，不启用研究档案、课题与研究包，也不启动异步任务或沙箱。推荐路线沿用同一份配置和运行目录，从首聊逐项验证研究、工具与文件往返，不需要安装私有 TMCP。
+
+| 你的目标 | 选择入口 |
+| --- | --- |
+| 先确认模型能聊天 | [本机试聊](#方式-a本机试聊无需登录) |
+| 使用研究档案、课题、分支与研究包 | [Linux Web 研究体验：安装、配置、验证](docs/RESEARCH-SETUP.md) |
+| 体验 Mac 应用控制与浏览器接管 | [macOS 桌面](desktop/README.md#打开方式)，不需要先运行 Web |
+| 只想用 Docker 快速跑聊天 | [基础 Compose](docs/RUNNING.md#docker-本机体验)，不是全功能部署 |
 
 **选择入口：** [Linux Web](#linux-web发出第一条消息) · [macOS 桌面（Apple Silicon）](desktop/README.md#打开方式) · [Windows Web（实验性）](docs/Windows-Web快速启动.md#1-首次准备) · [Docker Web](docs/RUNNING.md#docker-本机体验)
 
 已有基础聊天？跳到[配置和启动其他服务](#安装与部署)。
-
-![BenchThread 研究工作区：对话、结果表格与后续验证建议](docs/screenshots/research-chat.png)
-
-*真实界面，使用虚构数据和本地演示模型，不代表实际科研结果。*
 
 ### Linux Web：发出第一条消息
 
@@ -166,6 +195,17 @@ TCODE_SANDBOX_EGRESS_PROXY_CONTAINER=tcode-egress-proxy
 [完整功能、研究场景与 Roadmap](docs/FEATURES.md) · [Alpha 范围与边界](docs/PUBLIC-ALPHA.md)
 
 ## 文档与开发
+
+### 接入自己的工具
+
+保留已有工具实现，按数据类型选择入口，不必先写 BenchThread 插件：
+
+| 你的工具需要什么 | 从哪里开始 |
+| --- | --- |
+| 普通查询或同步工具调用 | [部署自己的 FastMCP 服务](tcode_agent/MCP_QUICKSTART.md#部署自己的-fastmcp-服务) |
+| 输入文件、输出文件 | [最小 FastMCP 文件示例](packages/artifact-sdk/README.md#最小-fastmcp-示例) → [`echo_file` 完整往返](packages/artifact-sdk/README.md#echo_file-快速开始) |
+| 长任务的提交、状态查询和恢复 | [纯 JSON 异步示例](examples/third_party_mcp/json-async/README.md) → [第三方异步 MCP 接入](docs/服务隔离/第三方MCP插件接入与运行.md)；需要文件时再加 Artifact SDK |
+| 只提供共享或个人文件，不提供工具 | [独立文件服务](packages/artifact-sdk/README.md#仅启动-artifact) |
 
 - **接入示例**：[部署自己的 FastMCP 服务](tcode_agent/MCP_QUICKSTART.md#部署自己的-fastmcp-服务) · [纯 JSON 异步 MCP](examples/third_party_mcp/json-async/README.md)（不需要文件 SDK） · [文件传输 SDK](packages/artifact-sdk/README.md)（远端收发文件） · [插件 SDK](docs/plugin-sdk/README.md)（BenchThread 侧扩展） · [React / Vue 侧栏前端 SDK](packages/tcode-panel-sdk/README.md)。
 - **项目维护**：[文档目录](docs/README.md) · [项目架构](docs/MAINTENANCE.md) · [贡献指南](CONTRIBUTING.md) · [安全与漏洞报告](SECURITY.md)。

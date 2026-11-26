@@ -1,5 +1,7 @@
 # 运行指南
 
+首次部署希望体验首页研究功能，请从[完整研究体验路线](RESEARCH-SETUP.md)开始；本页按组件提供详细步骤。`--full` 仅安装可选依赖，不是全功能部署开关。
+
 ## Windows Web
 
 按 [PowerShell Web 快速启动](Windows-Web快速启动.md)运行，不使用下方 Bash 脚本。仅提供 Web 源码启动路径，Windows 实机验收尚未完成。
@@ -258,7 +260,7 @@ tcode-artifact serve --port 18081 --data-dir ./lab-store-data --service-id lab-s
 
 ## macOS 桌面开发版
 
-Apple Silicon 用户按[桌面首次启动](../desktop/README.md#打开方式)准备依赖、初始化管理员、配置模型并发送第一条消息。桌面使用自己的本机后端与运行数据目录，不用先启动 Web。打包见 [macOS 打包](gui/12-macos-dmg-packaging.md)。
+Apple Silicon 用户按[桌面首次启动](../desktop/README.md#打开方式)准备依赖、进入本机工作区、配置模型并发送第一条消息，不需要 Web 的 bootstrap 密码。桌面使用自己的本机后端与运行数据目录，不用先启动 Web。打包见 [macOS 打包](gui/12-macos-dmg-packaging.md)。
 
 ## Docker 本机体验
 
