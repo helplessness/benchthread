@@ -16,6 +16,9 @@ from fastapi.responses import JSONResponse
 from ..runtime.capacity import ExecutionCapacityController
 from ..runtime.gateway import guidance_mode_for_runtime, run_coordinator
 from ..runtime.guidance import (
+    EXTERNAL_RESTART_CANCELLING,
+    EXTERNAL_RESTART_READY,
+    GuidanceItem,
     GuidanceMode,
     GuidanceStaleTurn,
     GuidanceStatus,
@@ -80,6 +83,58 @@ from .schemas import ChatGuideRequest, PermissionReplyRequest, QuestionReplyRequ
 from .state import ServerState
 
 router = APIRouter()
+
+
+def _require_current_native_guidance_turn(item: GuidanceItem) -> None:
+    if item.runtime_id != "tcode-native":
+        return
+    task = ServerState.get_turn_task(item.session_id)
+    engine = getattr(ServerState.agents.get(item.session_id), "_engine", None)
+    if (task is None or task.done() or not item.target_turn_id
+            or item.target_turn_id != getattr(engine, "_active_guidance_turn_id", None)):
+        raise GuidanceStaleTurn("the turn targeted by guidance is no longer active")
+
+
+async def _cancel_bound_external_guidance(item: GuidanceItem) -> None:
+    owner_key = f"{item.tenant_id}:{item.user_id}"
+    active = await asyncio.to_thread(run_coordinator.store.active_for_session, owner_key, item.session_id)
+    if (not item.source_run_id or not active or active["run_id"] != item.source_run_id
+            or not await run_coordinator.cancel(
+                owner_key=owner_key, session_id=item.session_id, run_id=item.source_run_id,
+            )):
+        raise GuidanceStaleTurn("the external run targeted by guidance is no longer active")
+
+
+async def _cancel_classified_guidance(item: GuidanceItem, *, session_owner: dict[str, str]) -> None:
+    if item.runtime_id != "tcode-native":
+        # External guidance is bound to one durable run, not every task in the session.
+        await _cancel_bound_external_guidance(item)
+        return
+    _require_current_native_guidance_turn(item)
+    if item.descendant_policy == "cancel_all":
+        await _cancel_runtime_subtree_for_interrupt_guidance(
+            item.session_id, clear_guidance=False, owner_kwargs=session_owner,
+            ensure_current=lambda: _require_current_native_guidance_turn(item),
+        )
+    # clear_guidance=False does not suspend between this check and cancellation.
+    _require_current_native_guidance_turn(item)
+    await ServerState.cancel_session(item.session_id, clear_guidance=False)
+
+
+async def _mark_guidance_child_superseded(
+    item: GuidanceItem, descendant_id: str, *, session_owner: dict[str, str],
+) -> None:
+    def mark(child: Session) -> None:
+        # Run inside the session mutation lock, after any wait for fresher state.
+        _require_current_native_guidance_turn(item)
+        metadata = dict(child.metadata or {})
+        delegation = metadata.get("delegation_scope") or {}
+        if ((delegation.get("parent_session_id") or child.parent_id) == item.session_id
+                and delegation.get("parent_turn_id") not in (None, "", item.target_turn_id)):
+            raise GuidanceStaleTurn("the child now belongs to a different parent turn")
+        child.metadata = {**metadata, "superseded_context": True, "superseded_by_guidance_id": item.id}
+
+    await SessionManager.mutate(descendant_id, mark, **session_owner)
 
 
 @router.post("/api/chat/cancel")
@@ -418,6 +473,9 @@ async def _guide_chat_v2(
             if revision.can_apply
             else "replan"
         )
+        if (effect != "turn_cancel_requested" and classified_item.runtime_id != "tcode-native"
+                and await guidance_mode_for_runtime(classified_item.runtime_id) == "restart_turn"):
+            effect = EXTERNAL_RESTART_CANCELLING
         return revision_payload, effective_contract, effect
 
     async def _cancel_invalidated_descendants(classified_item) -> list[str]:
@@ -427,25 +485,14 @@ async def _guide_chat_v2(
                 classified_item.session_id,
                 clear_guidance=False,
                 owner_kwargs=session_owner,
+                ensure_current=lambda: _require_current_native_guidance_turn(classified_item),
             )
             cancelled_ids = list(
                 cancelled.get("cancelled_descendant_session_ids") or []
             )
             for descendant_id in cancelled_ids:
-                descendant = await SessionManager.get(descendant_id, **session_owner)
-                if descendant is None:
-                    continue
-                descendant_metadata = dict(
-                    getattr(descendant, "metadata", {}) or {}
-                )
-                descendant_metadata["superseded_context"] = True
-                descendant_metadata["superseded_by_guidance_id"] = (
-                    classified_item.id
-                )
-                await SessionManager.update(
-                    descendant_id,
-                    **session_owner,
-                    metadata=descendant_metadata,
+                await _mark_guidance_child_superseded(
+                    classified_item, descendant_id, session_owner=session_owner,
                 )
             return cancelled_ids
         if policy != "cancel_invalidated":
@@ -487,65 +534,51 @@ async def _guide_chat_v2(
             descendant_metadata = dict(getattr(descendant, "metadata", {}) or {})
             if descendant_metadata.get("uncancellable_external_side_effect"):
                 continue
+            _require_current_native_guidance_turn(classified_item)
             cancel_worker_task(descendant_id)
             await cancel_team_background_tasks(descendant_id)
+            _require_current_native_guidance_turn(classified_item)
             await ServerState.cancel_session(descendant_id, clear_guidance=False)
-            descendant_metadata["superseded_context"] = True
-            descendant_metadata["superseded_by_guidance_id"] = classified_item.id
-            await SessionManager.update(
-                descendant_id,
-                **session_owner,
-                metadata=descendant_metadata,
+            await _mark_guidance_child_superseded(
+                classified_item, descendant_id, session_owner=session_owner,
             )
             cancelled.append(descendant_id)
         return cancelled
 
     async def _after_guidance_classified(classified_item) -> list[str]:
-        cancelled = await _cancel_invalidated_descendants(classified_item)
-        if (
-            classified_item.mode is GuidanceMode.STEER
-            and classified_item.status is GuidanceStatus.PENDING
-            and str(classified_item.runtime_id or "") != "tcode-native"
-        ):
-            mode = await guidance_mode_for_runtime(
-                str(classified_item.runtime_id or "")
-            )
-            if mode == "restart_turn":
+        if classified_item.runtime_id != "tcode-native":
+            if (classified_item.status is GuidanceStatus.PENDING
+                    and await guidance_mode_for_runtime(classified_item.runtime_id) == "restart_turn"):
+                if classified_item.effect != EXTERNAL_RESTART_READY:
+                    raise GuidanceStaleTurn("the original run did not authorize a guidance restart")
                 owner_key = f"{classified_item.tenant_id}:{classified_item.user_id}"
-                await run_coordinator.cancel_active(
-                    owner_key=owner_key,
-                    session_id=classified_item.session_id,
-                )
                 deadline = asyncio.get_running_loop().time() + 5.0
-                while run_coordinator.store.active_for_session(
-                    owner_key, classified_item.session_id
-                ) is not None:
-                    if asyncio.get_running_loop().time() >= deadline:
+                while asyncio.get_running_loop().time() < deadline:
+                    active = await asyncio.to_thread(
+                        run_coordinator.store.active_for_session, owner_key, classified_item.session_id,
+                    )
+                    if active is None:
                         break
+                    if active["run_id"] != classified_item.source_run_id:
+                        raise GuidanceStaleTurn("a new run replaced the guidance target")
                     await asyncio.sleep(0.05)
                 _ensure_session_guidance_drain_v2(classified_item.session_id)
+            return []
+        _require_current_native_guidance_turn(classified_item)
+        # An explicit native cancel handles the full subtree in its cancellation callback.
+        cancelled = []
+        if not (classified_item.runtime_id == "tcode-native"
+                and classified_item.status is GuidanceStatus.APPLYING
+                and classified_item.descendant_policy == "cancel_all"):
+            cancelled = await _cancel_invalidated_descendants(classified_item)
         return cancelled
-
-    async def _cancel_guided_turn(classified_item) -> None:
-        if classified_item.descendant_policy == "cancel_all":
-            await _cancel_runtime_subtree_for_interrupt_guidance(
-                classified_item.session_id,
-                clear_guidance=False,
-                owner_kwargs=session_owner,
-            )
-        if str(classified_item.runtime_id or "") != "tcode-native":
-            await run_coordinator.cancel_active(
-                owner_key=f"{classified_item.tenant_id}:{classified_item.user_id}",
-                session_id=classified_item.session_id,
-            )
-        await ServerState.cancel_session(classified_item.session_id, clear_guidance=False)
 
     if item.status.value == "classifying":
         guidance_runtime.schedule_classification(
             workdir=guidance_workdir,
             owner=owner_scope,
             classifier=_classify_guidance,
-            cancel_turn=_cancel_guided_turn,
+            cancel_turn=lambda classified: _cancel_classified_guidance(classified, session_owner=session_owner),
             post_classify=_after_guidance_classified,
         )
     if start_if_idle and item.mode is GuidanceMode.QUEUE and not ServerState.is_running(item.session_id):
@@ -716,6 +749,7 @@ async def chat_guidance_queue(session_id: str, request: Request):
         workdir=guidance_workdir,
         after_sequence=0,
         limit=500,
+        prefer_recent=True,
     )
     counts = await asyncio.to_thread(
         GuidanceSQLiteStore.pending_counts,
@@ -803,6 +837,7 @@ async def delete_chat_guidance(
         workdir=guidance_workdir,
         after_sequence=0,
         limit=500,
+        prefer_recent=True,
     )
     pending_total = int(counts.get("pending_steer_count", 0)) + int(
         counts.get("pending_queue_count", 0)

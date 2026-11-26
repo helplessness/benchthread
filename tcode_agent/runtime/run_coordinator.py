@@ -158,10 +158,21 @@ class AgentRunStore:
         run_input: NormalizedRunInput,
         request_digest: str,
         client_request_id: str,
+        guidance_source_run_id: str = "",
     ) -> tuple[str, dict[str, Any]]:
         now = time.time()
         with self._lock, closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if guidance_source_run_id:
+                previous = connection.execute(
+                    """SELECT run_id, status, runtime_id, workspace_id FROM agent_runs
+                       WHERE owner_key=? AND session_id=? ORDER BY rowid DESC LIMIT 1""",
+                    (owner_key, run_input.thread_id),
+                ).fetchone()
+                if previous is None or tuple(previous) != (
+                    guidance_source_run_id, "cancelled", run_input.runtime_id, workspace_id,
+                ):
+                    raise RunConflictError("原运行已变化，追加指导未应用，请重新发送。", code="guidance_source_run_stale")
             existing = connection.execute(
                 "SELECT * FROM agent_runs WHERE owner_key=? AND session_id=? AND run_id=?",
                 (owner_key, run_input.thread_id, run_input.run_id),
@@ -469,6 +480,7 @@ class RunCoordinator:
         context: RunContext,
         *,
         client_request_id: str = "",
+        guidance_source_run_id: str = "",
     ) -> PreparedRun:
         await asyncio.to_thread(
             self.store.recover_stale,
@@ -516,6 +528,7 @@ class RunCoordinator:
             run_input=run_input,
             request_digest=digest,
             client_request_id=client_request_id,
+            **({"guidance_source_run_id": guidance_source_run_id} if guidance_source_run_id else {}),
         )
         return PreparedRun(kind, run_input, context, backend, digest, existing)
 

@@ -87,6 +87,55 @@ describe('composer file mentions', () => {
 });
 
 describe('composer guidance queue', () => {
+  it('counts every pending item without hiding the latest unapplied notice', async () => {
+    const items = Array.from({ length: 501 }, (_, i) => ({
+      id: `pending-${i + 1}`, message: 'queued fixture', mode: 'queue', status: 'pending',
+    }));
+    api.getChatGuidanceQueue.mockResolvedValue({
+      session_id: 'session-1',
+      items: [...items, { id: 'latest-notice', message: 'fixture', status: 'failed', failure_code: 'expired_turn_unapplied' }],
+    });
+    const queue = createRoot(dispose => {
+      disposers.push(dispose);
+      return createGuidanceQueue();
+    });
+    await Promise.resolve();
+    expect(queue.activeGuidanceItems()).toHaveLength(501);
+    expect(queue.activeGuidanceItems()[0]?.id).toBe('pending-1');
+    expect(queue.latestActiveGuidance()?.id).toBe('pending-501');
+    expect(queue.latestUnappliedGuidance()?.id).toBe('latest-notice');
+  });
+
+  it('remembers exactly the dismissed guidance after the page is recreated', async () => {
+    const saved = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => saved.set(key, value),
+    });
+    const unapplied = (id: string) => ({
+      id, message: 'synthetic guidance text', status: 'failed', failure_code: 'expired_turn_unapplied',
+    });
+    const response = { session_id: 'session-1', items: [unapplied('guidance-a')] };
+    api.getChatGuidanceQueue.mockResolvedValue(response);
+    const first = createRoot(dispose => ({ ...createGuidanceQueue(), dispose }));
+    disposers.push(first.dispose);
+    await Promise.resolve();
+    expect(first.latestUnappliedGuidance()?.id).toBe('guidance-a');
+    first.dismissUnappliedGuidance('guidance-a');
+    expect(first.latestUnappliedGuidance()).toBeUndefined();
+    first.dispose();
+    expect([...saved.values()]).toEqual(['["guidance-a"]']);
+    const afterReload = createRoot(dispose => {
+      disposers.push(dispose);
+      return createGuidanceQueue();
+    });
+    await Promise.resolve();
+    expect(afterReload.latestUnappliedGuidance()).toBeUndefined();
+    response.items = [unapplied('guidance-a'), unapplied('guidance-b')];
+    await afterReload.refreshGuidanceQueue();
+    expect(afterReload.latestUnappliedGuidance()?.id).toBe('guidance-b');
+  });
+
   it('refreshes once per session change and discards the previous session response', async () => {
     let finishFirst!: (value: unknown) => void;
     api.getChatGuidanceQueue.mockImplementation((id: string) => id === 'session-1'

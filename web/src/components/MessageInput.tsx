@@ -288,6 +288,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
   const {
     activeGuidanceItems,
     latestActiveGuidance,
+    latestUnappliedGuidance,
+    dismissUnappliedGuidance,
     guidanceStatusLabel,
     guidanceCancellable,
     refreshGuidanceQueue,
@@ -1595,6 +1597,24 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
         </Show>
         <InteractionPanel mode="permissions" />
 
+        <Show when={latestUnappliedGuidance()}>
+          {(item) => (
+            <div class="mb-2 flex min-w-0 items-center gap-2 px-1 text-xs text-[#ffc176]">
+              <div class="min-w-0 flex-1" role="status">
+                <div>追加指导未应用，请重新发送。</div>
+                <div class="truncate text-[#b8c8d2]" title={item().message}>{item().message}</div>
+              </div>
+              <button
+                type="button"
+                class="min-h-11 shrink-0 rounded px-3 text-[#b8c8d2] hover:text-white"
+                aria-label="关闭未应用指导提示"
+                onClick={() => dismissUnappliedGuidance(item().id)}
+              >
+                关闭
+              </button>
+            </div>
+          )}
+        </Show>
         <Show when={latestActiveGuidance()}>
           {(item) => (
             <div
@@ -1606,7 +1626,8 @@ export default function MessageInput(props: { onOpenSkills?: () => void; onOpenM
               <span class="shrink-0 text-[#b8c8d2]">{guidanceStatusLabel(item().status)}</span>
               <span class="min-w-0 flex-1 truncate" title={item().message}>{item().message}</span>
               <Show when={activeGuidanceItems().length > 1}>
-                <span class="shrink-0">+{activeGuidanceItems().length - 1}</span>
+                <span aria-hidden="true" class="shrink-0">+{activeGuidanceItems().length - 1}</span>
+                <span class="sr-only">还有 {activeGuidanceItems().length - 1} 条待处理指导</span>
               </Show>
               <Show when={guidanceCancellable(item().status)}>
                 <button

@@ -4556,13 +4556,13 @@ class AgentHarnessEngine:
             # Preparation/stream closure can exit before terminal persistence.
             # Release only this turn's exact owner; never clear another run.
             turn_id = str(getattr(self, "_active_guidance_turn_id", "") or "")
+            self._active_guidance_turn_id = ""
             if port is not None and owner_id and turn_id:
                 try:
                     await port.clear_turn_owner(
                         session_id=str(getattr(self.agent, "session_id", "") or ""),
                         turn_id=turn_id, owner_id=owner_id,
                     )
-                    self._active_guidance_turn_id = ""
                 except Exception:
                     pass  # The existing lease expiry remains the fallback.
 

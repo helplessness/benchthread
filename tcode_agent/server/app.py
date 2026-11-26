@@ -9,6 +9,7 @@ import asyncio as asyncio
 import hashlib as hashlib
 import json as json
 import os as os
+import sqlite3
 import stat as stat
 from dataclasses import (
     fields as fields,
@@ -202,6 +203,7 @@ from ._shared import (
     _chat_runtime_status_payload as _chat_runtime_status_payload,
     _cleanup_disconnected_chat_session as _cleanup_disconnected_chat_session,
     _confirm_workflow_auto_route as _confirm_workflow_auto_route,
+    _delegated_session_lock,
     _delete_child_sessions as _delete_child_sessions,
     _ensure_delegated_agent_session as _ensure_delegated_agent_session,
     _ensure_session_guidance_drain_v2 as _ensure_session_guidance_drain_v2,
@@ -420,15 +422,44 @@ async def chat_status(session_id: str, request: Request):
         raise HTTPException(404, "Session not found")
     if persisted is not None:
         await _migrate_session_guidance_v2(persisted)
-        if not ServerState.is_running(session_id):
-            _ensure_session_guidance_drain_v2(session_id)
-        owner_scope = _guidance_owner_scope_from_session(persisted)
+        guidance_scope = {
+            "owner": _guidance_owner_scope_from_session(persisted),
+            "workdir": _guidance_store_workdir(),
+        }
         counts = await asyncio.to_thread(
-            GuidanceSQLiteStore.pending_counts,
-            session_id=session_id,
-            owner=owner_scope,
-            workdir=_guidance_store_workdir(),
+            GuidanceSQLiteStore.pending_counts, session_id=session_id, **guidance_scope,
         )
+        has_queued_work = counts.get("pending_queue_count", 0) or counts.get("pending_restart_turn_count", 0)
+        # Polling an empty queue must not briefly mark an idle session busy.
+        if has_queued_work and not ServerState.is_running(session_id):
+            _ensure_session_guidance_drain_v2(session_id)
+        elif not has_queued_work and counts.get("pending_steer_count", 0):
+            reconciled = []
+            historical_ended = set()
+            if not ServerState.is_running(session_id):
+                historical_ended = await asyncio.to_thread(
+                    GuidanceSQLiteStore.historical_ended_turn_ids, session_id=session_id, **guidance_scope,
+                )
+            async with _delegated_session_lock(f"goal-control:{session_id}"):
+                runtime_status = _chat_runtime_status_payload(session_id)
+                if not runtime_status["chat_running"] and not runtime_status["guidance_worker_active"]:
+                    # No await between the idle check and the write: queued turns and
+                    # background continuations can also be admitted on this loop.
+                    # pending_counts initialized the store; a busy writer retries on poll.
+                    try:
+                        reconciled = GuidanceSQLiteStore.reconcile_expired_claims(
+                            idle_native_session_id=session_id, historical_ended_turn_ids=historical_ended,
+                            **guidance_scope,
+                        )
+                    except sqlite3.OperationalError as exc:
+                        if (getattr(exc, "sqlite_errorcode", 0) & 0xFF) not in (
+                            sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED,
+                        ):
+                            raise
+            if reconciled:
+                counts = await asyncio.to_thread(
+                    GuidanceSQLiteStore.pending_counts, session_id=session_id, **guidance_scope,
+                )
         pending_total = int(counts.get("pending_steer_count", 0)) + int(
             counts.get("pending_queue_count", 0)
         )
