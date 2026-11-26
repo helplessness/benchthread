@@ -201,12 +201,21 @@ def _serialize_frontend_tool_call(tool_call: Any) -> dict[str, Any]:
 
 
 def _public_frontend_message_metadata(message: Any) -> dict[str, Any]:
-    """Return only guidance metadata that is safe and useful to the client."""
+    """Project only supported display and guidance fields."""
 
     raw = getattr(message, "metadata", None)
     if not isinstance(raw, dict):
         return {}
     public: dict[str, Any] = {}
+    if getattr(message, "presentation", None) == "async_completion" and getattr(message, "role", None) == "assistant":
+        text = raw.get("tool_result_text")
+        if not isinstance(text, str) or not text:
+            # Previously delivered cards have only the host's bounded summary.
+            from ..presentation.job_results import async_tool_text
+            summary = str(message.content or "").partition("\n结果摘要: ")[2].partition("\n")[0]
+            text = async_tool_text(summary)
+        if text:
+            public["tool_result_text"] = text
     guidance = raw.get("guidance")
     if isinstance(guidance, dict):
         allowed = {

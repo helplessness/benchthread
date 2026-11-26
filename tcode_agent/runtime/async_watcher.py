@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from ..presentation.job_results import tmcp_content_blocks, tmcp_summary_text
+from ..presentation.job_results import async_tool_text, tmcp_content_blocks, tmcp_summary_text
 
 _registry: dict[str, dict[str, Any]] = {}
 _injected: set[str] = set()
@@ -1943,6 +1943,7 @@ def _build_continuation_payload(
         "message": "\n".join(lines),
         "content_blocks": content_blocks,
         "presentation_summary": _short_text(presentation_summary, 4000),
+        "tool_result_text": async_tool_text(collect_payload) if status == "completed" else "",
         "result_summary": _short_text(result_summary, 4000),
         "result_receipt": result_receipt,
         "error_summary": _short_text(error_summary, 4000),
@@ -2033,6 +2034,7 @@ async def _append_or_queue_continuation(
             content=str(next_continuation.get("message") or ""),
             id=f"msg-async-continuation-{identifier}",
             presentation="async_completion",
+            metadata={"tool_result_text": next_continuation["tool_result_text"]} if next_continuation.get("tool_result_text") else {},
             content_blocks=list(next_continuation.get("content_blocks") or []),
         )
         messages.append(message)
