@@ -1,0 +1,1 @@
+const l=["minimal","low","medium","high"],n=a=>({minimal:"极简",low:"低",medium:"中",high:"高"})[a]||a,o=a=>({build:"构建模式",manager:"团队编排",paper_auto:"文献自动协作",protein_orchestrator:"蛋白设计团队"})[a]||a;export{o as a,n as b,l as r};
