@@ -9,7 +9,7 @@ function SideChatBubble(props: { message: Message }) {
   const user = () => props.message.role === 'user';
   return (
     <article class={`side-chat-bubble ${user() ? 'side-chat-bubble--user' : 'side-chat-bubble--agent'}`} aria-label={user() ? '用户问题' : 'Agent 回复'}>
-      <Show when={!user()}><div class="side-chat-speaker">Agent</div></Show>
+      <Show when={!user()}><div class="side-chat-speaker">研究助手</div></Show>
       <MarkdownContent content={props.message.content} role={props.message.role}
         renderKey={`side:${props.message.id}`} allowSessionActions={false}/>
       <StructuredContentBlocks blocks={props.message.content_blocks} allowSessionActions={false}/>

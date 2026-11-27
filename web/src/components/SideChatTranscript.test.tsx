@@ -38,6 +38,7 @@ it('uses one shared narration/tool group per turn, with user on the right and Ag
   expect(html).not.toContain('>你<');
   expect(html).toContain('请检查输入');
   expect(html).toContain('side-chat-bubble--agent');
+  expect(html).toContain('>研究助手<');
   expect(html).toContain('先读文件，再确认结果');
   expect(html).toContain('输入已确认');
   expect(html).toContain('max-h-[min(36rem,60vh)]');
