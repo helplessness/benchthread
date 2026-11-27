@@ -2,6 +2,9 @@ export type AsyncResultSummaryView = {
   text: string;
   raw: string;
   structured: boolean;
+  chatText?: string;
+  technicalDetails?: string;
+  reportedOutputPath?: string;
 };
 
 type JsonRecord = Record<string, any>;
@@ -184,11 +187,28 @@ export const formatAsyncResultSummary = (
   ].filter(Boolean);
 
   return {
+    chatText: [headline, totalFiles > 0 ? `输出：${totalFiles} 个文件${totalSize ? ` · ${totalSize}` : ''}` : '',
+      lines.find(line => line.startsWith('产物校验：'))].filter(Boolean).join('\n') || '结果详情已回传。',
+    technicalDetails: [jobId && `Job：${jobId}`, runId && `Run：${runId}`,
+      bundleId && `输出包：${bundleId}`].filter(Boolean).join('\n'),
+    reportedOutputPath: outputPath,
     text: lines.length > 0 ? lines.join('\n') : '结果详情已回传，请打开原会话查看。',
     raw,
     structured: true,
   };
 };
+
+export function chatTechnicalDetails(summary: AsyncResultSummaryView, receipt: {
+  catalogOnly: boolean; outputPath: string; outputAbsPath: string;
+}) {
+  const reported = summary.reportedOutputPath;
+  // A catalog receipt is not proof of a local download.
+  const receiptPath = !receipt.catalogOnly && (receipt.outputPath || receipt.outputAbsPath);
+  return [summary.technicalDetails,
+    reported && `${receipt.catalogOnly ? '远端任务报告目录（未下载）' : '任务报告目录'}：${reported}`,
+    receiptPath && receiptPath !== reported && `回执目录：${receiptPath}`,
+  ].filter(Boolean).join('\n');
+}
 
 export const formatAsyncCompletionNotice = (event: {
   status: string;
