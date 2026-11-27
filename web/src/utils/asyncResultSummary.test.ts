@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatAsyncCompletionNotice, formatAsyncResultSummary, hasRemoteCatalogOnly, hideTargetId, parseAsyncResultSummary, returnedFilePreview } from './asyncResultSummary';
+import { chatTechnicalDetails, formatAsyncCompletionNotice, formatAsyncResultSummary, hasRemoteCatalogOnly, hideTargetId, parseAsyncResultSummary, returnedFilePreview } from './asyncResultSummary';
 
 describe('async result summary', () => {
+  it('separates remote catalog paths from receipt paths without duplicating a directory', () => {
+    const summary = formatAsyncResultSummary('{"output_path":"/remote/results"}');
+    const receipt = { catalogOnly: true, outputPath: 'work/results', outputAbsPath: '/host/work/results' };
+    expect(chatTechnicalDetails(summary, receipt)).toBe('远端任务报告目录（未下载）：/remote/results');
+    expect(chatTechnicalDetails(formatAsyncResultSummary(''), receipt)).toBe('');
+    expect(chatTechnicalDetails(summary, {...receipt, catalogOnly: false})).toContain('回执目录：work/results');
+    expect(chatTechnicalDetails(summary, {...receipt, catalogOnly: false, outputPath: '/remote/results'}))
+      .toBe('任务报告目录：/remote/results');
+  });
   it('uses the host file receipt even if the following JSON summary is truncated', () => {
     const path = 'artifacts/jobs/abc/bundle-123/results/echo.dat';
     const id = 'plugin-' + 'a'.repeat(32);
@@ -52,6 +61,9 @@ describe('async result summary', () => {
     expect(result.text).toContain('job_gnina-mcp_75d600bda21a');
     expect(result.text).toContain('local-4a899b0006');
     expect(result.text).toContain('5 个文件');
+    expect(result.chatText).toContain('5 个文件');
+    expect(result.chatText).not.toMatch(/job_gnina|local-4a899|bundle_2417/);
+    expect(result.technicalDetails).toContain('job_gnina-mcp_75d600bda21a');
     expect(result.text).toContain('498.7 KB');
     expect(result.text).not.toContain('structuredContent');
   });

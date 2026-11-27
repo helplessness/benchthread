@@ -181,7 +181,9 @@ async def _enqueue_biosafety_human_review(
         return {}
 
 
-async def cancel_team_background_tasks(team_id: str) -> dict[str, list[str]]:
+async def cancel_team_background_tasks(
+    team_id: str, *, worker_in_scope: Optional[Callable[[str], bool]] = None,
+) -> dict[str, list[str]]:
     """Best-effort cancel of coordinator-owned background tasks for a team session."""
     normalized_team_id = str(team_id or "").strip()
     cancelled_worker_session_ids: list[str] = []
@@ -199,7 +201,7 @@ async def cancel_team_background_tasks(team_id: str) -> dict[str, list[str]]:
 
     for worker in workers:
         worker_session_id = str(getattr(worker, "session_id", "") or "").strip()
-        if not worker_session_id:
+        if not worker_session_id or (worker_in_scope and not worker_in_scope(worker_session_id)):
             continue
         if cancel_worker_task(worker_session_id):
             cancelled_worker_session_ids.append(worker_session_id)
@@ -247,19 +249,22 @@ def _clear_active_worker_task(worker_session_id: str, task: asyncio.Task) -> Non
         _active_tasks.pop(worker_session_id, None)
 
 
-def worker_task_active(worker_session_id: str) -> bool:
-    """Return whether the coordinator still owns a live task for this worker."""
+def get_worker_task(worker_session_id: str) -> Optional[asyncio.Task]:
+    """Return the live in-process task currently owned by this worker session."""
 
     normalized = str(worker_session_id or "").strip()
     if not normalized:
-        return False
+        return None
     task = _active_tasks.get(normalized)
-    if task is None:
-        return False
-    if task.done():
+    if task is not None and task.done():
         _active_tasks.pop(normalized, None)
-        return False
-    return True
+        return None
+    return task
+
+
+def worker_task_active(worker_session_id: str) -> bool:
+    """Return whether the coordinator still owns a live task for this worker."""
+    return get_worker_task(worker_session_id) is not None
 
 
 async def reconcile_orphaned_worker_runtime_task(

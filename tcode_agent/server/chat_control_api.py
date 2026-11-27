@@ -57,6 +57,10 @@ from .message_resources import (
     _build_message_resource_context,
 )
 from ._shared import (
+    _ChildTurn,
+    _guidance_child_turn,
+    _guidance_worker_in_scope,
+    _require_child_turn,
     _cancel_descendant_sessions,
     _cancel_runtime_subtree_for_interrupt_guidance,
     _chat_runtime_status_payload,
@@ -122,7 +126,8 @@ async def _cancel_classified_guidance(item: GuidanceItem, *, session_owner: dict
 
 
 async def _mark_guidance_child_superseded(
-    item: GuidanceItem, descendant_id: str, *, session_owner: dict[str, str],
+    item: GuidanceItem, descendant_id: str, *,
+    expected_turn: _ChildTurn, session_owner: dict[str, str],
 ) -> None:
     def mark(child: Session) -> None:
         # Run inside the session mutation lock, after any wait for fresher state.
@@ -132,6 +137,7 @@ async def _mark_guidance_child_superseded(
         if ((delegation.get("parent_session_id") or child.parent_id) == item.session_id
                 and delegation.get("parent_turn_id") not in (None, "", item.target_turn_id)):
             raise GuidanceStaleTurn("the child now belongs to a different parent turn")
+        _require_child_turn(child, expected_turn)
         child.metadata = {**metadata, "superseded_context": True, "superseded_by_guidance_id": item.id}
 
     await SessionManager.mutate(descendant_id, mark, **session_owner)
@@ -481,18 +487,22 @@ async def _guide_chat_v2(
     async def _cancel_invalidated_descendants(classified_item) -> list[str]:
         policy = str(classified_item.descendant_policy or "preserve")
         if policy == "cancel_all":
+            child_turns: dict[str, _ChildTurn] = {}
+
             cancelled = await _cancel_runtime_subtree_for_interrupt_guidance(
                 classified_item.session_id,
                 clear_guidance=False,
                 owner_kwargs=session_owner,
                 ensure_current=lambda: _require_current_native_guidance_turn(classified_item),
+                child_turns=child_turns,
             )
             cancelled_ids = list(
                 cancelled.get("cancelled_descendant_session_ids") or []
             )
             for descendant_id in cancelled_ids:
                 await _mark_guidance_child_superseded(
-                    classified_item, descendant_id, session_owner=session_owner,
+                    classified_item, descendant_id,
+                    expected_turn=child_turns[descendant_id], session_owner=session_owner,
                 )
             return cancelled_ids
         if policy != "cancel_invalidated":
@@ -521,6 +531,9 @@ async def _guide_chat_v2(
             owner_kwargs=session_owner,
         )
         cancelled: list[str] = []
+        children = {child.id: child for child in descendants}
+        turns = {child.id: _guidance_child_turn(child) for child in descendants}
+
         for descendant in descendants:
             descendant_id = str(getattr(descendant, "id", "") or "").strip()
             if descendant_id not in requested_ids:
@@ -535,12 +548,17 @@ async def _guide_chat_v2(
             if descendant_metadata.get("uncancellable_external_side_effect"):
                 continue
             _require_current_native_guidance_turn(classified_item)
+            child_turn = turns[descendant_id]
+            _require_child_turn(descendant, child_turn)
             cancel_worker_task(descendant_id)
-            await cancel_team_background_tasks(descendant_id)
+            await cancel_team_background_tasks(
+                descendant_id, worker_in_scope=lambda wid: _guidance_worker_in_scope(wid, children, turns),
+            )
             _require_current_native_guidance_turn(classified_item)
+            _require_child_turn(descendant, child_turn)
             await ServerState.cancel_session(descendant_id, clear_guidance=False)
             await _mark_guidance_child_superseded(
-                classified_item, descendant_id, session_owner=session_owner,
+                classified_item, descendant_id, expected_turn=child_turn, session_owner=session_owner,
             )
             cancelled.append(descendant_id)
         return cancelled

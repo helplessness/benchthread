@@ -38,7 +38,7 @@ import {
   outcomeVerificationSummary,
   shouldAttemptOutcomeAcceptance,
 } from '../utils/runStatus';
-import { formatAsyncResultSummary, hasRemoteCatalogOnly, hideTargetId, returnedFilePreview } from '../utils/asyncResultSummary';
+import { chatTechnicalDetails, formatAsyncResultSummary, hasRemoteCatalogOnly, hideTargetId, returnedFilePreview } from '../utils/asyncResultSummary';
 import { latestDeliveredAssistant, verificationFeedback } from '../utils/verificationFeedback';
 import {
   completedWorkflowRunId,
@@ -354,12 +354,14 @@ function AsyncJobCompletionCard(props: { alert: AsyncJobCompletionAlert; toolTex
     return `继续异步任务 ${props.alert.identifier}。`;
   };
 
+  const formatted = createMemo(() => formatAsyncResultSummary(props.alert.summary));
+  const details = createMemo(() => chatTechnicalDetails(formatted(), props.alert));
   const displaySummary = createMemo(() => {
     if (props.alert.returnedFiles.length) return '文件已回传到当前工作区：\n' + props.alert.returnedFiles.join('\n');
     if (props.alert.catalogOnly) return '已登记远端文件清单，文件尚未自动下载到工作区。';
-    const summary = formatAsyncResultSummary(props.alert.summary);
+    const summary = formatted();
     if (props.toolText && !summary.structured && /^[\[{]/.test(summary.raw)) return '任务摘要不完整，工具返回文本见下方。';
-    return hideTargetId(summary.text);
+    return hideTargetId(summary.chatText ?? summary.text);
   });
 
   const continueAsyncJob = async () => {
@@ -449,10 +451,11 @@ function AsyncJobCompletionCard(props: { alert: AsyncJobCompletionAlert; toolTex
                 状态: <span class="font-mono">{props.alert.state}</span>
               </span>
             </Show>
-            <Show when={!props.alert.catalogOnly && !props.alert.returnedFiles.length && (props.alert.outputPath || props.alert.outputAbsPath)}>
-              <span class={`min-w-0 rounded-lg border px-2.5 py-1 ${tone().chip}`}>
-                结果目录: <span class="break-all font-mono">{props.alert.outputPath || props.alert.outputAbsPath}</span>
-              </span>
+            <Show when={details()}>
+              <details class={`min-w-0 rounded-lg border px-2.5 py-1 ${tone().chip}`}>
+                <summary class="cursor-pointer">技术详情</summary>
+                <div class="whitespace-pre-wrap break-all font-mono">{details()}</div>
+              </details>
             </Show>
           </div>
 
