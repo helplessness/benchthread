@@ -58,6 +58,7 @@ from ..team.profile import worker_profile_summary
 from ..team.coordinator import (
     cancel_team_background_tasks,
     cancel_worker_task,
+    get_worker_task,
     worker_task_active,
 )
 from ..providers import create_provider, clone_provider
@@ -84,7 +85,7 @@ from ..context.router import route_context
 from ..runtime import RuntimeTaskManager, TaskRuntimeStore
 from ..runtime import RuntimeArtifactManager
 from ..runtime import SessionArchiveManager
-from ..runtime.guidance import GuidanceMode, GuidanceStatus, OwnerScope
+from ..runtime.guidance import GuidanceMode, GuidanceStaleTurn, GuidanceStatus, OwnerScope
 from ..runtime.guidance_store import GuidanceSQLiteStore
 from ..runtime.shared_tracker import SharedTracker
 from tcode_agent.runtime.tracker_token import read_tracker_token
@@ -826,12 +827,38 @@ async def _cancel_descendant_sessions(
     return cancelled_ids
 
 
+_ChildTurn = tuple[Optional[asyncio.Task], Optional[asyncio.Task], str, str]
+
+
+def _guidance_child_turn(child: Session) -> _ChildTurn:
+    task = ServerState.get_turn_task(child.id)
+    engine = getattr(ServerState.agents.get(child.id), "_engine", None) if task else None
+    metadata = child.metadata or {}
+    persisted = (metadata.get("active_turn") or {}).get("turn_id") or (metadata.get("last_turn") or {}).get("turn_id")
+    return task, get_worker_task(child.id), str(getattr(engine, "_active_guidance_turn_id", "") or ""), str(persisted or "")
+
+
+def _require_child_turn(child: Session, expected: _ChildTurn) -> None:
+    task, worker, live, persisted = _guidance_child_turn(child)
+    if ((task is not None and task is not expected[0]) or (worker is not None and worker is not expected[1])
+            or any(turn and turn not in expected[2:] for turn in (live, persisted))):
+        raise GuidanceStaleTurn("the child is already running a different turn")
+
+
+def _guidance_worker_in_scope(worker_id: str, children: dict[str, Session], turns: dict[str, _ChildTurn]) -> bool:
+    if worker_id not in turns:
+        return False
+    _require_child_turn(children[worker_id], turns[worker_id])
+    return True
+
+
 async def _cancel_runtime_subtree_for_interrupt_guidance(
     session_id: str,
     *,
     clear_guidance: bool = True,
     owner_kwargs: Optional[dict[str, str]] = None,
     ensure_current: Optional[Callable[[], None]] = None,
+    child_turns: Optional[dict[str, _ChildTurn]] = None,
 ) -> dict[str, Any]:
     """Cancel live work below a guided session before replanning that session.
 
@@ -846,15 +873,29 @@ async def _cancel_runtime_subtree_for_interrupt_guidance(
         include_side_chats=False,
     )
     descendant_ids = [str(sub.id) for sub in descendants if str(sub.id or "").strip()]
+    if ensure_current:
+        ensure_current()
+    snapshots = child_turns if child_turns is not None else {}
+    children = {sub.id: sub for sub in descendants}
+    if ensure_current:
+        snapshots.update((sub.id, _guidance_child_turn(sub)) for sub in descendants)
+
+    def worker_in_scope(worker_id: str) -> bool:
+        return _guidance_worker_in_scope(worker_id, children, snapshots)
+
     cancelled_worker_session_ids: list[str] = []
     cancelled_team_task_details: dict[str, dict[str, Any]] = {}
 
     for scoped_session_id in [session_id, *descendant_ids]:
         if ensure_current:
             ensure_current()
+            if scoped_session_id != session_id:
+                _require_child_turn(children[scoped_session_id], snapshots[scoped_session_id])
         if cancel_worker_task(scoped_session_id):
             cancelled_worker_session_ids.append(scoped_session_id)
-        cancelled = await cancel_team_background_tasks(scoped_session_id)
+        cancelled = await cancel_team_background_tasks(
+            scoped_session_id, worker_in_scope=worker_in_scope if ensure_current else None,
+        )
         if cancelled.get("cancelled_worker_session_ids") or cancelled.get(
             "cancelled_auxiliary_tasks"
         ):
@@ -868,6 +909,7 @@ async def _cancel_runtime_subtree_for_interrupt_guidance(
     for sub in descendants:
         if ensure_current:
             ensure_current()
+            _require_child_turn(sub, snapshots[sub.id])
         await ServerState.cancel_session(sub.id, clear_guidance=clear_guidance)
 
     return {

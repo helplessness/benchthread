@@ -113,7 +113,6 @@ html[data-reduce-motion=true] :is(.session-workspace-group,.session-workspace-ch
 .studio-theme .studio-chat-header { padding:10px 16px; gap:12px; }
 .studio-theme :is(.main-chat-row,.side-chat-bubble) { line-height:1.75; }
 .studio-theme .side-chat-bubble { font-size:14px; }
-.studio-theme .side-chat-bubble--user { background:var(--tcode-surface-soft); border-color:var(--tcode-border); border-radius:12px 12px 4px 12px; }
 .studio-theme .main-chat-transcript .main-chat-row--user .message-enter { background:var(--tcode-surface-soft)!important; border-color:var(--tcode-border); }
 .user-message-text.is-long { max-height:var(--user-message-preview-height,192px);overflow:hidden; }
 .user-message-text.is-long.is-expanded { max-height:max(var(--user-message-preview-height,192px),min(480px,55dvh));overflow-y:auto;overscroll-behavior-y:auto;scrollbar-gutter:stable; }

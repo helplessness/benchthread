@@ -25,6 +25,7 @@ import { getToolRuntimeSummary, getToolVerificationLabel } from '../utils/toolRu
 import MarkdownContent from './MarkdownContent';
 import StructuredContentBlocks from './StructuredContentBlocks';
 import SideChatTranscript from './SideChatTranscript';
+import { agentDisplayLabel } from './composer/executionLabels';
 import QuestionCard from './QuestionCard';
 import { isWorkflowExecutionSession } from '../utils/collaborationTasks';
 
@@ -795,8 +796,8 @@ export default function SideChatWorkspace(props: SideChatWorkspaceProps) {
     if (!parent || !id || injecting() || selectedRunning()) return;
     setInjecting(true); setError(''); setInjectionFeedback('');
     try {
-      await injectSideChat(parent,id);
-      if (!disposed && parent===parentSessionId() && id===requestedSelectedId()) setInjectionFeedback('注入成功');
+      const result = await injectSideChat(parent,id);
+      if (!disposed && parent===parentSessionId() && id===requestedSelectedId()) setInjectionFeedback(result.duplicate ? '没有新内容，主会话已是最新。' : '注入成功，主会话已收到本次讨论。');
       window.dispatchEvent(new CustomEvent('tcode-side-chat-injected',{detail:{parentSessionId:parent}}));
     } catch(err) {
       if (!disposed && parent===parentSessionId() && id===requestedSelectedId()) setError(err instanceof Error ? err.message : '注入失败');
@@ -1107,14 +1108,23 @@ export default function SideChatWorkspace(props: SideChatWorkspaceProps) {
     }>
       <section class="side-chat-panel" aria-label="侧边聊天" data-testid="side-chat-panel">
         <header class="side-chat-header">
-          <div><b>侧边聊天</b><span>{selectedItem()?.agent_name || sessionStore.currentSession()?.agent_name || ''}{selectedRunning() ? ' · 运行中' : ''}</span>
-            <button aria-label="注入主会话" title="注入整段侧聊的提问、回复及执行证据" disabled={injecting() || selectedRunning() || sending() || !messages().length} onClick={()=>void injectIntoMain()}>{injecting() ? '注入中…' : '注入主会话'}</button>
+          <div class="side-chat-heading">
+            <h2>侧边聊天</h2>
+            <span>{selectedRunning() ? '运行中' : agentDisplayLabel(selectedItem()?.agent_name || sessionStore.currentSession()?.agent_name || '')}</span>
           </div>
-          <Show when={injectionFeedback()}><small role="status">{injectionFeedback()}</small></Show>
+          <button type="button" class="side-chat-inject" aria-label="注入主会话" aria-busy={injecting()}
+            title="将本侧聊新增的提问、回复和执行记录带回主会话"
+            disabled={injecting() || selectedRunning() || sending() || !messages().length} onClick={()=>void injectIntoMain()}>
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 16V3m-3 3 3-3 3 3M15 13c0-5-10-2-10-8"/><circle cx="15" cy="15" r="2"/>
+            </svg>
+            {injecting() ? '注入中…' : '注入主会话'}
+          </button>
+          <p class="side-chat-inject-note" role="status">{injectionFeedback() || '点击注入后，新增讨论才会带回主会话。'}</p>
         </header>
         <div ref={chatContainer} class="side-chat-messages tcode-scrollbar" role="log" aria-label="侧聊消息">
           <Show when={error()}><div class="side-chat-error" role="alert">{error()}<Show when={lastFailedText()}><button disabled={selectedRunning() || sending()} onClick={()=>{updateDraft(lastFailedText());void sendSideMessage();}}>重试</button></Show></div></Show>
-          <Show when={messages().length} fallback={<div class="side-chat-empty"><b>继续讨论</b><p>有什么想进一步聊聊的？</p></div>}>
+          <Show when={messages().length} fallback={<div class="side-chat-empty"><b>想单独聊哪一点？</b><p>可以追问主会话里的一条结论，也可以在这里试一个不同的思路。</p></div>}>
             <div ref={setMessageListElement} class="side-chat-transcript">
               <SideChatTranscript messages={messages()} running={selectedRunning()} sessionId={requestedSelectedId()}
                 renderTool={entry=><SideToolCall messageId={`side:${requestedSelectedId()}:${entry.messageId}`} tool={entry.tool} index={entry.index}/>}/>
