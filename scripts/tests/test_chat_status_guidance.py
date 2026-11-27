@@ -387,32 +387,127 @@ def test_cancel_callback_checks_target_again_after_awaiting_descendants(monkeypa
     cancel.assert_awaited_once_with(sid, clear_guidance=False)
 
 
-@pytest.mark.parametrize("changed", ["parent", "child", "neither"])
+@pytest.mark.parametrize("replace", [False, True])
+def test_guidance_cancels_only_the_snapshotted_child_task(monkeypatch, replace):
+    parent = "review-parent"
+    child = Session(id="review-child", parent_id=parent)
+    state = _shared.ServerState
+    tasks = {}
+    monkeypatch.setattr(state, "turn_tasks", tasks)
+    monkeypatch.setattr(state, "guidance_tasks", {})
+    monkeypatch.setattr(state, "agents", {})
+    monkeypatch.setattr(state, "sessions", {})
+    monkeypatch.setattr(_shared, "_list_descendant_sessions_recursive", AsyncMock(return_value=[child]))
+    monkeypatch.setattr(_shared, "cancel_worker_task", Mock(return_value=False))
+
+    async def run():
+        old = asyncio.create_task(asyncio.Event().wait())
+        new = asyncio.create_task(asyncio.Event().wait())
+        tasks[child.id] = old
+
+        async def cancel_team(team_id, **_kwargs):
+            if team_id == child.id and replace:
+                await asyncio.sleep(0)
+                tasks[child.id] = new
+            return {}
+
+        monkeypatch.setattr(_shared, "cancel_team_background_tasks", cancel_team)
+        try:
+            cancel = _shared._cancel_runtime_subtree_for_interrupt_guidance(
+                parent, clear_guidance=False, ensure_current=lambda: None,
+            )
+            if replace:
+                with pytest.raises(GuidanceStaleTurn):
+                    await cancel
+            else:
+                await cancel
+            await asyncio.sleep(0)
+            assert not new.cancelled()
+            assert old.cancelled() == (not replace)
+        finally:
+            old.cancel()
+            new.cancel()
+            await asyncio.gather(old, new, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_guidance_team_cleanup_preserves_unlisted_and_replaced_workers(monkeypatch):
+    from tcode_agent.team import coordinator
+
+    child = Session(id="worker", parent_id="team")
+    workers = [SimpleNamespace(session_id=sid) for sid in ("unlisted", child.id)]
+    monkeypatch.setattr(coordinator.WorkerRegistry, "list_for_team", lambda _: workers)
+    cancel = Mock()
+    monkeypatch.setattr(coordinator, "cancel_worker_task", cancel)
+    monkeypatch.setattr(_shared.ServerState, "turn_tasks", {})
+    active = {}
+    monkeypatch.setattr(coordinator, "_active_tasks", active)
+    turns = {child.id: _shared._guidance_child_turn(child)}
+
+    async def run():
+        active[child.id] = asyncio.current_task()
+        with pytest.raises(GuidanceStaleTurn):
+            await coordinator.cancel_team_background_tasks(
+                "team", worker_in_scope=lambda wid: _shared._guidance_worker_in_scope(wid, {child.id: child}, turns),
+            )
+        cancel.assert_not_called()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("changed", [
+    "parent", "delegation", "child_turn", "new_chat_task", "new_worker_task", "same_turn_finished",
+])
 def test_child_metadata_write_revalidates_inside_the_mutation(monkeypatch, changed):
     item = SimpleNamespace(id="guidance-old", session_id="parent", runtime_id="tcode-native", target_turn_id="old")
     engine = SimpleNamespace(_active_guidance_turn_id="old")
-    child = SimpleNamespace(parent_id=item.session_id, metadata={
+    child = Session(id="child", parent_id=item.session_id, metadata={
         "delegation_scope": {"parent_turn_id": "old"}, "existing": "preserved",
+        "active_turn": {"turn_id": "child-old"},
     })
     monkeypatch.setattr(chat_control_api.ServerState, "agents", {item.session_id: SimpleNamespace(_engine=engine)})
-    monkeypatch.setattr(chat_control_api.ServerState, "get_turn_task", lambda _: asyncio.current_task())
+    tasks = {}
+    monkeypatch.setattr(chat_control_api.ServerState, "turn_tasks", tasks)
+    worker_tasks = {}
+    monkeypatch.setattr("tcode_agent.team.coordinator._active_tasks", worker_tasks)
 
     async def mutate(_child_id, update, **_scope):
         await asyncio.sleep(0)  # Let the next turn arrive while the mutation waits for the session lock.
         if changed == "parent":
             engine._active_guidance_turn_id = "new"
-        elif changed == "child":
+        elif changed == "delegation":
             child.metadata["delegation_scope"]["parent_turn_id"] = "new"
+        elif changed == "child_turn":
+            child.metadata["active_turn"] = {"turn_id": "child-new"}
+        elif changed == "new_chat_task":
+            tasks[child.id] = asyncio.current_task()
+        elif changed == "new_worker_task":
+            worker_tasks[child.id] = asyncio.current_task()
+        else:
+            child.metadata["last_turn"] = child.metadata.pop("active_turn")
+            tasks.pop(child.id)
         update(child)
 
     monkeypatch.setattr(SessionManager, "mutate", mutate)
-    action = chat_control_api._mark_guidance_child_superseded(item, "child", session_owner={})
-    if changed == "neither":
-        asyncio.run(action)
+
+    async def write():
+        old_child_task = asyncio.create_task(asyncio.Event().wait())
+        tasks.update({item.session_id: asyncio.current_task(), child.id: old_child_task})
+        try:
+            await chat_control_api._mark_guidance_child_superseded(
+                item, child.id, expected_turn=chat_control_api._guidance_child_turn(child), session_owner={},
+            )
+        finally:
+            old_child_task.cancel()
+            await asyncio.gather(old_child_task, return_exceptions=True)
+
+    if changed == "same_turn_finished":
+        asyncio.run(write())
         assert child.metadata["superseded_by_guidance_id"] == item.id
     else:
         with pytest.raises(GuidanceStaleTurn):
-            asyncio.run(action)
+            asyncio.run(write())
         assert "superseded_context" not in child.metadata
     assert child.metadata["existing"] == "preserved"
 
